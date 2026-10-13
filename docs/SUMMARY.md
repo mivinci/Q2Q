@@ -4,3 +4,4 @@
 
 - [技术设计](design/p2p-technical.md)
 - [自建网络提案（RFC）](design/p2p-selfhosted.md)
+- [PaaS MVP 设计](design/p2p-paas-mvp.md)
