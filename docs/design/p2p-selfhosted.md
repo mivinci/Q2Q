@@ -2,9 +2,9 @@
 
 | 状态 | 最后更新 |
 | --- | --- |
-| 提案（RFC，未定案） | 2026-09-21 |
+| 提案（RFC，未定案） | 2026-10-13 |
 
-> **本文的定位**：本文是 `p2p-technical.md`（下称"既有设计"）的一次**定位级改版提案**，不是补丁。第 9 章另外给出服务形态与计费边界（开源实现 + 托管 PaaS，我们不托管网络的数据）。2026-09-21 补入桶凭据的授予与撤销机制（3.8 节），并据此把安全边界从"路径前缀"改为"桶"（2.1 节）——推荐一网络一桶。同日重做桶对象布局（3.1 节）：实体与关系分离，announcement 边独立成树并支持 tombstone / generation；存储被抽象为 `MetadataStore` + `BlobStore` 逻辑键空间（3.2 节），S3 只是默认后端。
+> **本文的定位**：本文是 `p2p-technical.md`（下称"既有设计"）的一次**定位级改版提案**，不是补丁。第 9 章另外给出服务形态与计费边界（开源实现 + 托管 PaaS，我们不托管网络的数据）。2026-09-21 补入桶凭据的授予与撤销机制（3.8 节），并据此把安全边界从"路径前缀"改为"桶"（2.1 节）——推荐一网络一桶。同日重做桶对象布局（3.1 节）：实体与关系分离，announcement 边独立成树并支持 tombstone / generation；存储被抽象为 `MetadataStore` + `BlobStore` 逻辑键空间（3.2 节），S3 只是默认后端。2026-10-13 修正评审发现的几处边界冲突与遗漏：TURN 拓扑统一归入控制集群配置、不再写 `descriptor.json`（7.4 / 9.2 节）；`punch.healthz` 明确免鉴权、调用面由网络层收敛（5.3 节）；`iss` 不得用于查找逐网络配额（5.5 节）；补齐 `punch` ticket 收紧至 5 分钟与 `punch.join` 响应新增 `authorized_until` 两处遗漏（5.4 节与第 11 章）；`trackers.json` 统一为 `trackers/manifest.json`、REST 路径统一为 `{resource_id}`。
 
 既有设计隐含"由单一运营方提供一张全局 P2P 网络"的假设——Tracker 是信任根、状态存在 Tracker 自己手里、运营方承担带宽与中继成本。本文把假设换成：**任何人都可以创建一个 P2P 网络，网络的权威状态存放在创建者自己的对象存储（桶）里**。
 >
@@ -89,7 +89,7 @@ network_id = "s3://my-bucket"
   name: "...", description: "..."        展示用
   created_at: <unix seconds>
   seq: <u64>                             单调递增，防回滚（见 3.8.4 节）
-  creator_public_key: <32B>              创建者公钥，用于验签本文件与 trackers.json
+  creator_public_key: <32B>              创建者公钥，用于验签本文件与 trackers/manifest.json
   signature: <64B>                       sign(creator_key, canonical(本文件除 signature 外))
 }
 ```
@@ -777,14 +777,14 @@ Tracker 剩下四样东西：**签名密钥**（KMS）、**限流计数**（本�
 | `GET` | `/sessions/challenge` | 取无状态挑战（4.4 节） | 无 |
 | `POST` | `/sessions` | login：回传 challenge + 私钥签名 | challenge |
 | `PUT` | `/peers/{peer_id}/resources` | announce：`add` / `del` 批量登记资源 | session JWT (`announce`) |
-| `GET` | `/resources/{info_hash}/peers` | query：返回候选并逐个签发 connect JWT | session JWT (`query`) |
+| `GET` | `/resources/{resource_id}/peers` | query：返回候选并逐个签发 connect JWT | session JWT (`query`) |
 | `POST` | `/connections/relay` | relay_credentials：ICE 失败后换 TURN 凭据 | session JWT + connect JWT 本体（验 `grace_until`） |
 
 所有票据的 `iss` 为 `network_id`。Tracker **必须**拒绝为不属于本网络（`iss` 不匹配）的票据提供服务。
 
 `POST /connections/relay` 与既有设计的无状态授权一致：Tracker 不保存 connection 记录，直接验 connect JWT 本体（签名 + `sub`/`target` + `info_hash` + `now <= grace_until`，**不验** `exp`）。常量关系沿用 `ICE_TIMEOUT(20s) < CONNECT_JWT_EXP(60s) < RELAY_GRACE(900s)`。
 
-`PUT /peers/{peer_id}/resources` 与 `GET /resources/{info_hash}/peers` 的持久化语义见 3.4.1 与 3.6 节：
+`PUT /peers/{peer_id}/resources` 与 `GET /resources/{resource_id}/peers` 的持久化语义见 3.4.1 与 3.6 节：
 
 - **announce**：`add` / `del` 逐 `resource_id` 独立生效，不提供跨资源事务；批量请求可按资源分组 fan-out。每个 `(peer_id, resource_id)` 边先条件写桶，成功后才更新本实例资源图，最后才向 Peer 返回成功；`generation` 回退的更新**必须**拒绝。
 - **query**：先查本地资源图；目标 `resource_id` 处于 Unknown 时，**必须**通过 singleflight 回源桶的 `announcements/<resource_id>/` 完成 hydrate，再过滤 `state == present` 且 `expires_at > now` 后返回候选。**不得**因为资源图未加载而返回空结果。
@@ -797,7 +797,7 @@ Tracker 的启动配置承载控制集群和网络状态访问能力：
 | 类别 | 参数 / 配置 | 必需 | 含义 | Self-hosted 来源 | PaaS 来源 |
 | --- | --- | --- | --- | --- | --- |
 | 签票身份 | `admission_authority_key_ref` | 是 | 控制集群私钥 `K_cluster.private`，签发 `punch` / `connect` capability | 本地 Secret / KMS | PaaS KMS |
-| 签票身份 | `admission_authority_kid` | 是 | 当前签票密钥 `kid`；必须已被网络 `trackers.json` 授权 | 本地配置 | 平台租户配置 |
+| 签票身份 | `admission_authority_kid` | 是 | 当前签票密钥 `kid`；必须已被网络 `trackers/manifest.json` 授权 | 本地配置 | 平台租户配置 |
 | 网络接入 | `network_config_ref` | 是 | `network_id → bucket_uri + credential_ref + 网络策略` 映射 | 本地配置 / GitOps | 控制面下发运行配置 |
 | 集群成员 | `cluster_config_ref` | 是 | 控制集群配置：`cluster/ring.json`、`leases/`、Punch 拓扑（3.2.1 节） | 本地文件 / 运维对象存储 | 控制面或配置服务 |
 | 集群成员 | `ring_poll_interval` | 否 | 拉取 ring manifest 的周期，建议 5–30 s | 默认或本地配置 | 平台策略 |
@@ -826,6 +826,7 @@ punch.healthz({ request_id })
 ```
 
 - `ready=true` 表示实例可接受新的 `punch.join`；实例排水、达到全局 admission 上限或关键依赖未就绪时返回 `false`。
+- **`healthz` 不鉴权**。Punch 接受的应用层凭据是 Tracker 签给 **Peer** 的 capability，Tracker 自己没有、也不该有一张；而 Punch 不接收注册、不维护调用方名单，因此它没有任何依据在应用层识别"这是不是我的 Tracker"。据此 `healthz` **必须**是免鉴权的只读探测，调用面**必须**由网络层收敛（内网网段、安全组或 mTLS 白名单），**不得**依赖应用层凭据或为它引入一张 Tracker 名单——后者会把 Punch 重新绑回控制面。这也正是下一条（响应不得携带业务信息）必须是硬约束的原因：能调它的人不由 Punch 决定。
 - 响应**不得**携带 `network_id`、Tracker 地址、桶信息、资源索引或任一网络的负载，避免把业务语义泄漏进 Punch。
 - `instance_id` 用于识别重启，`generation` 在配置或进程世代变化时递增，供 Tracker 丢弃陈旧探测结果。
 - Tracker **应当**以 10–30 s 周期探测；健康状态只是候选筛选条件，最终 admission 仍由 Punch 在 `punch.join` 时按本机全局容量裁决。
@@ -857,10 +858,14 @@ Punch 的启动配置只允许包含基础设施级信息：
 
 沿用既有设计 §3.5 / §7.2.2：`punch.join` / `punch.heartbeat` / `punch.exit` / `punch.signal`，信道模型（`binding_key`、`signal_key`、常驻 / 瞬时信道的区分）不变。唯一的租约变化见 5.5 节：heartbeat 只能维持 NAT 映射，不能超过 `authorized_until` 延长 Binding；续租必须携带新 `punch` ticket 重新 join。
 
+字段层面的一处增量：`punch.join` 的响应在既有设计的 `binding_id` / `binding_key` / `expires_at` 之外**必须**新增 `authorized_until`。两者语义不同，不要合并成一项——`expires_at` 是 NAT 映射的存活时间，heartbeat 可以一直往后刷；`authorized_until` 是授权上限，取自 `punch` ticket 的 `exp`，**刷不动**（5.5 节）。缺了这个字段，Punch 无法区分"映射还活着"与"还被允许占用"。
+
 Punch 只做两类通用判断：
 
 1. 验证 capability token 的签名、`aud=punch_id`、`nbf` / `exp` 与本地 admission；
-2. 将 token 的 `iss` / `network_id` 视为**不透明命名空间键**，隔离 `Binding`、已消费 `jti`、连接记录与可选的网络配额。
+2. 将 token 的 `iss` / `network_id` 视为**不透明命名空间键**，隔离 `Binding`、已消费 `jti` 与连接记录。
+
+`iss` 只用于隔离，**不得**用于查找配额、套餐或任何逐网络策略——那会让 Punch 重新理解业务语义，与 §7.5 的边界冲突。配额与套餐一律由 Tracker 在**签发 capability 前**裁决（7.5 节）。
 
 它不解析网络对应哪个 Tracker 或桶，也不主动拉取任何网络状态。
 
@@ -944,8 +949,10 @@ TURN 是唯一不落在创建者桶上的基础设施成本，也是唯一真正
 | 方案 | 说明 |
 | --- | --- |
 | PaaS 全球池（默认） | 运营方提供，按 relay 出向 GB 计费（见 9.2 / 9.3 节），创建者无需运维 |
-| 创建者自带 | 写进 `descriptor.json` 的 `turn_servers`，成本自担 |
+| 创建者自带 | 写进**控制集群配置**的 `turn_servers`（7.5 节），成本自担 |
 | 混合 | 默认 PaaS 池，允许按区域覆盖 |
+
+TURN 拓扑**不得**写入 `descriptor.json`：它属于基础设施状态（7.5 节），不属于网络业务状态。descriptor 是创建者签名、带单调递增 `seq` 的主权对象（3.8.4 节），把 TURN 列表塞进去会让"换一个区域的 TURN"变成一次需要重签名并递增 `seq` 的主权操作，与 §3.3 给它定的"极低频写"定位冲突；而 TURN 的实际变更频率是运维级的。创建者自带 TURN 的表达位置因此统一为控制集群配置——自建形态下由维护者写本地配置，PaaS 形态下由平台控制面下发，两者都不改变网络桶与 `network_id`。
 
 既有 #11 记录的两个问题（coturn 原生不支持 per-connection 对端约束、relay 占比影响成本）在此不变，仍待实测——只是它们的性质变了：relay 成本不再是"侵蚀利润的隐性支出"，而是一项**可计价的服务**（9.3 节）。
 
@@ -1055,7 +1062,7 @@ P2P 控制服务的最小可迁移单元是 **Tracker + Punch 控制集群**，�
 | 单元 | 协议支持 | 可选项 |
 | --- | --- | --- |
 | 控制集群（Tracker + Punch） | 共享 admission authority；Tracker 主动 `punch.healthz` 探测集群 Punch | PaaS 托管 / 创建者自建 / 第三方；切换时迁移整个集群 |
-| TURN | `descriptor.json` 的 `turn_servers` | PaaS 全球池（默认）/ 创建者自带 / 混合 |
+| TURN | 控制集群配置的 `turn_servers`（7.5 节） | PaaS 全球池（默认）/ 创建者自带 / 混合 |
 | 桶 | `network_id` 即桶 URI | 永远是创建者自己的 |
 
 因此计费以控制集群与 TURN 为单位；只用 TURN 就只付 TURN。7.4 节列出的三种 TURN 归属在此收敛为"PaaS 提供是默认值，自建是可选覆盖"。
@@ -1148,7 +1155,7 @@ P2P 控制服务的最小可迁移单元是 **Tracker + Punch 控制集群**，�
 | 5 | 吊销范围从全局改为网络级 | 语义 |
 | 6 | login nonce 改为自包含挑战，Tracker 零持久状态 | 协议 |
 | 7 | Punch 不读桶、不注册网络、不向 Tracker 拉业务状态；只信任控制集群 admission authority | 架构 |
-| 8 | 删除"revoke 通知 Punch 清 Binding"这条 MAY；以 60 s connect / 5 min binding 短票据窗口收敛 | 简化 |
+| 8 | 删除"revoke 通知 Punch 清 Binding"这条 MAY；`punch` ticket 有效期从 10–30 min 收紧到 5 min，Binding 新增 `authorized_until` 且不得超过该 ticket 的 `exp`；以 60 s connect / 5 min binding 短票据窗口收敛 | 简化 |
 | 9 | 新增通用 Punch RPC `punch.healthz`，Tracker 主动探测候选 Punch | 新增 |
 | 10 | Punch / TURN 拓扑、健康与容量从网络桶迁至基础设施配置；Tracker + Punch 组成不可拆的控制集群 | 架构 |
 | 11 | announce TTL 建议从 30 分钟放宽到 ≥ 3 小时（在线性由 Punch 承担） | 参数 |
@@ -1176,6 +1183,7 @@ P2P 控制服务的最小可迁移单元是 **Tracker + Punch 控制集群**，�
 9. **是否允许创建者调整影响桶费用的参数**？announce TTL、LIST 缓存时长直接决定他的云账单（9.6 节）。放开调参能帮大客户省钱，但会让成本估算与容量规划变复杂；也可能出现"调长 TTL 导致 query 命中率下降"的互相埋怨。
 10. **防删除加固是否纳入默认部署清单**？签名与 `seq` 已覆盖篡改与回滚，唯独删除只能靠存储能力（S3 版本控制 + MFA delete / R2 Bucket Locks）。纳入默认会让创建流程多一步（且 R2 上更新主权对象需先解锁），不纳入则残留一个可恢复的 DoS 面。倾向：默认不启用，在控制台提供一键加固。
 11. **授权引导是产品必做项**。手动创建 IAM 角色与 `ExternalId` 与"每个人都能创建一个网络"直接矛盾。**必须**提供一键引导（生成 `network_id` 与 `ExternalId`、给出 CloudFormation / Terraform 模板或 R2 的 token 创建指引）；本文只提出要求，交互形态属产品范畴。
+12. **announce TTL 放宽后，离线 Peer 会长期占据 query 候选**。§3.5 把 TTL 从 30 分钟放宽到 ≥3 小时，理由是"在线性由 Punch 承担，失效候选在 `signal` 阶段被自然过滤"。但 query 一次只返回约 10 个候选，若其中相当比例已离线，客户端要反复 query → `signal` 失败 → 重 query，而 §7.3 的限流恰是 per-instance 的——这条重试路径同时是限流面。三个候选方向：(a) Tracker 侧统计"最近 `signal` 失败率"做软淘汰；(b) 客户端上报 `peer_offline` 后 Tracker 写一条短命负缓存（**不**进桶）；(c) query 返回候选时按 Binding 新鲜度排序，让客户端优先试更可能在线的。倾向先做 (c)——不引入新状态，且失效时退化为当前行为。三者都待实测数据决定，本文不定案。
 
 ## 13. 参考资料
 
