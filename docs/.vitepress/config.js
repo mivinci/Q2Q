@@ -28,6 +28,17 @@ export default defineConfig({
       { text: '设计文档', link: '/spec' },
     ],
 
+    // 右上角图标；icon 除内置名外也支持自定义 svg
+    socialLinks: [
+      { icon: 'github', link: 'https://github.com/mivinci/Q2Q' },
+    ],
+
+    // 每页底部的「编辑此页」链接
+    editLink: {
+      pattern: 'https://github.com/mivinci/Q2Q/edit/main/docs/:path',
+      text: '在 GitHub 上编辑此页',
+    },
+
     sidebar: [
       {
         text: '设计文档',

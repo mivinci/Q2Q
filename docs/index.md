@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Q2Q
   text: 一个开源 P2P 网络框架
-  tagline: 分享者打开就能做种，下载的人互相传，CDN 兜底，不需要自建后端
+  tagline: 让下载同一个文件的人互相传数据，分享文件不需要任何服务器
   image:
     src: /logo.svg
     alt: Q2Q
