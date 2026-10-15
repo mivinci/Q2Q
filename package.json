@@ -1,0 +1,21 @@
+{
+  "name": "q2q",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Q2Q：开源 P2P 网络框架，发布者无需自建后端",
+  "workspaces": [
+    "docs",
+    "packages/*"
+  ],
+  "scripts": {
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
+    "e2e": "node e2e/check-site.mjs",
+    "test": "npm run docs:build && npm run e2e"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.57.0"
+  }
+}

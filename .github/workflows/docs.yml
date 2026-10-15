@@ -1,0 +1,48 @@
+name: Docs
+
+# 设计文档更新后生成一个静态站点，推到 gh-pages 分支供 GitHub Pages 使用。
+# 站点是纯静态 HTML：mermaid 在构建期就渲染成了 SVG，访问时不需要任何前端 JS。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/spec.md'
+      - 'scripts/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: docs-site
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 安装构建依赖
+        run: npm install
+
+      - name: 构建并自检
+        # 用 runner 自带的 Chrome，不去下载 mermaid-cli 的 chromium（省好几分钟）
+        run: |
+          export CHROME_PATH=$(command -v google-chrome || echo /usr/bin/google-chrome)
+          npm test
+
+      - name: 发布到 gh-pages 分支
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: docs/.vitepress/dist
+          force_orphan: true
+          commit_message: 'docs(site): 重新生成静态站点'

@@ -1,0 +1,77 @@
+/* 图用 <pre> 承载（为了保住换行，见 mermaid.mjs），
+   所以要清掉 VitePress 给代码块加的背景、边框和内边距。 */
+.mermaid {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 24px 0;
+  overflow-x: auto;
+  text-align: center;
+}
+
+.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* 渲染完成前的那一瞬不显示源码文本 */
+.mermaid:not([data-processed]) {
+  color: transparent;
+}
+
+/* VitePress 默认 navbar logo 高 24px，六边形在那个尺寸下细节全糊在一起，放大一点 */
+.VPNavBar .logo {
+  height: 28px;
+}
+
+/* navbar 背景色默认带 0.5s 过渡，首帧的不透明背景要花半秒才淡出，
+   这半秒它正好压在 hero 光晕上。首页直接让背景切换瞬时完成。 */
+.VPNav,
+.VPNavBar,
+.VPNavBar .content-body,
+.VPNavBar .divider-line {
+  transition-duration: 0s !important;
+}
+
+/* 首页 hero logo 的光晕。
+   主题内部有个 .image-bg 元素消费这两个变量：渐变 + 高斯模糊。
+   官网那份是把光晕画在 SVG 里的，改成覆盖变量才能跟着主题换色。 */
+:root {
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, #2dd4bf 50%, #818cf8 50%);
+  --vp-home-hero-image-filter: blur(44px);
+
+  /* 标题渐变对齐 logo 的节点色环（teal -> blue -> violet）。
+     浅色底下用深一档，否则渐变的亮端在白底上会糊。 */
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: -webkit-linear-gradient(
+    120deg,
+    #0d9488 10%,
+    #2563eb 50%,
+    #7c3aed 90%
+  );
+}
+
+@media (min-width: 40rem) {
+  :root {
+    --vp-home-hero-image-filter: blur(56px);
+  }
+}
+
+@media (min-width: 60rem) {
+  :root {
+    --vp-home-hero-image-filter: blur(68px);
+  }
+}
+
+/* 深色主题下用更饱和的靛蓝，浅色下那档会显得发灰 */
+.dark {
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, #2dd4bf 50%, #6366f1 50%);
+
+  /* 深色底下换亮一档，跟 logo 节点用的是同一组色号 */
+  --vp-home-hero-name-background: -webkit-linear-gradient(
+    120deg,
+    #2dd4bf 10%,
+    #60a5fa 50%,
+    #a78bfa 90%
+  );
+}
