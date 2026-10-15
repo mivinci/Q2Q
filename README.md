@@ -1,20 +1,37 @@
+<div align="center">
+
+<img src="docs/public/logo.svg" width="220" alt="Q2Q">
+
 # Q2Q
 
-<p align="center">
-  <img src="docs/public/logo.svg" width="200" alt="Q2Q">
+<p>
+An open-source P2P network framework for large-file distribution and
+audio/video streaming (VOD and live) — faster transfers, less CDN bandwidth.
 </p>
 
-An open-source P2P network framework for large-file distribution and audio/video
-streaming (VOD and live) — faster transfers, less CDN bandwidth.
+<p>
+  <a href="https://github.com/mivinci/Q2Q/actions/workflows/docs.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/mivinci/Q2Q/docs.yml?branch=main&label=CI" alt="CI">
+  </a>
+  <a href="https://github.com/mivinci/Q2Q/stargazers">
+    <img src="https://img.shields.io/github/stars/mivinci/Q2Q?style=social" alt="GitHub Stars">
+  </a>
+</p>
+
+<p>
+  <a href="https://le0.me/Q2Q/">Website</a> ·
+  <a href="docs/spec.md">Design</a> ·
+  <a href="https://github.com/mivinci/Q2Q/issues">Issues</a> ·
+  <a href="LICENSE">License</a>
+</p>
+
+</div>
 
 Publishers seed from their own machine and announce to the network — no backend
 of their own required. The framework ships Track (discovery), Punch (signaling)
 and STUN/TURN (hole punching); those are operated by whoever runs the network,
 while the trust placed in them is kept minimal: a fully malicious Track or Punch
 cannot alter content, only eavesdrop or refuse service.
-
-- Website: <https://le0.me/Q2Q/>
-- Design: [`docs/spec.md`](docs/spec.md)
 
 ## Development
 
@@ -32,3 +49,7 @@ no resource 404s, and the console stays clean.
 
 > On machines where esbuild's temp directory is blocked by a local security policy,
 > run `TMPDIR=.tmp npm run docs:build` instead.
+
+## License
+
+[MIT](LICENSE)
