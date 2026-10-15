@@ -1,22 +1,26 @@
 name: Docs
 
-# 设计文档更新后生成一个静态站点，推到 gh-pages 分支供 GitHub Pages 使用。
-# 站点是纯静态 HTML：mermaid 在构建期就渲染成了 SVG，访问时不需要任何前端 JS。
+# 文档站点：VitePress 构建后用官方 Pages actions 部署。
+# 这个仓库的 Pages 是 build_type=workflow，必须走 upload-pages-artifact +
+# deploy-pages，推 gh-pages 分支那种方式在这里不生效。
 
 on:
   push:
     branches: [main]
     paths:
-      - 'docs/spec.md'
-      - 'scripts/**'
+      - 'docs/**'
+      - 'e2e/**'
+      - 'package.json'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
 
 concurrency:
-  group: docs-site
+  group: pages
   cancel-in-progress: false
 
 jobs:
@@ -27,22 +31,22 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: 安装构建依赖
         run: npm install
 
       - name: 构建并自检
-        # 用 runner 自带的 Chrome，不去下载 mermaid-cli 的 chromium（省好几分钟）
+        # e2e 用 playwright 驱动 runner 自带的 Chrome，不额外下载浏览器
         run: |
           export CHROME_PATH=$(command -v google-chrome || echo /usr/bin/google-chrome)
           npm test
 
-      - name: 发布到 gh-pages 分支
-        uses: peaceiris/actions-gh-pages@v3
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: docs/.vitepress/dist
-          force_orphan: true
-          commit_message: 'docs(site): 重新生成静态站点'
+          path: docs/.vitepress/dist
+
+      - uses: actions/deploy-pages@v4
+        id: deployment
