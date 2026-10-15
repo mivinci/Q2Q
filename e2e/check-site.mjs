@@ -13,7 +13,9 @@ import { chromium } from 'playwright-core';
 const CHROME = process.env.CHROME_PATH
   || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const ROOT = resolve('docs/.vitepress/dist');
-const PAGE = process.argv[2] || '/spec.html';
+// 站点带 base，页面 URL 也必须带，否则客户端路由跟 SSR 对不上（hydration mismatch）
+const BASE = process.env.SITE_BASE || '/Q2Q/';
+const PAGE = process.argv[2] || BASE + 'spec.html';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -33,8 +35,10 @@ if (!existsSync(CHROME)) {
   process.exit(1);
 }
 
+// 资源链接同样带 base 前缀，而服务器是拿 dist 当根的，请求进来先剥掉前缀
 const server = createServer(async (req, res) => {
   let pathname = decodeURIComponent(req.url.split('?')[0]);
+  if (pathname.startsWith(BASE)) pathname = '/' + pathname.slice(BASE.length);
   if (pathname.endsWith('/')) pathname += 'index.html';
   try {
     const data = await readFile(join(ROOT, normalize(pathname)));

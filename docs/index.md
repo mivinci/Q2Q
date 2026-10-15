@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Q2Q
   text: 一个开源 P2P 网络框架
-  tagline: 可用于大文件分发、音视频点播直播、节省 CDN 带宽费用
+  tagline: 可用于大文件分发、音视频点播与直播，在提升传输效率的同时节省 CDN 带宽
   image:
     src: /logo.svg
     alt: Q2Q
