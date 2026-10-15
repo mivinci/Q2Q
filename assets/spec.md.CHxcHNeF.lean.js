@@ -1,0 +1,1 @@
+import{_ as o,o as t,c as d,a2 as c}from"./chunks/framework.DE2caD_l.js";const g=JSON.parse('{"title":"Q2Q 网络设计","description":"","frontmatter":{},"headers":[],"relativePath":"spec.md","filePath":"spec.md"}'),n={name:"spec.md"};function r(a,e,i,s,l,p){return t(),d("div",null,[...e[0]||(e[0]=[c("",282)])])}const u=o(n,[["render",r]]);export{g as __pageData,u as default};
