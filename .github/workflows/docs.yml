@@ -1,11 +1,20 @@
 name: Docs
 
-# 文档站点：VitePress 构建后用官方 Pages actions 部署。
+# 文档站点：VitePress 构建 + 自检。
+# push main 和 PR 都会跑「构建 + 自检」，只有 push main 才部署到 Pages。
+#
 # 这个仓库的 Pages 是 build_type=workflow，必须走 upload-pages-artifact +
 # deploy-pages，推 gh-pages 分支那种方式在这里不生效。
 
 on:
   push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'e2e/**'
+      - 'package.json'
+      - '.github/workflows/docs.yml'
+  pull_request:
     branches: [main]
     paths:
       - 'docs/**'
@@ -19,9 +28,10 @@ permissions:
   pages: write
   id-token: write
 
+# 按 ref 分组，省得 PR 的运行和 main 的运行互相排队
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -42,11 +52,18 @@ jobs:
           export CHROME_PATH=$(command -v google-chrome || echo /usr/bin/google-chrome)
           npm test
 
-      - uses: actions/configure-pages@v5
+      # 以下三步只在 main 上跑——PR 只做检查，不发布
+      - name: 配置 Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@v5
 
-      - uses: actions/upload-pages-artifact@v3
+      - name: 上传产物
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
         with:
           path: docs/.vitepress/dist
 
-      - uses: actions/deploy-pages@v4
+      - name: 部署到 Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/deploy-pages@v4
         id: deployment
