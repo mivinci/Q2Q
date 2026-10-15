@@ -110,7 +110,7 @@ sequenceDiagram
             A->>B: request_proof(first_block_index, count)
             B-->>A: proof（叶子哈希段 + 上层节点，走控制通道，先于数据）
         end
-        loop 下载循环（顺序窗口 / rarest first 选 block，pipelining 维持在途请求）
+        loop 下载循环（顺序窗口 / rarest first 选 block，pipelining 按字节额度维持）
             A->>B: request(block_index, count)
             B-->>A: piece × N（1024 B/条，走数据通道）或 reject（含 retry_after）
             A->>B: piece_nack（缺失 piece）或 block_done（收齐）
@@ -274,7 +274,7 @@ B 一侧的信令送达依赖 B 与 Punch B 之间在 join 时建立的常驻加
 
 ## 4. 数据面协议
 
-本章描述连接两端 Peer 之间的交互：ICE 连通性与端到端认证、数据组织（block / piece）与 Merkle 树、info 拉取（magnet 模式）、块可见性交换（bitfield 与 have）、piece 级请求与传输、Merkle 证明的传递与校验、block 选择与上传调度，以及直连失败时的 TURN 回退。
+本章描述连接两端 Peer 之间的交互：ICE 连通性与端到端认证、数据组织（block / piece）与 Merkle 树、info 拉取（magnet 模式）、块可见性交换（bitfield 与 have）、请求与传输（block 调度、piece 传输）、Merkle 证明的传递与校验、block 选择与上传调度，以及直连失败时的 TURN 回退。
 
 ### 4.1 ICE 连通性与端到端认证
 
@@ -292,7 +292,7 @@ B 一侧的信令送达依赖 B 与 Punch B 之间在 join 时建立的常驻加
 
 数据组织分为两个粒度，分别服务调度校验与传输流水线：
 
-- **block：调度与校验单位。** 每个 block 是 Merkle 树的一片叶子，info 只携带树根 `root`（32 字节，格式见第 5 节），逐 block 校验靠 Merkle 证明（见 4.2.1 节）——因此 info 的体积与文件大小无关。BT v1 把全量哈希列表放在 info 内（`pieces`），v2 把它移到 info 之外（`piece layers`）；本设计同样**不**把它放进 info——全量列表**可以**内联在 envelope 的 `leaf_hashes`（不参与 `info_hash`），也可以按需从 Peer 或 `proof_list` 取得（见 5.1 节）。注意命名相反——BT 称该哈希单位为 piece，其 wire 消息 `piece` 装载的却是本设计的 piece，本设计的命名与 BT wire 层一致。block 大小**必须**是 piece 大小的整数倍，2 的幂、256 KiB–4 MiB（默认 256 KiB），最后一个 block 可以短于标准大小。客户端只对集齐全部 piece 的 block 做校验；校验通过才进入 verified 状态，也只有 verified 的 block 可以响应他人的请求。单个 piece 损坏最多作废一个 block，端到端校验使恶意 Peer 无法污染数据。
+- **block：调度与校验单位。** 每个 block 是 Merkle 树的一片叶子，info 只携带树根 `root`（32 字节，格式见第 5 节），逐 block 校验靠 Merkle 证明（见 4.2.1 节）——因此 info 的体积与文件大小无关。BT v1 把全量哈希列表放在 info 内（`pieces`），v2 把它移到 info 之外（`piece layers`）；本设计同样**不**把它放进 info——全量列表**可以**内联在 envelope 的 `leaf_hashes`（不参与 `info_hash`），也可以按需从 Peer 或 `proof_list` 取得（见 5.1 节）。注意命名与 BT 错位一层：BT 的 piece 是**哈希单位**（对应本设计的 block），而 BT 的 wire 消息 `piece` 实际装载的是 slice（BT 的传输单位，通常 16 KiB）——对应本设计的 piece。换言之本设计的 piece 名跟 BT wire 层"装载的东西"对齐，而不是跟 BT 的哈希单位对齐。block 大小**必须**是 piece 大小的整数倍，2 的幂、256 KiB–4 MiB（默认 256 KiB），最后一个 block 可以短于标准大小。客户端只对集齐全部 piece 的 block 做校验；校验通过才进入 verified 状态，也只有 verified 的 block 可以响应他人的请求。单个 piece 出错会作废整个 block（校验粒度是 block），但传输层丢失只需重传那一条 piece；端到端校验使恶意 Peer 无法污染数据。
 - **piece：传输单位。** 固定 1024 字节（2^10 字节）。block 在发送前拆成 piece，每条 piece 作为一条独立的数据通道消息，丢失时只重传缺失的那几条 piece（理由见 4.5 节）。**每个 block 包含的 piece 数相等**（= `block_size` / 1024，默认 256 KiB 即 256 条），**仅最后一个 block 可以短**——其 piece 数按剩余字节计算，末尾 piece 可以短。piece **不**是调度单位：请求与取消的粒度是 block，传输与选择性重传的粒度是 piece。
 
 block 的生命周期为 missing → partial → downloaded → verified 四态：partial 状态下为该 block 维护 piece 级位图（每 piece 1 bit，默认 256 KiB block 即 256 bit = 32 字节）；集齐全部 piece 进入 downloaded，Merkle 证明校验通过进入 verified，证明无效或根不匹配则回到 partial 重新请求，并对提供错误数据或无效证明的 Peer 记一次失败（失败计数达到阈值后断开并在一段时间内拒绝重连）。持久化采用 in-place 写入：piece 直接写最终 offset，不做"验证后再落盘"的二次拷贝；重启后对未 verified 的 block 重新校验，能通过证明校验的保留 partial 进度，其余丢弃。info 面向单文件：一个 `info_hash` 对应一个文件、一棵 Merkle 树、一张位图；多文件分发由多个 `info_hash` 并存表达（各自独立切分与校验），不引入跨文件的 block 组织。
@@ -386,7 +386,7 @@ DataChannel 是消息语义（SCTP message），每条协议消息即一个消�
 
 上传方**必须**让下载方能校验每一个自己发出的 block，且**证明必须先于或平行于数据到达**——推荐顺序是响应 `request` 时先发 `proof` 再发 piece。**上传方在已服务某个 block 的数据后，不得拒绝提供该 block 的证明**（对应 BEP 52 对 `hash request` 的同一约束）：否则下载方拿到 256 KiB 却无法校验，只能超时转投，白白浪费。证明无效（重建结果 ≠ `info.root`）时按"提供错误数据"计一次失败。
 
-上传方对 pending request 按本地调度策略排序服务；请求方在途请求数超出协商窗口视为协议违规，**可以**断开连接。下载进入尾声（剩余 block 均已在途）时进入 endgame 模式：向所有持有者重复请求同一 block，先到先用，其余以 `cancel` 撤销，避免个别慢 Peer 拖住整体完成时间。
+上传方对 pending request 按本地调度策略排序服务；请求方在途数据量超出协商额度视为协议违规，**可以**断开连接。下载进入尾声（剩余 block 均已在途）时进入 endgame 模式：向所有持有者重复请求同一 block，先到先用，其余以 `cancel` 撤销，避免个别慢 Peer 拖住整体完成时间。
 
 两条 DataChannel 复用同一个 SCTP association（同一 DTLS/UDP 五元组），共享同一个拥塞窗口：控制通道的可靠重传会与数据通道竞争带宽。因此"不产生队头阻塞"是**应用层**语义——避免的是应用层排队等待，传输层仍然存在共享拥塞窗口带来的相互影响。控制消息的总体积**应当**受限：`have` 的广播频率、在途请求窗口都不宜取大值；证明**应当**批量而非逐 block（单 block 证明含叶子哈希约 448 字节，而 64 个连续 block 的批量证明约 2.3 KB，摊薄后每 block 约 36 字节），否则可靠通道会吃掉数据通道的带宽。真正隔离需要为控制与数据各开一个 PeerConnection（各自 ICE / DTLS / cwnd），代价是两次握手且在 TURN 场景下双倍 relay 资源——本设计不采用，靠上述约束缓解。
 
@@ -459,8 +459,7 @@ TURN 只转发密文流量（DTLS），不能成为内容可信边界。凭据�
     v: 2                                         info 格式版本，当前必须为 2
     name: "..."                                  可选，建议文件名，仅展示用，不参与身份
     length: <u64>                                文件字节数
-    block_size: <u32>                            校验块大小，2 的幂，256 KiB–4 MiB（默认 256 KiB）
-    piece_size: <u32>                            可选，传输单位，默认 16384；block_size 必须是其整数倍
+    block_size: <u32>                            调度与校验块大小，2 的幂，256 KiB–4 MiB（默认 256 KiB）
     mime: "..."                                  可选，流式场景的内容类型
     root: <32B>                                  Merkle 树根（构造见 4.2.1 节）
   }
@@ -492,7 +491,7 @@ Track 不存储种子文件与 info——与 BT 的 tracker 不存 .torrent 一�
 - `v` **必须**为 2；`v: 1`（内嵌全量 `hashes` 列表）**必须**拒绝解析，不做兼容（理由见 5.1 节）。
 - `root` **必须**为 32 字节。叶子数 `n = ceil(length / block_size)`；树的构造、证明格式与校验算法见 4.2.1 节。最后一个 block 可短于 `block_size`，其叶子哈希按实际长度计算。
 - 若存在 `leaf_hashes`，其长度**必须**等于 `n × 32` 字节，且由它重建的树根**必须**等于 `root`；二者任一不符则整个种子文件**必须**拒绝（BT v2 对 `piece layers` 有同样的"torrent 无效"规定）。它位于 envelope 层、不参与 `info_hash`，因此可以独立更新而不改变内容身份。
-- `block_size` **必须**为 2 的幂且在 256 KiB–4 MiB 内；`piece_size` **必须**整除 `block_size`。`block_size` 是纯性能参数——info 体积已与文件大小解耦，不再存在"block 数上限"之类的约束。
+- `block_size` **必须**为 2 的幂且在 256 KiB–4 MiB 内；每个 block 的 piece 数即 `block_size` / 1024（`piece` 固定 1024 字节，**不**通过 info 配置，见 4.2 节）。`block_size` 是纯性能参数——info 体积已与文件大小解耦，不再存在"block 数上限"之类的约束。
 - 解析前**必须**检查种子文件总长上限与 `length` 上限（实现可配置），防御恶意巨型文件的 DoS：info 虽已常数级，但 `length` 仍决定位图大小（`n/8` 字节）与本地状态规模。
 - 未知字段忽略以保持向前兼容，但 `info_hash` 始终是对 canonical info 字节串的 SHA-256，生成方只**应当**写入规范定义的字段。
 
