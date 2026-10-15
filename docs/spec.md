@@ -40,7 +40,7 @@
 | | 控制面 | 数据面 |
 | --- | --- | --- |
 | 参与方 | 客户端 ↔ Track / Punch / STUN / TURN | 客户端 ↔ 客户端（直连） |
-| 职责 | 在线索引、资源索引（announce / query）、Punch 分配、连接信令（SDP 与 ICE candidate 中继）、TURN 授权 | 连接建立与身份锚定（ICE / DTLS）、数据组织（block / piece / chunk）、块可见性（bitfield / have）、传输（request / reject / chunk / chunk_nack / piece_done / cancel）、Merkle 证明（request_proof / proof）、取块与上传调度（pause / resume） |
+| 职责 | 在线索引、资源索引（announce / query）、Punch 分配、连接信令（SDP 与 ICE candidate 中继）、TURN 授权 | 连接建立与身份锚定（ICE / DTLS）、数据组织（block / piece）、块可见性（bitfield / have）、传输（request / reject / piece / piece_nack / block_done / cancel）、Merkle 证明（request_proof / proof）、取块与上传调度（pause / resume） |
 | 消息形态 | 请求-响应对（Punch 侧另有常驻 / 瞬时信道） | 对称单向消息 |
 | 信任基础 | 短命自签票据、持钥证明与 MAC | 端到端 DTLS 与 Merkle 证明校验（锚点为 `info_hash` 自校验的 `info.root`） |
 
@@ -111,9 +111,9 @@ sequenceDiagram
             B-->>A: proof（叶子哈希段 + 上层节点，走控制通道，先于数据）
         end
         loop 下载循环（顺序窗口 / rarest first 选 block，pipelining 维持在途请求）
-            A->>B: request(block_index, piece_offset, length)
-            B-->>A: chunk × N（1024 B/条，走数据通道）或 reject（含 retry_after）
-            A->>B: chunk_nack（缺失 chunk）或 piece_done（收齐）
+            A->>B: request(block_index, count)
+            B-->>A: piece × N（1024 B/条，走数据通道）或 reject（含 retry_after）
+            A->>B: piece_nack（缺失 piece）或 block_done（收齐）
         end
         Note over A,B: block 集齐 → 用已缓存的叶子哈希查表（或证明校验）对上 info.root → verified → 广播 have；不匹配 → 回 partial 重下并计失败
     else 直连失败
@@ -274,7 +274,7 @@ B 一侧的信令送达依赖 B 与 Punch B 之间在 join 时建立的常驻加
 
 ## 4. 数据面协议
 
-本章描述连接两端 Peer 之间的交互：ICE 连通性与端到端认证、数据组织（block / piece / chunk）与 Merkle 树、info 拉取（magnet 模式）、块可见性交换（bitfield 与 have）、piece 级请求与传输、Merkle 证明的传递与校验、block 选择与上传调度，以及直连失败时的 TURN 回退。
+本章描述连接两端 Peer 之间的交互：ICE 连通性与端到端认证、数据组织（block / piece）与 Merkle 树、info 拉取（magnet 模式）、块可见性交换（bitfield 与 have）、piece 级请求与传输、Merkle 证明的传递与校验、block 选择与上传调度，以及直连失败时的 TURN 回退。
 
 ### 4.1 ICE 连通性与端到端认证
 
@@ -290,13 +290,12 @@ B 一侧的信令送达依赖 B 与 Punch B 之间在 join 时建立的常驻加
 
 ### 4.2 数据组织：block 与 piece
 
-数据组织分为两个粒度，分别服务校验成本与传输流水线：
+数据组织分为两个粒度，分别服务调度校验与传输流水线：
 
-- **block：校验单位。** 每个 block 是 Merkle 树的一片叶子，info 只携带树根 `root`（32 字节，格式见第 5 节），逐 block 校验靠 Merkle 证明（见 4.2.1 节）——因此 info 的体积与文件大小无关。BT v1 把全量哈希列表放在 info 内（`pieces`），v2 把它移到 info 之外（`piece layers`）；本设计同样**不**把它放进 info——全量列表**可以**内联在 envelope 的 `leaf_hashes`（不参与 `info_hash`），也可以按需从 Peer 或 `proof_list` 取得（见 5.1 节）。注意命名相反——BT 称该哈希单位为 piece，其 wire 消息 `piece` 装载的却是本设计的 piece，本设计的命名与 BT wire 层一致。block 大小**必须**是 piece 大小的整数倍，2 的幂、256 KiB–4 MiB（默认 256 KiB），最后一个 block 可以短于标准大小。客户端只对集齐全部 piece 的 block 做校验；校验通过才进入 verified 状态，也只有 verified 的 block 可以响应他人的请求。单个 piece 损坏最多作废一个 block，端到端校验使恶意 Peer 无法污染数据。
-- **piece：请求与调度单位。** 固定 16 KiB（2^14 字节），文件末尾的 piece 可以短。请求、重传与取消都以 piece 为粒度；不对单个 piece 做校验。
-- **chunk：传输单位。** 固定 1024 字节（2^10 字节），文件末尾的 chunk 可以短。piece 在发送前拆成 chunk，每条 chunk 作为一条独立的数据通道消息；丢失时只重传缺失的 chunk（理由见 4.5 节）。chunk 是传输层概念，不出现在请求语义中。
+- **block：调度与校验单位。** 每个 block 是 Merkle 树的一片叶子，info 只携带树根 `root`（32 字节，格式见第 5 节），逐 block 校验靠 Merkle 证明（见 4.2.1 节）——因此 info 的体积与文件大小无关。BT v1 把全量哈希列表放在 info 内（`pieces`），v2 把它移到 info 之外（`piece layers`）；本设计同样**不**把它放进 info——全量列表**可以**内联在 envelope 的 `leaf_hashes`（不参与 `info_hash`），也可以按需从 Peer 或 `proof_list` 取得（见 5.1 节）。注意命名相反——BT 称该哈希单位为 piece，其 wire 消息 `piece` 装载的却是本设计的 piece，本设计的命名与 BT wire 层一致。block 大小**必须**是 piece 大小的整数倍，2 的幂、256 KiB–4 MiB（默认 256 KiB），最后一个 block 可以短于标准大小。客户端只对集齐全部 piece 的 block 做校验；校验通过才进入 verified 状态，也只有 verified 的 block 可以响应他人的请求。单个 piece 损坏最多作废一个 block，端到端校验使恶意 Peer 无法污染数据。
+- **piece：传输单位。** 固定 1024 字节（2^10 字节）。block 在发送前拆成 piece，每条 piece 作为一条独立的数据通道消息，丢失时只重传缺失的那几条 piece（理由见 4.5 节）。**每个 block 包含的 piece 数相等**（= `block_size` / 1024，默认 256 KiB 即 256 条），**仅最后一个 block 可以短**——其 piece 数按剩余字节计算，末尾 piece 可以短。piece **不**是调度单位：请求与取消的粒度是 block，传输与选择性重传的粒度是 piece。
 
-block 的生命周期为 missing → partial → downloaded → verified 四态：partial 状态下为该 block 维护 piece 级位图，正在传输的 piece 另维护 chunk 级位图；集齐全部 piece 进入 downloaded，Merkle 证明校验通过进入 verified，证明无效或根不匹配则回到 partial 重新请求，并对提供错误数据或无效证明的 Peer 记一次失败（失败计数达到阈值后断开并在一段时间内拒绝重连）。持久化采用 in-place 写入：piece 直接写最终 offset，不做"验证后再落盘"的二次拷贝；重启后对未 verified 的 block 重新校验，能通过证明校验的保留 partial 进度，其余丢弃。info 面向单文件：一个 `info_hash` 对应一个文件、一棵 Merkle 树、一张位图；多文件分发由多个 `info_hash` 并存表达（各自独立切分与校验），不引入跨文件的 block 组织。
+block 的生命周期为 missing → partial → downloaded → verified 四态：partial 状态下为该 block 维护 piece 级位图（每 piece 1 bit，默认 256 KiB block 即 256 bit = 32 字节）；集齐全部 piece 进入 downloaded，Merkle 证明校验通过进入 verified，证明无效或根不匹配则回到 partial 重新请求，并对提供错误数据或无效证明的 Peer 记一次失败（失败计数达到阈值后断开并在一段时间内拒绝重连）。持久化采用 in-place 写入：piece 直接写最终 offset，不做"验证后再落盘"的二次拷贝；重启后对未 verified 的 block 重新校验，能通过证明校验的保留 partial 进度，其余丢弃。info 面向单文件：一个 `info_hash` 对应一个文件、一棵 Merkle 树、一张位图；多文件分发由多个 `info_hash` 并存表达（各自独立切分与校验），不引入跨文件的 block 组织。
 
 #### 4.2.1 Merkle 树与证明
 
@@ -340,7 +339,7 @@ n = 1 时，root = leaf(0)
 
 代价是载荷多出 `m × 32` 字节（m = 64 时 2 KB），摊到 64 × 256 KiB = 16 MB 数据上是 0.01% 量级——不值得为省这点带宽放弃可缓存性。上传方**可以**在区间很短、通道质量好时省略叶子哈希（只给上层节点），此时下载方按纯验证路径校验。
 
-**证明必须先于（或平行于）数据到达，且必须走可靠通道**：校验依赖证明，而数据是 unreliable 传输的——把唯一一份证明搭在数据通道的最后一条 chunk 上，等于让它承受最高的丢包概率，一旦丢失整块数据都无法校验。因此证明**必须**走可靠的控制通道（4.5 节），由上传方主动推送或响应 `request_proof`；这与 BEP 52 把 `hashes` 与 `piece` 分成两条独立消息是同一个理由。
+**证明必须先于（或平行于）数据到达，且必须走可靠通道**：校验依赖证明，而数据是 unreliable 传输的——把唯一一份证明搭在数据通道的最后一条 piece 上，等于让它承受最高的丢包概率，一旦丢失整块数据都无法校验。因此证明**必须**走可靠的控制通道（4.5 节），由上传方主动推送或响应 `request_proof`；这与 BEP 52 把 `hashes` 与 `piece` 分成两条独立消息是同一个理由。
 
 **上传方不必存储整棵树**：本地保留一份完整的叶子哈希列表作缓存（n × 32 字节；8192 个 block 为 256 KB），证明在响应请求时现算即可——树的形态完全由 `n` 与 block 数据决定，无需落盘。CDN 兜底路径的证明来源见 5.1 节。
 
@@ -362,32 +361,32 @@ n = 1 时，root = leaf(0)
 
 每个连接开两条 DataChannel：
 
-- **控制通道**：reliable + ordered，承载 `bitfield`、`have`、`request`、`reject`、`pause`、`resume`、`request_proof`、`proof`、`chunk_nack`、`piece_done`、`cancel`、`request_info`、`info`；
-- **数据通道**：unreliable + unordered（`maxRetransmits = 0`），只承载 `chunk`。Merkle 证明**不得**以数据通道为唯一来源（理由见 4.2.1 节与下文 `chunk`）。
+- **控制通道**：reliable + ordered，承载 `bitfield`、`have`、`request`、`reject`、`pause`、`resume`、`request_proof`、`proof`、`piece_nack`、`block_done`、`cancel`、`request_info`、`info`；
+- **数据通道**：unreliable + unordered（`maxRetransmits = 0`），只承载 `piece`。Merkle 证明**不得**以数据通道为唯一来源（理由见 4.2.1 节与下文 `piece`）。
 
-**为什么数据面必须走 chunk 而不是直接发整个 piece**：SCTP 会把大于路径 MTU 的消息切成多个 DATA chunk 分别发送，而 `maxRetransmits = 0` 是**消息级**的部分可靠——任何一个 DATA chunk 丢失，整条消息作废，已发出的其余字节全部浪费。WebRTC 下 PMTU 约 1200 字节，一条 16 KiB 的消息被切成约 15 个 DATA chunk，于是：
+**为什么数据面必须走 piece（1024 字节）而不是直接发整个 block**：SCTP 会把大于路径 MTU 的消息切成多个 DATA chunk（SCTP 的分片单位，与本文的 piece 无关）分别发送，而 `maxRetransmits = 0` 是**消息级**的部分可靠——任何一个 DATA chunk 丢失，整条消息作废，已发出的其余字节全部浪费。WebRTC 下 PMTU 约 1200 字节，一条 256 KiB 的消息会被切成约 220 个 DATA chunk，于是：
 
 ```
-消息成功率 = (1 - p)^15        p=1% → 86%   p=5% → 46%   p=10% → 21%
+消息成功率 = (1 - p)^220       p=1% → 11%    p=5% → 0.001%    p=10% → 可忽略
 ```
 
-丢包率被放大 15 倍，且越拥塞越废——恰好在需要它的场景失效。因此传输单位**必须**控制在 PMTU 以内，由应用层负责分片与选择性重传，把丢失的代价从 16 KiB 降到 1 KiB。
+调度粒度上提到 block 之后，如果仍按整个 block 发消息，丢包率会被放大两百多倍——几乎每条都废。因此**传输**单位**必须**控制在 PMTU 以内（1024 字节），由应用层负责分片与选择性重传，把一次丢失的代价从 256 KiB 降到 1 KiB。**调度用 block、传输用 piece** 的分工即由此而来。
 
-DataChannel 是消息语义（SCTP message），每条协议消息即一个消息，无需自定义长度前缀帧。请求与取消以 piece 为粒度，传输以 chunk 为粒度：
+DataChannel 是消息语义（SCTP message），每条协议消息即一个消息，无需自定义长度前缀帧。请求与取消以 block 为粒度，传输以 piece 为粒度：
 
-- `request(block_index, piece_offset, length)`：`length` ≤ 16 KiB。同一连接维持固定数量的在途请求（pipelining，典型 4–8 个 piece），使吞吐不受 RTT 限制；在途请求由发送方跟踪，超时未响应即重新 `request` 或转向其他 Peer。
-- `chunk(block_index, piece_offset, chunk_offset, data[, proof])`：`request` 的数据响应分支，走数据通道，`data` ≤ 1024 字节。接收方按 `chunk_offset` 写入并更新该 piece 的 chunk 位图。`proof` 字段是**可选的冗余**：上传方**可以**在 block 的最后一个 chunk 上捎带证明以省一条控制消息，但**不得**把它当作唯一来源——数据通道不可靠，证明丢包会让整块数据无法校验，只能等重传。下载方**不得**依赖捎带，仍**必须**能通过 `request_proof` 取到证明。捎带时该消息允许超过 1024 字节，但仍**应当**控制在双倍路径 MTU（约 2400 字节）以内。
-- `chunk_nack(block_index, piece_offset, chunk_offset[], length[])`：接收方在一个 piece 级超时（`PIECE_TIMEOUT`，建议 `2 × RTT + 100 ms`，按实测 RTT 自适应）后批量请求重传缺失的 chunk。连续 3 次仍未收齐即判定对端为慢 Peer，转投其他 Peer。
-- `piece_done(block_index, piece_offset)`：接收方收齐后确认，上传方释放缓冲；未收到确认时上传方**应当**在 piece 级超时后自行释放。
-- `reject(block_index, piece_offset, length[, retry_after])`：`request` 的另一响应分支，上传方即时、按单个请求粒度拒绝（带宽不足、调度优先级低、请求不合法）。**应当**携带 `retry_after`（毫秒）给出建议退避时长；下载方**必须**遵守，默认策略为指数退避（100 ms 起、上限 5 s），连续多次被拒后转投其他 Peer。
+- `request(block_index, count)`：请求 `[block_index, block_index + count)` 这段 block。同一连接维持固定**字节额度**的在途请求（pipelining，典型 256 KiB–1 MiB，按实测 RTT 与带宽自适应），使吞吐不受 RTT 限制——额度按字节而非块数计量，因此 `block_size` 调整时不会连带放大在途数据量，低端设备（OTT 盒子等）把额度调小即可。在途请求由发送方跟踪，超时未响应即重新 `request` 或转向其他 Peer。
+- `piece(block_index, piece_offset, data[, proof])`：`request` 的数据响应分支，走数据通道，`data` ≤ 1024 字节。接收方按 `piece_offset` 写入并更新该 block 的 piece 位图。`proof` 字段是**可选的冗余**：上传方**可以**在 block 的最后一个 piece 上捎带证明以省一条控制消息，但**不得**把它当作唯一来源——数据通道不可靠，证明丢包会让整块数据无法校验，只能等重传。下载方**不得**依赖捎带，仍**必须**能通过 `request_proof` 取到证明。捎带时该消息允许超过 1024 字节，但仍**应当**控制在双倍路径 MTU（约 2400 字节）以内。
+- `piece_nack(block_index, piece_offset[], length[])`：接收方在一个 block 级超时（`BLOCK_TIMEOUT`，建议 `2 × RTT + 100 ms`，按实测 RTT 自适应）后批量请求重传缺失的 piece。连续 3 次仍未收齐即判定对端为慢 Peer，转投其他 Peer。
+- `block_done(block_index)`：接收方收齐一个 block 后确认，上传方释放该 block 的缓冲；未收到确认时上传方**应当**在 block 级超时后自行释放。
+- `reject(block_index, count[, retry_after])`：`request` 的另一响应分支，上传方即时、按单个请求粒度拒绝（带宽不足、调度优先级低、请求不合法）。**应当**携带 `retry_after`（毫秒）给出建议退避时长；下载方**必须**遵守，默认策略为指数退避（100 ms 起、上限 5 s），连续多次被拒后转投其他 Peer。
 - `pause(retry_after[, scope])` / `resume([scope])`：上传方对**连接粒度**的服务意愿开关，语义等价于 BitTorrent 的 choke / unchoke 但**不绑定** tit-for-tat——上传方完全按本地策略决定。`scope` 取 `this`（默认，只对接收方）或 `all`；连接建立时默认为 resume。下载方收到 `pause` 后**必须**停止发起新 `request`，在 `retry_after`（毫秒）之后或收到 `resume` 后恢复。这是"100 个 Peer 同时请求即 100 条 reject/轮"的兜底：没有它，上传方无法一次性表达"我现在谁也不服务"，控制通道会被 reject 淹没。**`pause` 只约束 `request`，不约束 `request_proof`**——已收到但缺证明的数据必须能补到证明，否则既无法校验也无法释放缓冲（对应 BEP 52："hash request 不受 choke 限制"）。
 - `request_proof(first_block_index, count)`：下载方请求 `[first_block_index, first_block_index + count)` 这段 block 的证明。走控制通道（`reliable`），**不受 `pause` 限制**。顺序窗口场景**应当**在进入新窗口前预取一次，摊薄控制面流量。
 - `proof(first_block_index, count, leaf_hashes[], nodes[])`：`request_proof` 的响应，也可由上传方在发出相应数据**之前主动推送**（推荐：省一个往返，且保证证明先于数据到达）。`leaf_hashes` 为该区间的叶子哈希（按 index 顺序，4.2.1 节），`nodes` 为其余必要的上层节点 `(level, index, hash)`。
-- `cancel(block_index, piece_offset, length)`：撤销尚在途的请求；未发出的 chunk 不再发送。
+- `cancel(block_index, count)`：撤销尚在途的请求；未发出的 piece 不再发送。
 
-上传方**必须**让下载方能校验每一个自己发出的 block，且**证明必须先于或平行于数据到达**——推荐顺序是响应 `request` 时先发 `proof` 再发 chunk。**上传方在已服务某个 block 的数据后，不得拒绝提供该 block 的证明**（对应 BEP 52 对 `hash request` 的同一约束）：否则下载方拿到 256 KiB 却无法校验，只能超时转投，白白浪费。证明无效（重建结果 ≠ `info.root`）时按"提供错误数据"计一次失败。
+上传方**必须**让下载方能校验每一个自己发出的 block，且**证明必须先于或平行于数据到达**——推荐顺序是响应 `request` 时先发 `proof` 再发 piece。**上传方在已服务某个 block 的数据后，不得拒绝提供该 block 的证明**（对应 BEP 52 对 `hash request` 的同一约束）：否则下载方拿到 256 KiB 却无法校验，只能超时转投，白白浪费。证明无效（重建结果 ≠ `info.root`）时按"提供错误数据"计一次失败。
 
-上传方对 pending request 按本地调度策略排序服务；请求方在途请求数超出协商窗口视为协议违规，**可以**断开连接。下载进入尾声（剩余 block 的全部 piece 均已在途）时进入 endgame 模式：向所有持有者重复请求同一 piece，先到先用，其余以 `cancel` 撤销，避免个别慢 Peer 拖住整体完成时间。
+上传方对 pending request 按本地调度策略排序服务；请求方在途请求数超出协商窗口视为协议违规，**可以**断开连接。下载进入尾声（剩余 block 均已在途）时进入 endgame 模式：向所有持有者重复请求同一 block，先到先用，其余以 `cancel` 撤销，避免个别慢 Peer 拖住整体完成时间。
 
 两条 DataChannel 复用同一个 SCTP association（同一 DTLS/UDP 五元组），共享同一个拥塞窗口：控制通道的可靠重传会与数据通道竞争带宽。因此"不产生队头阻塞"是**应用层**语义——避免的是应用层排队等待，传输层仍然存在共享拥塞窗口带来的相互影响。控制消息的总体积**应当**受限：`have` 的广播频率、在途请求窗口都不宜取大值；证明**应当**批量而非逐 block（单 block 证明含叶子哈希约 448 字节，而 64 个连续 block 的批量证明约 2.3 KB，摊薄后每 block 约 36 字节），否则可靠通道会吃掉数据通道的带宽。真正隔离需要为控制与数据各开一个 PeerConnection（各自 ICE / DTLS / cwnd），代价是两次握手且在 TURN 场景下双倍 relay 资源——本设计不采用，靠上述约束缓解。
 
@@ -407,7 +406,7 @@ DataChannel 是消息语义（SCTP message），每条协议消息即一个消�
 | CDN 未配置或已失效 | P2P |
 | 顺序窗口内、时间敏感 | 取预期到达更早者；**可以**两条路并行，先到先用 |
 
-CDN 侧按 block 对齐用 HTTP `Range` 拉取（block 是字节区间，见 4.2 节），与 P2P 侧按 piece 请求语义等价，因此两条路径可随时切换、互为兜底，同一个文件的不同 block **可以**来自不同来源。冷启动时全部走 CDN 也能下载完——CDN 等价于一个永远在线的完整种子。
+CDN 侧按 block 对齐用 HTTP `Range` 拉取（block 是字节区间，见 4.2 节），与 P2P 侧的调度粒度完全一致，因此两条路径可随时切换、互为兜底，同一个文件的不同 block **可以**来自不同来源。冷启动时全部走 CDN 也能下载完——CDN 等价于一个永远在线的完整种子。
 
 **从 CDN 拉到的 block 必须走同一套校验**（Merkle 证明 + `info.root`），**不得**因为来源是 HTTP 就跳过验证。否则 CDN 侧成了内容可信边界，4.2 节建立的端到端完整性保证会在这一处失效。
 
@@ -422,7 +421,7 @@ CDN 侧按 block 对齐用 HTTP `Range` 拉取（block 是字节区间，见 4.2
 
 非流式下载等价于顺序窗口为空——同一套机制，不引入模式开关。流式场景的观看完成率低，长尾 block 更容易随 Peer 离场而稀缺，窗口外的 rarest first 因此更重要而非更不重要。窗口大小是唯一权衡：过小则网络抖动直接转化为卡顿，过大则趋近纯顺序下载、削弱 swarm 健康度。
 
-下载侧进入一个新的顺序窗口前**应当**用 `request_proof(first_block_index, count)` 一次性预取整段 block 的证明（4.2.1 节）——窗口是连续区间，批量证明的上层节点数与区间长度无关，这是控制面流量最划算的用法，也让证明**先于**数据就位。窗口外的 rarest first 是零散 block，由上传方在响应 `request` 时先推 `proof` 再发 chunk（或每次 `request_proof` 取一段）；拿到后**应当**缓存叶子哈希，供同区间的后续 block 查表复用。
+下载侧进入一个新的顺序窗口前**应当**用 `request_proof(first_block_index, count)` 一次性预取整段 block 的证明（4.2.1 节）——窗口是连续区间，批量证明的上层节点数与区间长度无关，这是控制面流量最划算的用法，也让证明**先于**数据就位。窗口外的 rarest first 是零散 block，由上传方在响应 `request` 时先推 `proof` 再发 piece（或每次 `request_proof` 取一段）；拿到后**应当**缓存叶子哈希，供同区间的后续 block 查表复用。
 
 上传侧不设显式的 choke / interested 状态机：`request` 本身即兴趣声明，`reject` 与 `pause` / `resume` 即反馈，互惠调度退化为纯本地策略——pending request 优先服务近期向自己上传过数据的 Peer，并保留轮换探索名额（等价 BitTorrent 的乐观 unchoke：被拒的下载方退避后偶尔重试新 Peer）。上传方在带宽耗尽、切换网络或准备退出时**应当**主动发 `pause` 而不是逐条 `reject`。调度策略实现可替换（例如换成中心化调度），不影响协议互操作。
 
@@ -1003,7 +1002,7 @@ sequenceDiagram
 
 #### 7.3.3 Peer 通信接口
 
-Peer 之间的消息是对称、单向的，没有控制面那种请求-响应对，因此函数不带 Req / Rsp 后缀。`bitfield`、`have`、`request`、`reject`、`pause`、`resume`、`request_proof`、`proof`、`chunk_nack`、`piece_done`、`cancel`、`request_info`、`info` 走控制通道（reliable + ordered），`chunk` 走数据通道（unreliable + unordered，`maxRetransmits = 0`，1024 字节/条，block 的最后一个 chunk **可以**捎带该 block 的 Merkle 证明）；连接建立与断线重连属信道层（ICE / DTLS），不占业务函数。
+Peer 之间的消息是对称、单向的，没有控制面那种请求-响应对，因此函数不带 Req / Rsp 后缀。`bitfield`、`have`、`request`、`reject`、`pause`、`resume`、`request_proof`、`proof`、`piece_nack`、`block_done`、`cancel`、`request_info`、`info` 走控制通道（reliable + ordered），`piece` 走数据通道（unreliable + unordered，`maxRetransmits = 0`，1024 字节/条，block 的最后一个 piece **可以**捎带该 block 的 Merkle 证明）；连接建立与断线重连属信道层（ICE / DTLS），不占业务函数。
 
 | 函数 | 方向 | 说明 |
 | --- | --- | --- |
@@ -1011,10 +1010,10 @@ Peer 之间的消息是对称、单向的，没有控制面那种请求-响应�
 | `SendRequestInfo` / `OnRequestInfo` | 缺 info 方 → 对端 | magnet 模式：bitfield 交换前发起 |
 | `SendInfo` / `OnInfo` | 对端 → 请求方 | info 字节串；接收方校验 `SHA-256 == info_hash` 后使用 |
 | `SendHave` / `OnHave` | A ↔ B | 每验证一个 block 广播给所有已连接 Peer |
-| `SendRequest` / `OnRequest` | 下载方 → 上传方 | 在途窗口内；响应为 `chunk` 流或 `reject` |
-| `SendChunk` / `OnChunk` | 上传方 → 下载方 | 数据本体，1024 字节/条，走数据通道；末尾 chunk 可捎带证明作冗余，但不得作为唯一来源 |
-| `SendChunkNack` / `OnChunkNack` | 下载方 → 上传方 | 批量请求重传缺失 chunk |
-| `SendPieceDone` / `OnPieceDone` | 下载方 → 上传方 | 收齐确认，上传方释放缓冲 |
+| `SendRequest` / `OnRequest` | 下载方 → 上传方 | 在途字节额度内；响应为 `piece` 流或 `reject` |
+| `SendPiece` / `OnPiece` | 上传方 → 下载方 | 数据本体，1024 字节/条，走数据通道；末尾 piece 可捎带证明作冗余，但不得作为唯一来源 |
+| `SendPieceNack` / `OnPieceNack` | 下载方 → 上传方 | 批量请求重传缺失 piece |
+| `SendBlockDone` / `OnBlockDone` | 下载方 → 上传方 | block 收齐确认，上传方释放缓冲 |
 | `SendReject` / `OnReject` | 上传方 → 下载方 | 按单个请求粒度拒绝，含 `retry_after`；下载方必须遵守退避或转投 |
 | `SendPause` / `OnPause` | 上传方 → 下载方 | 连接粒度停止服务，含 `retry_after`；下载方必须停发新 request |
 | `SendResume` / `OnResume` | 上传方 → 下载方 | 恢复服务；连接建立时默认 resume |
