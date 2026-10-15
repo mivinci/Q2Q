@@ -4,8 +4,8 @@
   <img src="docs/public/logo.svg" width="200" alt="Q2Q">
 </p>
 
-An open-source P2P network framework for large-file distribution, audio/video
-streaming (VOD and live), and cutting CDN bandwidth costs.
+An open-source P2P network framework for large-file distribution and audio/video
+streaming (VOD and live) — faster transfers, less CDN bandwidth.
 
 Publishers seed from their own machine and announce to the network — no backend
 of their own required. The framework ships Track (discovery), Punch (signaling)
