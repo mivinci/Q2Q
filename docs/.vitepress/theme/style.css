@@ -33,6 +33,15 @@
   transition-duration: 0s !important;
 }
 
+/* 滚动后 navbar 会切到不透明的 --vp-c-bg，首页 hero 的光晕延伸到 navbar
+   后面，会被这条不透明的色带硬生生截断。换成毛玻璃：内容照样可读，
+   光晕透过来只是被柔化，不再有那条硬边。 */
+.VPNavBar:not(.top) {
+  background-color: color-mix(in srgb, var(--vp-c-bg) 60%, transparent) !important;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
 /* 首页 hero logo 的光晕。
    主题内部有个 .image-bg 元素消费这两个变量：渐变 + 高斯模糊。
    官网那份是把光晕画在 SVG 里的，改成覆盖变量才能跟着主题换色。 */
