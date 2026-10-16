@@ -29,6 +29,8 @@ const PAGES = process.argv.slice(2).length
       BASE + 'zh/guide/',
       BASE + 'zh/spec.html',
     ];
+// 首页是 layout:home，中文指南页目前是占位——两者都没有 h2/h3 锚点
+const NO_ANCHORS = [BASE, BASE + 'zh/', BASE + 'zh/guide/'];
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -111,9 +113,10 @@ for (const PAGE of PAGES) {
 
   // 首页没有侧边栏，设计文档暂时没有入口也没有——只有指南各节要求它
   const wantsSidebar = /guide/.test(PAGE);
+  const wantsAnchors = !NO_ANCHORS.includes(PAGE);
   const results = [
     ['页面标题', got.title || '(空)', !!got.title],
-    ['标题锚点', got.headings, got.headings > 0],
+    ...(wantsAnchors ? [['标题锚点', got.headings, got.headings > 0]] : []),
     ...(wantsSidebar ? [['侧边栏链接', got.sideLinks, got.sideLinks > 0]] : []),
     ['mermaid 渲染', `${got.svgs}/${got.blocks}`, got.svgs === got.blocks],
     ['404 资源', notFound.length, notFound.length === 0],
