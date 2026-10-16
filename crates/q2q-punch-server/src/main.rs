@@ -96,13 +96,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let config = Config::load(&args.config)?;
 
   let identity = match &config.identity {
-    Some(id) => {
-      let cert = std::fs::read_to_string(&id.cert)?;
-      let key = std::fs::read_to_string(&id.key)?;
-      cert::PunchIdentity::from_pem(&cert, &key)?
-    }
+    // kept on disk, so the key registered at Track stays valid across restarts
+    Some(id) => cert::load_or_create(&id.cert, &id.key, &config.punch_id)?,
     None => {
-      tracing::warn!("no certificate configured — minting a self-signed one");
+      tracing::warn!(
+        "no [identity] configured — this key is thrown away on restart, \
+         and every client that registered the old one will reject this server"
+      );
       cert::PunchIdentity::generate(&config.punch_id)?
     }
   };

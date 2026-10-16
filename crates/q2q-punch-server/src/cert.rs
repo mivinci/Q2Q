@@ -12,6 +12,7 @@ use quinn::ServerConfig;
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_ED25519};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CertError {
@@ -92,6 +93,65 @@ impl PunchIdentity {
   }
 }
 
+/// Load the identity from disk, or mint one and keep it there.
+///
+/// The public key is a long-lived identity: it is what gets registered at Track
+/// and what clients check the certificate against. A restart must not change it,
+/// so a generated key is written out rather than held in memory only.
+pub fn load_or_create(
+  cert_path: &Path,
+  key_path: &Path,
+  punch_id: &str,
+) -> Result<PunchIdentity, CertError> {
+  if cert_path.exists() && key_path.exists() {
+    let cert = std::fs::read_to_string(cert_path)
+      .map_err(|e| CertError::Generate(format!("read {}: {e}", cert_path.display())))?;
+    let key = std::fs::read_to_string(key_path)
+      .map_err(|e| CertError::Generate(format!("read {}: {e}", key_path.display())))?;
+    return PunchIdentity::from_pem(&cert, &key);
+  }
+
+  let identity = PunchIdentity::generate(punch_id)?;
+  identity.save(cert_path, key_path)?;
+  tracing::info!(cert = %cert_path.display(), "minted an identity and saved it");
+  Ok(identity)
+}
+
+impl PunchIdentity {
+  fn save(&self, cert_path: &Path, key_path: &Path) -> Result<(), CertError> {
+    if let Some(parent) = cert_path.parent()
+      && !parent.as_os_str().is_empty()
+    {
+      std::fs::create_dir_all(parent)
+        .map_err(|e| CertError::Generate(format!("create {}: {e}", parent.display())))?;
+    }
+    std::fs::write(cert_path, pem("CERTIFICATE", &self.cert_der))
+      .map_err(|e| CertError::Generate(format!("write {}: {e}", cert_path.display())))?;
+    std::fs::write(key_path, pem("PRIVATE KEY", &self.key_der))
+      .map_err(|e| CertError::Generate(format!("write {}: {e}", key_path.display())))?;
+    // the private half is the whole identity; nothing else needs to read it
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::PermissionsExt;
+      std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| CertError::Generate(format!("chmod {}: {e}", key_path.display())))?;
+    }
+    Ok(())
+  }
+}
+
+/// PEM with 64-character lines, which is what both parsers expect.
+fn pem(label: &str, der: &[u8]) -> String {
+  let b64 = B64.encode(der);
+  let mut out = format!("-----BEGIN {label}-----\n");
+  for chunk in b64.as_bytes().chunks(64) {
+    out.push_str(std::str::from_utf8(chunk).unwrap_or_default());
+    out.push('\n');
+  }
+  out.push_str(&format!("-----END {label}-----\n"));
+  out
+}
+
 /// rcgen hands out the public key as SPKI PEM; an Ed25519 SPKI is a 12-byte
 /// prefix followed by the raw 32-byte key.
 fn raw_ed25519(key_pair: &KeyPair) -> Result<[u8; 32], CertError> {
@@ -124,11 +184,25 @@ mod tests {
   #[test]
   fn a_pem_round_trip_keeps_the_same_key() {
     let id = PunchIdentity::generate("punch-1").unwrap();
-    let cert_pem = pem_encode("CERTIFICATE", &id.cert_der);
-    let key_pem = pem_encode("PRIVATE KEY", &id.key_der);
+    let cert_pem = pem("CERTIFICATE", &id.cert_der);
+    let key_pem = pem("PRIVATE KEY", &id.key_der);
 
     let back = PunchIdentity::from_pem(&cert_pem, &key_pem).unwrap();
     assert_eq!(back.public_key(), id.public_key());
+  }
+
+  #[test]
+  fn an_identity_survives_a_restart() {
+    // the whole point: the public key is registered at Track, so it has to be
+    // the same key after the process comes back
+    let dir = tempfile::tempdir().unwrap();
+    let cert = dir.path().join("cert.pem");
+    let key = dir.path().join("key.pem");
+
+    let first = load_or_create(&cert, &key, "punch-1").unwrap();
+    assert!(cert.exists());
+    let second = load_or_create(&cert, &key, "punch-1").unwrap();
+    assert_eq!(first.public_key(), second.public_key());
   }
 
   #[test]
@@ -142,16 +216,5 @@ mod tests {
   fn a_server_config_can_be_built() {
     let id = PunchIdentity::generate("punch-1").unwrap();
     assert!(id.server_config().is_ok());
-  }
-
-  fn pem_encode(label: &str, der: &[u8]) -> String {
-    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, der);
-    let mut out = format!("-----BEGIN {label}-----\n");
-    for chunk in b64.as_bytes().chunks(64) {
-      out.push_str(std::str::from_utf8(chunk).unwrap());
-      out.push('\n');
-    }
-    out.push_str(&format!("-----END {label}-----\n"));
-    out
   }
 }

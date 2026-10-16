@@ -13,7 +13,7 @@ use base64::engine::general_purpose::STANDARD as B64;
 use q2q_core::identity::PeerId;
 use q2q_ratelimit::{Limiter, RateLimitLayer, Rule};
 use q2q_track::auth::{self, AuthError, TicketBody};
-use q2q_track::state::{Candidate, InfoHash, PunchAssignment, TrackState, UnixSeconds};
+use q2q_track::state::{InfoHash, PunchAssignment, TrackState, UnixSeconds};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -385,7 +385,10 @@ pub struct QueryResponse {
 pub struct PeerWire {
   pub peer_id: String,
   pub public_key: String,
-  pub punch_server: String,
+  /// Resolved from the live Punch list at query time. Clients must not cache
+  /// any of this: an address is deployment state, and only the public key is a
+  /// long-lived identity (spec 7.1).
+  pub punch: PunchWire,
   pub complete: bool,
 }
 
@@ -427,21 +430,34 @@ async fn query<S: TrackState>(
   let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
   let after = params.cursor.as_ref().map(|c| PeerId::unchecked(c.clone()));
 
-  let peers: Vec<PeerWire> = app
-    .state
-    .query(&hash, limit + 1, after.as_ref(), now)
-    .into_iter()
-    .map(|c: Candidate| PeerWire {
+  // the list is read once per request, not cached by the client: which Punch
+  // Server a peer sits on is deployment state that can change underneath us
+  let punch_list = &app.config.punch_servers;
+
+  let mut peers: Vec<PeerWire> = Vec::new();
+  let mut has_more = false;
+  for c in app.state.query(&hash, limit + 1, after.as_ref(), now) {
+    // a peer whose Punch Server is no longer listed cannot be reached, so it
+    // is dropped rather than handed out with an address nobody serves
+    let Some(punch) = punch_list.iter().find(|p| p.punch_id == c.punch_id) else {
+      continue;
+    };
+    if peers.len() == limit {
+      has_more = true;
+      break;
+    }
+    peers.push(PeerWire {
       peer_id: c.peer_id.as_str().to_string(),
       public_key: B64.encode(c.public_key),
-      punch_server: c.punch_server,
+      punch: PunchWire {
+        punch_id: punch.punch_id.clone(),
+        url: punch.url.clone(),
+        public_key: B64.encode(&punch.public_key),
+      },
       complete: c.complete,
-    })
-    .collect();
+    });
+  }
 
-  // one extra was fetched only to learn whether another page exists
-  let has_more = peers.len() > limit;
-  let peers: Vec<PeerWire> = peers.into_iter().take(limit).collect();
   let next_cursor = if has_more {
     peers.last().map(|p| p.peer_id.clone())
   } else {
@@ -462,10 +478,14 @@ mod tests {
   use tower::ServiceExt;
 
   fn config() -> Arc<TrackConfig> {
+    config_at("https://punch-1.example.com")
+  }
+
+  fn config_at(url: &str) -> Arc<TrackConfig> {
     Arc::new(TrackConfig {
       punch_servers: vec![PunchAssignment {
         punch_id: "punch-1".into(),
-        url: "https://punch-1.example.com".into(),
+        url: url.into(),
         public_key: vec![7u8; 32],
       }],
       turn_url: "turn:turn.example.com:3478".into(),
@@ -627,11 +647,99 @@ mod tests {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert_eq!(json["peers"][0]["peer_id"], peer);
+    // the address and key come from the live list, never from a snapshot
+    assert_eq!(json["peers"][0]["punch"]["punch_id"], "punch-1");
     assert_eq!(
-      json["peers"][0]["punch_server"],
+      json["peers"][0]["punch"]["url"],
       "https://punch-1.example.com"
     );
+    assert_eq!(
+      json["peers"][0]["punch"]["public_key"],
+      B64.encode(vec![7u8; 32])
+    );
     assert_eq!(json["peers"][0]["complete"], true);
+  }
+
+  /// The point of resolving at query time: if the instance moves, the next
+  /// query hands out the new address. A snapshot would keep the old one.
+  #[tokio::test]
+  async fn query_backfills_the_address_from_the_live_list() {
+    let state = Arc::new(MemoryState::new());
+    let hash = "ab".repeat(32);
+
+    let announce_app = router(state.clone(), config_at("https://old.example.com"));
+    let body = ticket_body(3, "track");
+    let peer = body.iss.clone();
+    let req = Request::builder()
+      .method("PUT")
+      .uri(format!("/peers/{peer}/files"))
+      .header("content-type", "application/json")
+      .body(Body::from(
+        serde_json::to_vec(&serde_json::json!({
+          "token": body, "add": [format!("sha256:{hash}")], "complete": [], "ttl": 600
+        }))
+        .unwrap(),
+      ))
+      .unwrap();
+    let resp = announce_app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // same peer, but Track's list now points punch-1 somewhere else
+    let app = router(state, config_at("https://new.example.com"));
+    let req = Request::builder()
+      .method("GET")
+      .uri(format!("/files/sha256:{hash}/peers"))
+      .body(Body::empty())
+      .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let json = body_json(resp).await;
+    assert_eq!(json["peers"][0]["punch"]["url"], "https://new.example.com");
+  }
+
+  #[tokio::test]
+  async fn a_peer_bound_to_a_retired_punch_is_not_returned() {
+    let state = Arc::new(MemoryState::new());
+    let hash = "cd".repeat(32);
+
+    let announce_app = router(state.clone(), config_at("https://punch-1.example.com"));
+    let body = ticket_body(4, "track");
+    let peer = body.iss.clone();
+    let req = Request::builder()
+      .method("PUT")
+      .uri(format!("/peers/{peer}/files"))
+      .header("content-type", "application/json")
+      .body(Body::from(
+        serde_json::to_vec(&serde_json::json!({
+          "token": body, "add": [format!("sha256:{hash}")], "complete": [], "ttl": 600
+        }))
+        .unwrap(),
+      ))
+      .unwrap();
+    let resp = announce_app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // punch-1 is gone from the list: nobody can reach this peer any more
+    let mut retired = config_at("https://punch-1.example.com");
+    let mut cfg = (*retired).clone();
+    cfg.punch_servers = vec![PunchAssignment {
+      punch_id: "punch-2".into(),
+      url: "https://punch-2.example.com".into(),
+      public_key: vec![8u8; 32],
+    }];
+    retired = Arc::new(cfg);
+
+    let app = router(state, retired);
+    let req = Request::builder()
+      .method("GET")
+      .uri(format!("/files/sha256:{hash}/peers"))
+      .body(Body::empty())
+      .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let json = body_json(resp).await;
+    assert!(
+      json["peers"].as_array().unwrap().is_empty(),
+      "a peer whose Punch Server is gone cannot be reached"
+    );
   }
 
   fn tiny_limiter(rule: &str, capacity: u32) -> Arc<Limiter> {

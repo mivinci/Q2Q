@@ -47,7 +47,10 @@ pub struct PunchAssignment {
 pub struct Candidate {
   pub peer_id: PeerId,
   pub public_key: [u8; 32],
-  pub punch_server: String,
+  /// Which Punch Server the peer is bound to, by id. The address and key are
+  /// resolved from the live list at query time — a snapshot would keep handing
+  /// out a stale address after the instance moves.
+  pub punch_id: String,
   pub complete: bool,
 }
 
@@ -204,7 +207,7 @@ impl TrackState for MemoryState {
         Some(Candidate {
           peer_id: h.peer_id.clone(),
           public_key: record.public_key,
-          punch_server: record.punch.url.clone(),
+          punch_id: record.punch.punch_id.clone(),
           complete: h.complete,
         })
       })
@@ -277,7 +280,7 @@ mod tests {
     let got = s.query(&hash, 10, None, 500);
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].peer_id, peer(1));
-    assert_eq!(got[0].punch_server, "https://punch-1.example.com");
+    assert_eq!(got[0].punch_id, "punch-1");
     assert!(got[0].complete);
   }
 
