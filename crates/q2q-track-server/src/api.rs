@@ -89,6 +89,14 @@ fn fail(code: &'static str, detail: Option<String>) -> (StatusCode, Json<ErrorBo
     "unknown_session" => StatusCode::UNAUTHORIZED,
     _ => StatusCode::INTERNAL_SERVER_ERROR,
   };
+
+  // one place decides how loud a rejection is: a malformed request from a
+  // client is routine, a failed signature is someone probing, a 5xx is ours
+  match status {
+    StatusCode::INTERNAL_SERVER_ERROR => tracing::error!(code, "request failed"),
+    StatusCode::UNAUTHORIZED => tracing::warn!(code, "request rejected"),
+    _ => tracing::debug!(code, ?detail, "request rejected"),
+  }
   (status, Json(ErrorBody { code, detail }))
 }
 
@@ -97,6 +105,7 @@ fn auth_failure(e: AuthError) -> (StatusCode, Json<ErrorBody>) {
     AuthError::MalformedTicket(d) => Some(d.clone()),
     _ => None,
   };
+  // fail() logs it; auth rejections are the interesting kind
   fail(e.code(), detail)
 }
 
@@ -217,6 +226,12 @@ async fn announce<S: TrackState>(
     .update_resources(&ticket.iss, &add, &del, &complete, ttl);
 
   let turn_expires_at = now + app.config.turn_ttl;
+  tracing::info!(
+    peer_id = %ticket.iss.as_str(),
+    add = add.len(),
+    del = del.len(),
+    "announce"
+  );
   Ok(Json(AnnounceResponse {
     session_key: B64.encode(session_key),
     punch: PunchWire {

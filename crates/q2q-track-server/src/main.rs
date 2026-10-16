@@ -89,12 +89,25 @@ struct Args {
   /// 配置文件路径（TOML）
   #[arg(default_value = "track.toml")]
   config: PathBuf,
+
+  /// 日志过滤，如 `info`、`q2q_track_server=debug`
+  #[arg(long, default_value = "info", env = "RUST_LOG")]
+  log: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let args = Args::parse();
+  tracing_subscriber::fmt()
+    .with_env_filter(
+      tracing_subscriber::EnvFilter::try_from_default_env()
+        .or_else(|_| tracing_subscriber::EnvFilter::try_new(&args.log))
+        .unwrap_or_default(),
+    )
+    .init();
+
   let config = Config::load(&args.config)?;
+  tracing::info!(?config.bind, "config loaded from {}", args.config.display());
 
   let state = Arc::new(MemoryState::new());
   let track_config = Arc::new(api::TrackConfig {
@@ -114,14 +127,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       tokio::time::sleep(Duration::from_secs(sweep_interval)).await;
       let removed = sweep_state.sweep(q2q_track::state::now());
       if removed > 0 {
-        println!("sweep: removed {removed} expired online records");
+        tracing::info!(removed, "sweep dropped expired online records");
       }
     }
   });
 
   let app = api::router(state, track_config);
   let listener = tokio::net::TcpListener::bind(config.bind).await?;
-  println!("track listening on {bind}", bind = config.bind);
+  tracing::info!(bind = %config.bind, "listening");
   axum::serve(listener, app).await?;
   Ok(())
 }
