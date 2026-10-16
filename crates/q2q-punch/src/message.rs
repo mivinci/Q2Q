@@ -218,6 +218,20 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
     .collect()
 }
 
+// -------------------------------------------------------------------- signal
+
+/// `punch.signal`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalResponse {
+  pub ok: bool,
+  /// Only ever set on the first `offer` response, like `binding_key` on join.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub signal_key: Option<String>,
+  /// Signalling A missed while away, replayed on resume.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub pending: Vec<String>,
+}
+
 // ------------------------------------------------------------------ envelope
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -280,6 +294,8 @@ pub enum Method {
   Join,
   Heartbeat,
   Exit,
+  /// Carries connect / accept / reject / offer / answer / candidate / cancel.
+  Signal,
 }
 
 impl Method {
@@ -288,6 +304,7 @@ impl Method {
       Method::Join => "punch.join",
       Method::Heartbeat => "punch.heartbeat",
       Method::Exit => "punch.exit",
+      Method::Signal => "punch.signal",
     }
   }
 
@@ -296,6 +313,7 @@ impl Method {
       "punch.join" => Some(Method::Join),
       "punch.heartbeat" => Some(Method::Heartbeat),
       "punch.exit" => Some(Method::Exit),
+      "punch.signal" => Some(Method::Signal),
       _ => None,
     }
   }
@@ -486,7 +504,7 @@ mod tests {
     let e = parse_request(raw.as_bytes()).unwrap_err();
     assert_eq!(e.code, "unsupported_version");
 
-    let raw = r#"{"v":1,"id":"r-1","method":"punch.signal","params":{}}"#;
+    let raw = r#"{"v":1,"id":"r-1","method":"punch.nope","params":{}}"#;
     // parses fine — the method is unknown, but that is the dispatcher's call
     let req = parse_request(raw.as_bytes()).unwrap();
     assert_eq!(Method::parse(&req.method), None);

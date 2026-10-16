@@ -1,10 +1,13 @@
 mod cert;
 mod server;
+mod signalling;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use clap::Parser;
 use q2q_punch::binding::{Bindings, now};
+use q2q_punch::signal::Connections;
+use signalling::Sinks;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -94,6 +97,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
   let state = Arc::new(server::State {
     bindings: Bindings::new(config.ttl_secs),
+    connections: Connections::new(config.ttl_secs),
+    sinks: Arc::new(Sinks::default()),
     punch_id: config.punch_id.clone(),
     ttl: config.ttl_secs,
     max_request_bytes: config.max_request_bytes,
@@ -105,6 +110,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
       tokio::time::sleep(std::time::Duration::from_secs(sweep_every)).await;
       let dropped = sweep_state.bindings.sweep(now());
+      let closed = sweep_state.connections.sweep(now());
+      if closed > 0 {
+        tracing::info!(closed, "swept finished connections");
+      }
       if dropped > 0 {
         tracing::info!(dropped, "swept expired bindings");
       }

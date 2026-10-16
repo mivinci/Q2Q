@@ -317,6 +317,38 @@ impl Ticket {
     me: Option<&PeerId>,
     now: u64,
   ) -> Result<(), TicketError> {
+    self.check_identity(now)?;
+
+    // 4. this ticket was meant for us
+    if &self.aud != expected_audience {
+      return Err(TicketError::WrongAudience);
+    }
+    if let Some(tgt) = &self.tgt {
+      match me {
+        Some(me) if me == tgt => {}
+        _ => return Err(TicketError::WrongTarget),
+      }
+    }
+    Ok(())
+  }
+
+  /// The same checks for a verifier that is the audience but *not* the target —
+  /// a Punch Server relaying a connect. Matching `tgt` against its own id would
+  /// reject every valid connect; the target is recorded on the connection and
+  /// checked there instead. A connect that names no target is refused outright.
+  pub fn verify_as_relay(&self, expected_audience: &Audience, now: u64) -> Result<(), TicketError> {
+    self.check_identity(now)?;
+    if &self.aud != expected_audience {
+      return Err(TicketError::WrongAudience);
+    }
+    if self.tgt.is_none() {
+      return Err(TicketError::WrongTarget);
+    }
+    Ok(())
+  }
+
+  /// Steps 1–3: the key is the issuer's, the signature holds, it has not expired.
+  fn check_identity(&self, now: u64) -> Result<(), TicketError> {
     // 1. the embedded key must actually be the issuer's
     if peer_id_from_public_key(&self.public_key) != self.iss {
       return Err(TicketError::KeyDoesNotMatchIssuer);
@@ -335,17 +367,6 @@ impl Ticket {
     // 3. still valid
     if now >= self.exp {
       return Err(TicketError::Expired);
-    }
-
-    // 4. this ticket was meant for us
-    if &self.aud != expected_audience {
-      return Err(TicketError::WrongAudience);
-    }
-    if let Some(tgt) = &self.tgt {
-      match me {
-        Some(me) if me == tgt => {}
-        _ => return Err(TicketError::WrongTarget),
-      }
     }
     Ok(())
   }

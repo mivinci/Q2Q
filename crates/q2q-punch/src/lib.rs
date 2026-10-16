@@ -7,6 +7,13 @@
 
 pub mod binding;
 pub mod message;
+pub mod signal;
 
 pub use binding::{Binding, BindingError, Bindings, Generation, UnixSeconds};
-pub use message::{JoinError, JoinRequest, JoinResponse};
+pub use message::{
+  ExitRequest, HeartbeatRequest, HeartbeatResponse, JoinError, JoinRequest, JoinResponse, Method,
+  Request, Response, SignalResponse,
+};
+pub use signal::{
+  Connection, ConnectionState, Connections, RejectReason, SignalError, SignalRequest, SignalType,
+};
