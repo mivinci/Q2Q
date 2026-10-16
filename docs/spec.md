@@ -22,7 +22,7 @@
 
 本文统一使用以下名称：
 
-- **Track Server**：在线索引、资源索引、Peer 发现、Punch 分配与 TURN 凭据签发。
+- **Track Server**：在线索引、文件索引、Peer 发现、Punch 分配与 TURN 凭据签发。
 - **Punch Server**：维护 Peer 的在线 Binding，转发 WebRTC 信令（SDP 与 ICE candidate）。
 - **STUN Server**：供 ICE 收集公网映射候选地址。
 - **TURN / Relay Server**：无法直连时经 ICE relay candidate 转发数据流。
@@ -40,7 +40,7 @@
 | | 控制面 | 数据面 |
 | --- | --- | --- |
 | 参与方 | 客户端 ↔ Track / Punch / STUN / TURN | 客户端 ↔ 客户端（直连） |
-| 职责 | 在线索引、资源索引（announce / query）、Punch 分配、连接信令（SDP 与 ICE candidate 中继）、TURN 授权 | 连接建立与身份锚定（ICE / DTLS）、数据组织（block / piece）、块可见性（bitfield / have）、传输（request / reject / piece / piece_nack / block_done / cancel）、Merkle 证明（request_proof / proof）、取块与上传调度（pause / resume） |
+| 职责 | 在线索引、文件索引（announce / query）、Punch 分配、连接信令（SDP 与 ICE candidate 中继）、TURN 授权 | 连接建立与身份锚定（ICE / DTLS）、数据组织（block / piece）、块可见性（bitfield / have）、传输（request / reject / piece / piece_nack / block_done / cancel）、Merkle 证明（request_proof / proof）、取块与上传调度（pause / resume） |
 | 消息形态 | 请求-响应对（Punch 侧另有常驻 / 瞬时信道） | 对称单向消息 |
 | 信任基础 | 短命自签票据、持钥证明与 MAC | 端到端 DTLS 与 Merkle 证明校验（锚点为 `info_hash` 自校验的 `info.root`） |
 
@@ -68,7 +68,7 @@ sequenceDiagram
         PA-->>A: binding_id、binding_key、expires_at
         A->>STUN: Binding Request
         STUN-->>A: A candidates（host / srflx）
-    and B 上线并登记资源
+    and B 上线并登记文件
         B->>T: announce(自签票据[含 pub], entries[{ info_hash, complete }], ttl)
         T-->>B: session_key、Punch B 地址与公钥、STUN/TURN 配置
         B->>PB: join(自签票据[aud=punch], public_key, signature)
@@ -129,7 +129,7 @@ sequenceDiagram
 
 ## 3. 控制面协议
 
-本章描述客户端与 Track / Punch / STUN / TURN Server 之间的交互：身份建立、在线状态、资源发现、信令交换与中继授权。
+本章描述客户端与 Track / Punch / STUN / TURN Server 之间的交互：身份建立、在线状态、文件发现、信令交换与中继授权。
 
 ### 3.1 身份建立与自签票据
 
@@ -170,7 +170,7 @@ sig = sign(sk, canonical(payload))
 
 | 用途 | `aud` | 关键字段 | 有效期 |
 | --- | --- | --- | --- |
-| 会话建立 / 资源宣告 / 查询 | `track` | —（含 `pub`） | 分钟级 |
+| 会话建立 / 文件宣告 / 查询 | `track` | —（含 `pub`） | 分钟级 |
 | 建立 Punch Binding | 指定 `punch_id` | `cid` | 分钟级 |
 | 请求连接目标 Peer | 指定 `punch_b_id` | `tgt`、`ih`、`cid` | 数十秒（打洞窗口） |
 | 请求 TURN 中继凭据 | `track` | `ih`、对端 `peer_id` | 分钟级 |
@@ -227,7 +227,7 @@ MAC 固定为 `HMAC-SHA-256(session_key, peer_id || seq || timestamp)`，服务�
 
 之后的保活使用 `heartbeat(binding_id, seq, MAC)`，而不是每次发送完整票据。MAC 固定为 `HMAC-SHA-256(binding_key, binding_id || seq || timestamp || transport_generation)`；服务端仅接受递增序列号（允许一个有限乱序窗口）且 timestamp 在短窗口内的请求。Binding 到期、客户端重新 join、或网络切换时，旧 `binding_key` 和旧序列号空间立即失效。这样既刷新 NAT 映射和在线 TTL，也避免频繁验签与较大的 UDP 包。
 
-主动下线使用 `exit(binding_id, seq, MAC)`，复用 heartbeat 的 MAC 与序列号机制，无需新凭据；成功后 Binding 立即删除、`binding_key` 作废。客户端下线时**应当**先通过 `announce` 的 `del` 撤下自己的全部资源。Track 不提供 session 吊销（本设计整体没有吊销机制，见 3.1.4）：凭据短 `exp` 已把泄露损失框在有限时间内，"下线"的语义由 `exit` 与资源撤下共同承担。
+主动下线使用 `exit(binding_id, seq, MAC)`，复用 heartbeat 的 MAC 与序列号机制，无需新凭据；成功后 Binding 立即删除、`binding_key` 作废。客户端下线时**应当**先通过 `announce` 的 `del` 撤下自己的全部文件。Track 不提供 session 吊销（本设计整体没有吊销机制，见 3.1.4）：凭据短 `exp` 已把泄露损失框在有限时间内，"下线"的语义由 `exit` 与文件撤下共同承担。
 
 ### 3.3 ICE 候选收集
 
@@ -235,13 +235,13 @@ MAC 固定为 `HMAC-SHA-256(session_key, peer_id || seq || timestamp)`，服务�
 
 Track 不保存或下发这些地址：候选地址会随网络切换而变化，且提前暴露会扩大隐私泄露与扫描风险。候选地址只在获得连接授权后的 Punch 信令中交换（trickle ICE）。candidate 使用标准 ICE candidate 编码，携带优先级与 `transport_generation`（ICE restart 时递增）；generation 变化后旧 candidate **不得**使用。默认不对非同一私网的 Peer 发送 host candidate，以避免泄露内网拓扑；允许发送时**应当**使用 mDNS 名称或由用户显式选择。
 
-### 3.4 资源宣告与查询
+### 3.4 文件宣告与查询
 
-B 使用 `announce` 登记自己可提供的资源：可一次 `add` 一组 `info_hash`（各带 `complete` 标志、TTL），或一次 `del` 一组 `info_hash` 主动撤下索引（不必等 TTL 过期）；记录**必须**带 TTL（服务端设置最大值），离线后自动失效。A 使用 `query(info_hash)` 查询少量候选 Peer。`info_hash` 固定为 info 的 SHA-256 摘要，info 的编码与字段见第 5 节。`complete` 标记是否持有整个文件，供 query 做粗粒度候选筛选（避开与自己没有交集的 Peer，降低 connect 票据 的无效消耗）；块级信息不上报 Track——Track 只维护 peer_id → info_hash 映射与 `complete` 标志，不保存全局块位图，细粒度的块可见性与稀缺度属于数据面，由直连双方交换维护。**不得**使用调用方自定义的文件名或非规范哈希作为资源标识。
+B 使用 `announce` 登记自己可提供的文件：可一次 `add` 一组 `info_hash`（各带 `complete` 标志、TTL），或一次 `del` 一组 `info_hash` 主动撤下索引（不必等 TTL 过期）；记录**必须**带 TTL（服务端设置最大值），离线后自动失效。A 使用 `query(info_hash)` 查询少量候选 Peer。`info_hash` 固定为 info 的 SHA-256 摘要，info 的编码与字段见第 5 节。`complete` 标记是否持有整个文件，供 query 做粗粒度候选筛选（避开与自己没有交集的 Peer，降低 connect 票据 的无效消耗）；块级信息不上报 Track——Track 只维护 peer_id → info_hash 映射与 `complete` 标志，不保存全局块位图，细粒度的块可见性与稀缺度属于数据面，由直连双方交换维护。**不得**使用调用方自定义的文件名或非规范哈希作为文件标识。
 
 Track 的查询结果仅包含 B 的 `peer_id`、B 的身份公钥、B 所在 Punch Server 的地址与其公钥（`punch_public_key`，供 A 验证 Punch B 的服务器身份）；**不包含** B 的公网地址或候选地址，也**不包含**连接凭据——`connect` 票据由 A 自己签发（见 3.1.2），Track 不参与。Punch Server 的地址与公钥均由 Track 在 query 时实时读取并随响应下发——客户端**不得**缓存 Punch 清单或地址，时效性由 Track 的当前状态保证（见 7.1 节的部署模型）。
 
-`connection_id` 由 A 生成（不可预测的随机数），签入 `connect` 票据的 `cid` 字段；票据同时携带 `tgt`（B 的 `peer_id`）与 `ih`（`info_hash`），Punch B 据此校验这次请求的指向。**Track 不保存 connection 记录**：它不参与 connect 票据的签发，因此没有状态可保存（见 7.1 节）。**应当**限制候选数量（默认 `limit=10`，见 7.2.1 节）、对 query/announce 按身份和资源施加速率限制，并限制单个资源的返回分页，以避免热门资源的索引放大和完整 Peer 列表泄露。
+`connection_id` 由 A 生成（不可预测的随机数），签入 `connect` 票据的 `cid` 字段；票据同时携带 `tgt`（B 的 `peer_id`）与 `ih`（`info_hash`），Punch B 据此校验这次请求的指向。**Track 不保存 connection 记录**：它不参与 connect 票据的签发，因此没有状态可保存（见 7.1 节）。**应当**限制候选数量（默认 `limit=10`，见 7.2.1 节）、对 query/announce 按身份和文件施加速率限制，并限制单个文件的返回分页，以避免热门文件的索引放大和完整 Peer 列表泄露。
 
 #### 3.4.1 连接相关时间常量
 
@@ -530,7 +530,7 @@ scheme 复用通用的 `magnet:`（BT 未发明专属 scheme，复用的正是 m
 
 | 票据用途 | `aud` | 关键字段 | 典型有效期 |
 | --- | --- | --- | --- |
-| 会话建立 / 资源宣告 / 查询 | `track` | —（含 `pub`） | 分钟级 |
+| 会话建立 / 文件宣告 / 查询 | `track` | —（含 `pub`） | 分钟级 |
 | 建立 Punch Binding | 指定 `punch_id` | `cid` | 分钟级 |
 | 请求连接目标 Peer | 指定 `punch_b_id` | `tgt`、`ih`、`cid` | 数十秒（`CONNECT_TOKEN_EXP`） |
 | 请求 TURN 中继凭据 | `track` | `ih`、对端 `peer_id` | 分钟级 |
@@ -561,14 +561,14 @@ scheme 复用通用的 `magnet:`（BT 未发明专属 scheme，复用的正是 m
 
 Track API 基于 HTTPS REST：每个请求独立无状态，请求/响应体使用 JSON 编码（`Content-Type: application/json`）。会话建立时 `announce` 携带完整自签票据，此后各请求改用 `peer_id` + `seq` + `mac`（`HMAC-SHA-256(session_key, peer_id || seq || timestamp)`）认证，不再重复携带票据——见 3.1.3 节。Track 不向客户端推送消息，两者之间不维护常驻信道。
 
-Track **可以**部署为无状态多实例：实例间共享一致的状态存储（在线记录、`session_key`、`peer_id → public_key` 缓存、资源索引）。注意 `session_key` **不得**只存于实例内存——多实例下 announce 与后续 query 落在不同的实例会直接失败。连接授权已完全无状态化（票据自签自证），不进入共享存储（见 3.4 节）。对客户端与 Punch Server 的契约只暴露 Track 的**逻辑服务地址**（如负载均衡前的域名），**不得**暴露具体实例——横向扩展是内部实现细节，不影响任何协议契约。Punch Server 清单由 Track 维护，来源为部署配置或 Punch Server 向 Track 注册（注册携带 `punch_id`、自身公钥、地址、region 与容量，注册对象为 Track 的逻辑服务地址而非具体实例，注册协议为内部运维契约、不在本规范的客户端接口范围内）；Track 从清单中为 announce 分配 Punch Server，并在 query 时实时回填目标 Peer 所在 Punch Server 的地址与公钥。Punch Server 公钥是客户端验证 Punch 服务器身份的锚点（见 3.5 节），与地址解耦——地址会随部署变化，公钥是长期身份。
+Track **可以**部署为无状态多实例：实例间共享一致的状态存储（在线记录、`session_key`、`peer_id → public_key` 缓存、文件索引）。注意 `session_key` **不得**只存于实例内存——多实例下 announce 与后续 query 落在不同的实例会直接失败。连接授权已完全无状态化（票据自签自证），不进入共享存储（见 3.4 节）。对客户端与 Punch Server 的契约只暴露 Track 的**逻辑服务地址**（如负载均衡前的域名），**不得**暴露具体实例——横向扩展是内部实现细节，不影响任何协议契约。Punch Server 清单由 Track 维护，来源为部署配置或 Punch Server 向 Track 注册（注册携带 `punch_id`、自身公钥、地址、region 与容量，注册对象为 Track 的逻辑服务地址而非具体实例，注册协议为内部运维契约、不在本规范的客户端接口范围内）；Track 从清单中为 announce 分配 Punch Server，并在 query 时实时回填目标 Peer 所在 Punch Server 的地址与公钥。Punch Server 公钥是客户端验证 Punch 服务器身份的锚点（见 3.5 节），与地址解耦——地址会随部署变化，公钥是长期身份。
 
 **Track 与 Punch Server 的耦合面**：票据自签自证之后，Punch 验票不需要查询 Track，两个服务在**请求路径上没有运行时依赖**——这比原设计少了一条关键耦合。仅剩的耦合是运维面的：Punch 向 Track 注册自身（`punch_id`、公钥、地址、region、容量）。方向性是刻意的——Track 暴露逻辑服务地址，Punch 是它的客户端；反过来要求 Punch 具备被 Track 连接的入站可达性，会把整个 Punch 集群的部署前提（公网地址、防火墙策略）绑死在一条极低频的通知上。因此：
 
 - **不得**要求两者之间维护常驻信道或长连接——注册与容量上报都是低频事件，普通 HTTPS 请求即可；
 - Punch 注册（`punch_id`、公钥、地址、region、容量）**可以**走"向 Track 注册"，也**可以**完全由部署配置下发，两种方式都属内部运维契约；
 
-**两者的存储扩展模型是相反的**：Track 多实例**必须**共享状态存储（在线记录、`session_key`、`peer_id → public_key` 缓存、资源索引）；Punch 侧的状态（Binding、已消费 `cid`、连接记录）**不必**跨实例共享——票据的 `aud` 绑定到单个 Punch Server（`punch_id` / `punch_b_id`），每张票只可能被那一台消费。只有当同一个 `punch_id` 需要多实例容灾时，才需要为 Binding 引入共享存储或粘性路由。
+**两者的存储扩展模型是相反的**：Track 多实例**必须**共享状态存储（在线记录、`session_key`、`peer_id → public_key` 缓存、文件索引）；Punch 侧的状态（Binding、已消费 `cid`、连接记录）**不必**跨实例共享——票据的 `aud` 绑定到单个 Punch Server（`punch_id` / `punch_b_id`），每张票只可能被那一台消费。只有当同一个 `punch_id` 需要多实例容灾时，才需要为 Binding 引入共享存储或粘性路由。
 
 `punch.join` / `punch.exit` / `punch.signal` 的请求响应控制面经加密认证信道传输（TCP+TLS、UDP+DTLS 或 QUIC 均可，客户端与 Punch Server 间的常驻与瞬时信令信道同此要求）；为维持 NAT 映射的 `punch.heartbeat` 可以使用 UDP，但**必须**遵循前述 MAC、时钟窗口和序列号校验。消息使用版本化 schema；未知必填字段、超出大小限制的 candidate 列表和不匹配的 `connection_id` 都**必须**拒绝。每个响应至少带协议版本、请求 ID 和明确的错误码。所有时钟校验（`nbf`/`exp`、heartbeat 的时间戳窗口）使用统一的服务端可配置容差（如 ±60 秒），客户端**应当**与可信时间源对时，容差需计入 Track 的 nonce 去重窗口、Punch/Track 的 `jti` 去重窗口与序列号乱序窗口的计算。
 
@@ -580,9 +580,9 @@ Track **可以**部署为无状态多实例：实例间共享一致的状态存�
 
 所有请求/响应体均为 JSON（`Content-Type: application/json`）。`announce` 携带完整自签票据建立会话；此后 `heartbeat` 与 `query` 改用 `peer_id` + `seq` + `mac`（`HMAC-SHA-256(session_key, peer_id || seq || timestamp)`）认证，不再携带票据（见 3.1.3 节）。响应除业务字段外**应当**包含统一的错误码与请求 ID。
 
-##### `PUT /peers/{peer_id}/resources` — announce（会话建立）
+##### `PUT /peers/{peer_id}/files` — announce（会话建立）
 
-登记或撤下自己持有的资源，同时完成会话建立。**这是唯一需要携带完整自签票据的请求。**
+登记或撤下自己持有的文件，同时完成会话建立。**这是唯一需要携带完整自签票据的请求。**
 
 | 请求字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -600,7 +600,7 @@ Track **可以**部署为无状态多实例：实例间共享一致的状态存�
 | `heartbeat_interval` | int32 | 建议心跳间隔（秒） |
 | `expires_at` | int64 | 在线记录的过期时间 |
 
-**授权与限制**：按 3.1.2 节的四步校验票据——**不依赖任何预存映射**；同一 peer/file 覆盖更新；限制 TTL 上限、批量大小、资源数与调用频率。Track **应当**按 IP / 网段限流：自签模型下身份可无限生成，按 `peer_id` 限流无效（见 3.1.1 节）。
+**授权与限制**：按 3.1.2 节的四步校验票据——**不依赖任何预存映射**；同一 peer/file 覆盖更新；限制 TTL 上限、批量大小、文件数与调用频率。Track **应当**按 IP / 网段限流：自签模型下身份可无限生成，按 `peer_id` 限流无效（见 3.1.1 节）。
 
 **交互流程**：
 
@@ -609,7 +609,7 @@ sequenceDiagram
     participant C as client
     participant T as Track
 
-    C->>T: PUT /peers/{peer_id}/resources<br/>{token(含 pub), add, del, complete, ttl}
+    C->>T: PUT /peers/{peer_id}/files<br/>{token(含 pub), add, del, complete, ttl}
     Note over T: 验票据: base32(SHA-256(pub))==iss? 签名? exp?
     Note over T: 缓存在线记录 {peer_id, pub, punch, last_seen}
     Note over T: 检查批量大小/TTL 上限/频率限制
@@ -637,9 +637,9 @@ sequenceDiagram
 **为什么用 HMAC 而不是每次重签票据**：心跳每隔几秒发一次，用 Ed25519 每次验签成本高；HMAC 是对称运算，快一个数量级，包里也不必带 32 字节公钥与 64 字节签名。公钥只在会话建立时是新的，不需要每次重复自我介绍。
 
 
-##### `GET /resources/{info_hash}/peers` — query
+##### `GET /files/{info_hash}/peers` — query
 
-查询持有某资源的候选 Peer。携带 会话票据。
+查询持有某文件的候选 Peer。携带 会话票据。
 
 | 请求参数 | 位置 | 说明 |
 | --- | --- | --- |
@@ -671,7 +671,7 @@ sequenceDiagram
     participant A as client (A)
     participant T as Track
 
-    A->>T: GET /resources/{info_hash}/peers?limit=10&cursor=...<br/>{peer_id, seq, mac}
+    A->>T: GET /files/{info_hash}/peers?limit=10&cursor=...<br/>{peer_id, seq, mac}
     Note over T: 验 mac = HMAC(session_key, peer_id || seq || ts)（不验票据）
     Note over T: 检查限流 (按 IP / 网段 + info_hash)
     Note over T: 查索引: info_hash → [peer_id 列表]
@@ -724,7 +724,7 @@ sequenceDiagram
 
 **为什么 A 和 B 各自请求**：TURN REST 凭据是 per-peer 的——用户名里编码了 peer_id，TURN 服务器按 peer_id 计费和限流。A 和 B 拿到的是各自的凭据，不是共享的。
 
-**为什么不查记录而验票据本体**：relay 回退发生在 ICE 超时之后，此时任何以"连接建立超时"为 TTL 的记录都已过期——依赖记录会让回退在最需要它的场景（对称 NAT / CGNAT 打洞失败）失效。A 自签的票据本身已是不可伪造的证明，验签 + 校验 `iss` / `tgt` / `ih` 即可确定"请求方持有该身份且指向这个资源"，无需任何服务端状态。凭据过期后 A 重新自签再请求一次即可（见 3.4.1 节）。
+**为什么不查记录而验票据本体**：relay 回退发生在 ICE 超时之后，此时任何以"连接建立超时"为 TTL 的记录都已过期——依赖记录会让回退在最需要它的场景（对称 NAT / CGNAT 打洞失败）失效。A 自签的票据本身已是不可伪造的证明，验签 + 校验 `iss` / `tgt` / `ih` 即可确定"请求方持有该身份且指向这个文件"，无需任何服务端状态。凭据过期后 A 重新自签再请求一次即可（见 3.4.1 节）。
 
 #### 7.2.2 Punch RPC 接口
 
@@ -860,7 +860,7 @@ sequenceDiagram
 
 **为什么 exit 复用 heartbeat 的 MAC 机制**：客户端已经持有 binding_key，不需要新凭据。exit 和 heartbeat 用同样的 MAC 算法，Punch Server 用同样的校验逻辑，代码路径统一。
 
-**为什么不先 announce(del) 再 exit**：客户端下线时**应当**先通过 `announce` 的 `del` 撤下自己的全部资源（让 Track 停止把该 peer 作为查询候选返回），再 `exit` Punch Server。如果只 exit 不 del，Track 的资源索引要等 TTL 过期才消失，期间其他 peer query 到该 peer 后发起连接会失败。
+**为什么不先 announce(del) 再 exit**：客户端下线时**应当**先通过 `announce` 的 `del` 撤下自己的全部文件（让 Track 停止把该 peer 作为查询候选返回），再 `exit` Punch Server。如果只 exit 不 del，Track 的文件索引要等 TTL 过期才消失，期间其他 peer query 到该 peer 后发起连接会失败。
 
 ##### `punch.signal`
 
@@ -988,8 +988,8 @@ sequenceDiagram
 | `SendRevokeReq` / `OnRevokeRsp` | client → Track | `DELETE /peers/{peer_id}` | 私钥泄露时提交 revocation token，一次性 |
 | `SendLoginChallengeReq` / `OnLoginChallengeRsp` | client ↔ Track | `GET /sessions/challenge` | 获取登录挑战 nonce |
 | `SendLoginReq` / `OnLoginRsp` | client ↔ Track | `POST /sessions` | 提交签名，rsp 含 会话票据、join 票据、Punch Server 分配（地址与公钥）与 STUN/TURN 配置 |
-| `SendAnnounceReq` / `OnAnnounceRsp` | client ↔ Track | `PUT /peers/{peer_id}/resources` | `add` / `del` 批量登记与撤下资源 |
-| `SendQueryReq` / `OnQueryRsp` | client ↔ Track | `GET /resources/{info_hash}/peers` | rsp 含候选 Peer 的 `peer_id`、公钥、Punch 地址与公钥及 connect 票据 |
+| `SendAnnounceReq` / `OnAnnounceRsp` | client ↔ Track | `PUT /peers/{peer_id}/files` | `add` / `del` 批量登记与撤下文件 |
+| `SendQueryReq` / `OnQueryRsp` | client ↔ Track | `GET /files/{info_hash}/peers` | rsp 含候选 Peer 的 `peer_id`、公钥、Punch 地址与公钥及 connect 票据 |
 | `SendRelayCredentialsReq` / `OnRelayCredentialsRsp` | client ↔ Track | `POST /connections/relay` | 请求体携带 connect 票据 本体；rsp 仅含请求方自身的 relay 凭据 |
 
 #### 7.3.2 Punch 通信接口
@@ -1036,7 +1036,7 @@ Peer 之间的消息是对称、单向的，没有控制面那种请求-响应�
 
 ## 8. 安全性考量
 
-本设计的信任模型：Track 是控制面的信任根（身份注册、授权签发、资源索引），其被攻破或作恶的破坏半径限于审查、拒绝服务与元数据监视——数据面内容的完整性由 Merkle 证明校验（锚点为 `info_hash` 自校验的 `info.root`）与端到端 DTLS 独立保证，与 Track 的可信度解耦（见 4.2 节与 5.2 节）。客户端与 Punch Server 对 Track 的访问只依赖其逻辑服务地址与签名公钥，不依赖任何具体实例。
+本设计的信任模型：Track 是控制面的信任根（身份注册、授权签发、文件索引），其被攻破或作恶的破坏半径限于审查、拒绝服务与元数据监视——数据面内容的完整性由 Merkle 证明校验（锚点为 `info_hash` 自校验的 `info.root`）与端到端 DTLS 独立保证，与 Track 的可信度解耦（见 4.2 节与 5.2 节）。客户端与 Punch Server 对 Track 的访问只依赖其逻辑服务地址与签名公钥，不依赖任何具体实例。
 
 ### 8.1 控制面
 
