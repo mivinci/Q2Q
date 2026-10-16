@@ -12,10 +12,12 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use hmac::{Hmac, KeyInit, Mac};
 use q2q_core::identity::PeerId;
+use q2q_ratelimit::{Limiter, RateLimitLayer, Rule};
 use q2q_track::auth::{self, AuthError, TicketBody};
 use q2q_track::state::{Candidate, InfoHash, PunchAssignment, TrackState, UnixSeconds};
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub const DEFAULT_LIMIT: usize = 10;
@@ -64,12 +66,45 @@ impl<S: TrackState> Clone for AppState<S> {
   }
 }
 
+/// One rule per endpoint class. Announce has to verify an Ed25519 signature and
+/// write the index, so it costs far more than a query.
+pub const RULE_ANNOUNCE: &str = "announce";
+pub const RULE_QUERY: &str = "query";
+
+pub fn limiter() -> Arc<Limiter> {
+  let mut rules = HashMap::new();
+  rules.insert(RULE_ANNOUNCE.to_string(), Rule::per_minute(10, 10));
+  rules.insert(RULE_QUERY.to_string(), Rule::per_minute(60, 60));
+  Arc::new(Limiter::new(rules))
+}
+
 pub fn router<S: TrackState + 'static>(state: Arc<S>, config: Arc<TrackConfig>) -> Router {
+  router_with_limits(state, config, limiter())
+}
+
+/// Same routes with an explicit limiter, so tests can use a small bucket
+/// instead of hammering the real one.
+pub fn router_with_limits<S: TrackState + 'static>(
+  state: Arc<S>,
+  config: Arc<TrackConfig>,
+  limits: Arc<Limiter>,
+) -> Router {
   let app = AppState { state, config };
-  Router::new()
+
+  // Separate routers so each class gets its own rule; a single route_layer at
+  // the end would stack every layer onto every route.
+  let announce_route = Router::new()
     .route("/peers/{peer_id}/files", put(announce::<S>))
+    .route_layer(RateLimitLayer::new(limits.clone(), RULE_ANNOUNCE));
+
+  let read_routes = Router::new()
     .route("/peers/{peer_id}/heartbeat", post(heartbeat::<S>))
     .route("/files/{info_hash}/peers", get(query::<S>))
+    .route_layer(RateLimitLayer::new(limits.clone(), RULE_QUERY));
+
+  Router::new()
+    .merge(announce_route)
+    .merge(read_routes)
     .with_state(app)
 }
 
@@ -419,6 +454,7 @@ mod tests {
   use axum::body::Body;
   use axum::http::{Request, StatusCode};
   use q2q_core::identity::{Audience, Ticket, keypair_from_seed, peer_id_of};
+  use q2q_ratelimit::PeerAddr;
   use q2q_track::state::MemoryState;
   use tower::ServiceExt;
 
@@ -593,6 +629,64 @@ mod tests {
       "https://punch-1.example.com"
     );
     assert_eq!(json["peers"][0]["complete"], true);
+  }
+
+  fn tiny_limiter(rule: &str, capacity: u32) -> Arc<Limiter> {
+    let mut rules = HashMap::new();
+    rules.insert(rule.to_string(), Rule::per_minute(capacity, 60));
+    Arc::new(Limiter::new(rules))
+  }
+
+  #[tokio::test]
+  async fn a_peer_that_exceeds_the_bucket_gets_429() {
+    let state = Arc::new(MemoryState::new());
+    let app = router_with_limits(state, config(), tiny_limiter(RULE_QUERY, 2));
+
+    let hash = "ab".repeat(32);
+    let uri = format!("/files/sha256:{hash}/peers");
+    for expected in [StatusCode::OK, StatusCode::OK] {
+      let mut req = Request::builder()
+        .method("GET")
+        .uri(&uri)
+        .body(Body::empty())
+        .unwrap();
+      req
+        .extensions_mut()
+        .insert(PeerAddr("198.51.100.7".parse().unwrap()));
+      let resp = app.clone().oneshot(req).await.unwrap();
+      assert_eq!(resp.status(), expected);
+    }
+
+    let mut req = Request::builder()
+      .method("GET")
+      .uri(&uri)
+      .body(Body::empty())
+      .unwrap();
+    req
+      .extensions_mut()
+      .insert(PeerAddr("198.51.100.7".parse().unwrap()));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(resp.headers().contains_key(axum::http::header::RETRY_AFTER));
+  }
+
+  #[tokio::test]
+  async fn a_different_network_keeps_its_own_bucket() {
+    let state = Arc::new(MemoryState::new());
+    let app = router_with_limits(state, config(), tiny_limiter(RULE_QUERY, 1));
+
+    let hash = "ab".repeat(32);
+    let uri = format!("/files/sha256:{hash}/peers");
+    for ip in ["198.51.100.7", "203.0.113.7"] {
+      let mut req = Request::builder()
+        .method("GET")
+        .uri(&uri)
+        .body(Body::empty())
+        .unwrap();
+      req.extensions_mut().insert(PeerAddr(ip.parse().unwrap()));
+      let resp = app.clone().oneshot(req).await.unwrap();
+      assert_eq!(resp.status(), StatusCode::OK, "ip {ip}");
+    }
   }
 
   #[tokio::test]
