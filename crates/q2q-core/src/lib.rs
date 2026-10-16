@@ -1,11 +1,18 @@
-//! Q2Q 核心库：网络无关的身份、种子、Merkle 证明与本地存储。
+//! Q2Q core: identity, seed, Merkle proofs and local storage, all network-free.
 //!
-//! 本 crate 不发起任何网络连接——所有 I/O 限于本地磁盘（store 模块）。
-//! 网络相关的部分（传输、消息编解码、调度）在别的 crate 里，调用本 crate。
+//! This crate never opens a network connection; the only I/O is local disk in
+//! the store module. Transport, wire codec and scheduling live elsewhere and
+//! call into it.
 //!
-//! 模块按实现顺序填充，见 todos/proposal-q2q-core.md：
-//! - T2 `canonical`：确定性编码，info_hash 与票据签名的地基
-//! - T3 `merkle`：Merkle 树、证明与校验
-//! - T4 `seed`：info 编解码、info_hash、磁力链
-//! - T5 `identity`：Ed25519 身份、peer_id、自签票据
-//! - T6 `store`：block 四态、piece 位图、落盘
+//! - `bencode` — deterministic encoding, the basis of `info_hash` and signatures
+//! - `merkle` — tree, proofs and verification (RFC 6962 shape)
+//! - `seed` — info dict, `info_hash`, magnet links
+//! - `identity` — Ed25519 keys, `peer_id`, self-signed tickets
+//! - `file` — block states, piece bitmaps, in-place writes
+
+pub mod bencode;
+pub mod bencode_serde;
+pub mod file;
+pub mod identity;
+pub mod merkle;
+pub mod seed;

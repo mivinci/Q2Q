@@ -6,3 +6,13 @@ description = "Q2Q 网络无关的核心：身份、种子、Merkle 证明与本
 license = "MIT"
 
 [dependencies]
+ed25519-dalek = "3.0.0"
+getrandom = "0.4.3"
+percent-encoding = "2.3.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_bytes = "0.11.19"
+sha2 = "0.11.1"
+
+[dev-dependencies]
+proptest = "1.12.0"
+tempfile = "3.27.0"

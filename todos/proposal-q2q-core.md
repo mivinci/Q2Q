@@ -24,9 +24,10 @@
 | T4 | seed | info 编解码、`info_hash`、磁力链、5.2 校验规则 | 往返一致；`v≠2`、`block_size` 非 2 的幂、`leaf_hashes` 长度不符均拒绝 |
 | T5 | identity | Ed25519 密钥、`peer_id` 派生、票据签发与校验 | `peer_id` 固定向量；过期 / `aud` 不符 / `pub` 与 `iss` 不符 / 签名篡改均拒绝 |
 | T6 | store | block 四态、piece 位图、in-place 落盘 | 状态转换、partial 恢复、重启后重校验 |
-| T7 | CLI | 以 example 或独立 bin 提供命令行 | 无网络跑通：keygen → seed create → seed verify → merkle prove/verify |
 
-**顺序理由**：T2 是地基（T3/T4/T5 都依赖它）；T3 先于 T4，因为 `info.root` 是 Merkle 树根，seed 只是把它记进结构体；T6 依赖 T3（校验）和 T4（`block_size`）；T7 最后，用来串起来验证。
+**顺序理由**：T2 是地基（T3/T4/T5 都依赖它）；T3 先于 T4，因为 `info.root` 是 Merkle 树根，seed 只是把它记进结构体；T6 依赖 T3（校验）和 T4（`block_size`）。
+
+命令行工具（原 T7）不在这个 crate 里做：核心库只提供 API，CLI 是它的消费者之一，放到独立的 `q2q-cli` crate。它同时也承担"无网络跑通整条链路"的验收角色。
 
 ## 4. 依赖
 
