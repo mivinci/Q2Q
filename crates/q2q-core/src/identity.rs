@@ -289,6 +289,25 @@ impl Ticket {
     self.sig = key.sign(&self.payload().encode()).to_bytes();
   }
 
+  /// The other direction: a signed ticket back into its wire form.
+  pub fn to_body(&self) -> TicketBody {
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine as _;
+
+    TicketBody {
+      v: self.v,
+      iss: self.iss.as_str().to_string(),
+      public_key: B64.encode(self.public_key),
+      iat: self.iat,
+      exp: self.exp,
+      aud: self.aud.as_str().to_string(),
+      tgt: self.tgt.as_ref().map(|t| t.as_str().to_string()),
+      ih: self.ih.map(|h| B64.encode(h)),
+      cid: self.cid.clone(),
+      sig: B64.encode(self.sig),
+    }
+  }
+
   /// The four checks of spec 3.1.2, in order. `expected_audience` is the
   /// verifier's own identity and `me` is its `peer_id` when it is also the
   /// connection target.

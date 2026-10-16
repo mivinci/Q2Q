@@ -44,6 +44,20 @@ pub enum BindingError {
   BadMac,
 }
 
+impl std::fmt::Display for BindingError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      BindingError::Unknown => write!(f, "no such binding"),
+      BindingError::Expired => write!(f, "binding expired"),
+      BindingError::StaleSequence(seq) => write!(f, "sequence {seq} already seen"),
+      BindingError::StaleGeneration(g) => write!(f, "generation {g} is behind"),
+      BindingError::BadMac => write!(f, "bad mac"),
+    }
+  }
+}
+
+impl std::error::Error for BindingError {}
+
 impl BindingError {
   pub fn code(&self) -> &'static str {
     match self {
@@ -61,6 +75,8 @@ impl BindingError {
 pub struct Bindings {
   /// peer_id → binding. Joining again replaces the previous one.
   by_peer: Mutex<HashMap<String, Binding>>,
+  /// binding_id → peer_id. Heartbeats and exits only carry the binding id.
+  by_id: Mutex<HashMap<String, String>>,
   /// One-shot ticket ids, kept for twice the ticket lifetime.
   spent: Mutex<HashMap<String, UnixSeconds>>,
   ttl: UnixSeconds,
@@ -70,6 +86,7 @@ impl Bindings {
   pub fn new(ttl: UnixSeconds) -> Self {
     Bindings {
       by_peer: Mutex::new(HashMap::new()),
+      by_id: Mutex::new(HashMap::new()),
       spent: Mutex::new(HashMap::new()),
       ttl,
     }
@@ -92,6 +109,16 @@ impl Bindings {
 
   pub fn insert(&self, binding: Binding) {
     let mut map = self.by_peer.lock().unwrap();
+    // joining again replaces the old binding, so drop the stale id first
+    if let Some(old) = map.get(binding.peer_id.as_str())
+      && old.binding_id != binding.binding_id
+    {
+      self.by_id.lock().unwrap().remove(&old.binding_id);
+    }
+    self.by_id.lock().unwrap().insert(
+      binding.binding_id.clone(),
+      binding.peer_id.as_str().to_string(),
+    );
     map.insert(binding.peer_id.as_str().to_string(), binding);
   }
 
@@ -100,9 +127,16 @@ impl Bindings {
     map.get(peer_id.as_str()).cloned()
   }
 
+  pub fn find(&self, binding_id: &str) -> Option<Binding> {
+    let peer = self.by_id.lock().unwrap().get(binding_id).cloned()?;
+    self.get(&PeerId::unchecked(peer))
+  }
+
   pub fn remove(&self, peer_id: &PeerId) -> Option<Binding> {
     let mut map = self.by_peer.lock().unwrap();
-    map.remove(peer_id.as_str())
+    let old = map.remove(peer_id.as_str())?;
+    self.by_id.lock().unwrap().remove(&old.binding_id);
+    Some(old)
   }
 
   /// Look up a binding that is still alive.
@@ -153,6 +187,10 @@ impl Bindings {
     let before = map.len();
     map.retain(|_, b| b.expires_at > now);
     let dropped = before - map.len();
+
+    let mut ids = self.by_id.lock().unwrap();
+    ids.retain(|_, peer| map.contains_key(peer));
+    drop(ids);
     drop(map);
 
     let mut spent = self.spent.lock().unwrap();

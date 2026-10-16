@@ -57,6 +57,20 @@ pub enum JoinError {
   BadSignature,
 }
 
+impl std::fmt::Display for JoinError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      JoinError::MalformedToken(d) => write!(f, "malformed token: {d}"),
+      JoinError::MalformedKey(d) => write!(f, "malformed key: {d}"),
+      JoinError::Ticket(e) => write!(f, "ticket: {e}"),
+      JoinError::StaleTimestamp => write!(f, "timestamp outside the clock window"),
+      JoinError::BadSignature => write!(f, "signature does not match the ticket's key"),
+    }
+  }
+}
+
+impl std::error::Error for JoinError {}
+
 impl JoinError {
   pub fn code(&self) -> &'static str {
     match self {
@@ -172,6 +186,134 @@ pub fn binding_mac(
     .iter()
     .map(|b| format!("{b:02x}"))
     .collect()
+}
+
+/// Check a MAC without leaking where the first differing byte was.
+pub fn verify_binding_mac(
+  key: &[u8; 32],
+  binding_id: &str,
+  seq: u64,
+  timestamp: UnixSeconds,
+  generation: Generation,
+  mac: &str,
+) -> bool {
+  let Ok(expected) = hex_decode(mac) else {
+    return false;
+  };
+  let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC takes any key length");
+  mac.update(binding_id.as_bytes());
+  mac.update(&seq.to_be_bytes());
+  mac.update(&timestamp.to_be_bytes());
+  mac.update(&generation.to_be_bytes());
+  mac.verify_slice(&expected).is_ok()
+}
+
+fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
+  if !s.len().is_multiple_of(2) {
+    return Err(());
+  }
+  (0..s.len())
+    .step_by(2)
+    .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| ()))
+    .collect()
+}
+
+// ------------------------------------------------------------------ envelope
+
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// A versioned envelope. Every response carries the version, the request id and
+/// — on failure — an error code, so a client can match replies to requests
+/// across a transport that may reorder them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Request {
+  pub v: u32,
+  pub id: String,
+  pub method: String,
+  #[serde(default)]
+  pub params: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RpcError {
+  pub code: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Response {
+  pub v: u32,
+  pub id: String,
+  #[serde(skip_serializing_if = "Option::is_none", default)]
+  pub result: Option<serde_json::Value>,
+  #[serde(skip_serializing_if = "Option::is_none", default)]
+  pub error: Option<RpcError>,
+}
+
+impl Response {
+  pub fn ok(id: &str, result: &impl Serialize) -> Response {
+    Response {
+      v: PROTOCOL_VERSION,
+      id: id.to_string(),
+      result: serde_json::to_value(result).ok(),
+      error: None,
+    }
+  }
+
+  pub fn err(id: &str, code: &str, detail: Option<String>) -> Response {
+    Response {
+      v: PROTOCOL_VERSION,
+      id: id.to_string(),
+      result: None,
+      error: Some(RpcError {
+        code: code.into(),
+        detail,
+      }),
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+  Join,
+  Heartbeat,
+  Exit,
+}
+
+impl Method {
+  pub fn name(self) -> &'static str {
+    match self {
+      Method::Join => "punch.join",
+      Method::Heartbeat => "punch.heartbeat",
+      Method::Exit => "punch.exit",
+    }
+  }
+
+  pub fn parse(s: &str) -> Option<Method> {
+    match s {
+      "punch.join" => Some(Method::Join),
+      "punch.heartbeat" => Some(Method::Heartbeat),
+      "punch.exit" => Some(Method::Exit),
+      _ => None,
+    }
+  }
+}
+
+/// Parse an envelope, rejecting a version we do not speak.
+pub fn parse_request(bytes: &[u8]) -> Result<Request, RpcError> {
+  let req: Request = serde_json::from_slice(bytes).map_err(|e| RpcError {
+    code: "malformed_request".into(),
+    detail: Some(e.to_string()),
+  })?;
+  if req.v != PROTOCOL_VERSION {
+    return Err(RpcError {
+      code: "unsupported_version".into(),
+      detail: Some(format!("server speaks {PROTOCOL_VERSION}")),
+    });
+  }
+  Ok(req)
 }
 
 #[cfg(test)]
@@ -313,5 +455,40 @@ mod tests {
         .chars()
         .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
     );
+  }
+
+  #[test]
+  fn mac_verification_is_exact() {
+    let key = [3u8; 32];
+    let good = binding_mac(&key, "b1", 7, 100, 2);
+    assert!(verify_binding_mac(&key, "b1", 7, 100, 2, &good));
+    assert!(!verify_binding_mac(&key, "b1", 7, 100, 3, &good));
+    assert!(!verify_binding_mac(&key, "b1", 7, 100, 2, "zzzz"));
+    assert!(!verify_binding_mac(&key, "b1", 7, 100, 2, ""));
+  }
+
+  #[test]
+  fn envelope_round_trips_and_keeps_the_request_id() {
+    let raw = r#"{"v":1,"id":"r-1","method":"punch.exit","params":{"binding_id":"b1"}}"#;
+    let req = parse_request(raw.as_bytes()).unwrap();
+    assert_eq!(Method::parse(&req.method), Some(Method::Exit));
+    assert_eq!(req.id, "r-1");
+
+    let resp = Response::ok(&req.id, &HeartbeatResponse { expires_at: 42 });
+    let back: Response = serde_json::from_slice(&serde_json::to_vec(&resp).unwrap()).unwrap();
+    assert_eq!(back.id, "r-1");
+    assert_eq!(back.error, None);
+  }
+
+  #[test]
+  fn envelope_rejects_another_version_and_unknown_methods() {
+    let raw = r#"{"v":2,"id":"r-1","method":"punch.join","params":{}}"#;
+    let e = parse_request(raw.as_bytes()).unwrap_err();
+    assert_eq!(e.code, "unsupported_version");
+
+    let raw = r#"{"v":1,"id":"r-1","method":"punch.signal","params":{}}"#;
+    // parses fine — the method is unknown, but that is the dispatcher's call
+    let req = parse_request(raw.as_bytes()).unwrap();
+    assert_eq!(Method::parse(&req.method), None);
   }
 }
