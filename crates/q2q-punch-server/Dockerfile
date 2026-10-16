@@ -12,15 +12,19 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/q2q-core/Cargo.toml crates/q2q-core/Cargo.toml
 COPY crates/q2q-punch/Cargo.toml crates/q2q-punch/Cargo.toml
-COPY crates/q2q-ratelimit/Cargo.toml crates/q2q-ratelimit/Cargo.toml
 COPY crates/q2q-punch-server/Cargo.toml crates/q2q-punch-server/Cargo.toml
-RUN mkdir -p crates/q2q-core/src crates/q2q-punch/src crates/q2q-ratelimit/src \
-  && : > crates/q2q-core/src/lib.rs \
-  && : > crates/q2q-punch/src/lib.rs \
-  && : > crates/q2q-ratelimit/src/lib.rs \
-  && mkdir -p crates/q2q-punch-server/src \
-  && echo 'fn main() {}' > crates/q2q-punch-server/src/main.rs \
-  && cargo build --release --bin q2q-punch-server
+COPY crates/q2q-ratelimit/Cargo.toml crates/q2q-ratelimit/Cargo.toml
+COPY crates/q2q-track/Cargo.toml crates/q2q-track/Cargo.toml
+COPY crates/q2q-track-server/Cargo.toml crates/q2q-track-server/Cargo.toml
+# The workspace manifest lists every member, so cargo needs all of them present
+# even though only one binary is built here.
+RUN for c in q2q-core q2q-punch q2q-ratelimit q2q-track; do \
+      mkdir -p crates/$c/src && : > crates/$c/src/lib.rs; \
+    done \
+ && for c in q2q-punch-server q2q-track-server; do \
+      mkdir -p crates/$c/src && echo 'fn main() {}' > crates/$c/src/main.rs; \
+    done \
+ && cargo build --release --bin q2q-punch-server
 
 FROM rust:1-alpine AS build
 RUN apk add --no-cache build-base cmake perl

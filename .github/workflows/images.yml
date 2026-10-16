@@ -45,7 +45,7 @@ jobs:
           if [ "$EVENT" = "workflow_dispatch" ]; then
             echo "tag=$DISPATCH_TAG" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=${GITHUB_REF_NAME#track/v}" >> "$GITHUB_OUTPUT"
+            echo "tag=${GITHUB_REF_NAME#track/}" >> "$GITHUB_OUTPUT"
           fi
         env:
           EVENT: ${{ github.event_name }}
@@ -85,7 +85,7 @@ jobs:
           if [ "$EVENT" = "workflow_dispatch" ]; then
             echo "tag=$DISPATCH_TAG" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=${GITHUB_REF_NAME#punch/v}" >> "$GITHUB_OUTPUT"
+            echo "tag=${GITHUB_REF_NAME#punch/}" >> "$GITHUB_OUTPUT"
           fi
         env:
           EVENT: ${{ github.event_name }}
