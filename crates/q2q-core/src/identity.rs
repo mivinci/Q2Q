@@ -300,6 +300,21 @@ pub fn public_key_of(sk: &SigningKey) -> [u8; 32] {
   sk.verifying_key().to_bytes()
 }
 
+/// Verify a detached signature over an arbitrary message, made by the holder of
+/// the identity this public key belongs to.
+///
+/// Punch needs this for `join`, which signs `"join" || token || timestamp` in
+/// addition to carrying the ticket: the ticket proves who you claim to be, the
+/// detached signature proves you are on the other end of this channel right now.
+pub fn verify_signature(public_key: &[u8; 32], message: &[u8], sig: &[u8; 64]) -> bool {
+  let Ok(verifying) = VerifyingKey::from_bytes(public_key) else {
+    return false;
+  };
+  verifying
+    .verify(message, &Signature::from_bytes(sig))
+    .is_ok()
+}
+
 pub fn peer_id_of(sk: &SigningKey) -> PeerId {
   peer_id_from_public_key(&public_key_of(sk))
 }

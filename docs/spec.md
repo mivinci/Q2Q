@@ -764,7 +764,7 @@ sequenceDiagram
     B->>PB: punch.join(join_token, public_key, signature, ts)
     Note over PB: 验 join 票据 (pub 与 iss 一致, 签名, aud, exp)
     Note over PB: 查 jti 未被消费过
-    Note over PB: 查 peer_id 未被吊销 (查 Track 或缓存)<br/>查不到且 Track 不可达 → 拒绝 (fail-closed)
+    Note over PB: 不查询 Track —— 票据自签自证，请求路径上与 Track 无运行时依赖（见 3.1.4：本设计没有吊销机制）
     Note over PB: 校验 base32(SHA-256(public_key)) == iss (公钥与身份一致)
     Note over PB: 用 public_key 验签 signature
     Note over PB: 标记 jti 已消费 (一次性)

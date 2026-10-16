@@ -769,6 +769,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "q2q-punch"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "getrandom",
+ "hmac",
+ "q2q-core",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "q2q-ratelimit"
 version = "0.1.0"
 dependencies = [
