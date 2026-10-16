@@ -1,4 +1,5 @@
 mod cert;
+mod limits;
 mod server;
 mod signalling;
 
@@ -34,9 +35,31 @@ struct Config {
   sweep_secs: u64,
   #[serde(default = "default_max")]
   max_request_bytes: usize,
+  #[serde(default)]
+  limits: LimitConfig,
   /// A real deployment serves a real certificate. Omit it and a self-signed one
   /// is minted at startup — fine for tests and nothing else.
   identity: Option<IdentityConfig>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(default)]
+struct LimitConfig {
+  join_per_minute: u32,
+  heartbeat_per_minute: u32,
+  connect_per_minute: u32,
+  signal_per_minute: u32,
+}
+
+impl Default for LimitConfig {
+  fn default() -> Self {
+    LimitConfig {
+      join_per_minute: limits::JOIN_PER_MINUTE,
+      heartbeat_per_minute: limits::HEARTBEAT_PER_MINUTE,
+      connect_per_minute: limits::CONNECT_PER_MINUTE,
+      signal_per_minute: limits::SIGNAL_PER_MINUTE,
+    }
+  }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -99,6 +122,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     bindings: Bindings::new(config.ttl_secs),
     connections: Connections::new(config.ttl_secs),
     sinks: Arc::new(Sinks::default()),
+    limits: limits::limiter_with(
+      config.limits.join_per_minute,
+      config.limits.heartbeat_per_minute,
+      config.limits.connect_per_minute,
+      config.limits.signal_per_minute,
+    ),
     punch_id: config.punch_id.clone(),
     ttl: config.ttl_secs,
     max_request_bytes: config.max_request_bytes,
@@ -110,9 +139,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
       tokio::time::sleep(std::time::Duration::from_secs(sweep_every)).await;
       let dropped = sweep_state.bindings.sweep(now());
+      if dropped > 0 {
+        tracing::info!(dropped, "swept expired bindings");
+      }
       let closed = sweep_state.connections.sweep(now());
       if closed > 0 {
         tracing::info!(closed, "swept finished connections");
+      }
+      // buckets idle for ten minutes, so a scan cannot keep them forever
+      let dropped = sweep_state.limits.sweep(limits::now_ms(), 600_000);
+      if dropped > 0 {
+        tracing::debug!(dropped, "swept idle rate limit buckets");
       }
       if dropped > 0 {
         tracing::info!(dropped, "swept expired bindings");

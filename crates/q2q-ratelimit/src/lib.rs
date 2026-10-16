@@ -6,6 +6,7 @@
 pub mod layer;
 pub mod limiter;
 pub mod network;
+pub mod rules;
 
 pub use layer::{PeerAddr, RateLimitLayer, RateLimitService};
 pub use limiter::{Key, Limiter, Rule, Verdict};

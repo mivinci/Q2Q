@@ -23,6 +23,7 @@ use q2q_punch::message::{
   Method, Request, Response, parse_request, verify_binding_mac,
 };
 use q2q_punch::signal::{Connections, SignalRequest};
+use q2q_ratelimit::Limiter;
 use quinn::{Connection, Endpoint};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -32,6 +33,7 @@ pub struct State {
   pub connections: Connections,
   /// Channels to the peers themselves. Reachability lives here, not in a table.
   pub sinks: Arc<Sinks>,
+  pub limits: Limiter,
   /// Tickets must name this exact server, so one leak cannot be replayed
   /// against a different Punch node.
   pub punch_id: String,
@@ -226,6 +228,27 @@ fn authenticated(
   Ok(binding)
 }
 
+/// Rate limit first, then dispatch. Identities are free to mint, so the limit is
+/// charged to the network the request came from — see `limits::classify`.
+fn handle_guarded(state: &State, req: Request, caller: &Caller, ip: std::net::IpAddr) -> Outcome {
+  let verdict = crate::limits::charge(&state.limits, &req, ip, crate::limits::now_ms());
+  if !verdict.allowed {
+    let wait = verdict.retry_after_ms.unwrap_or(1_000);
+    tracing::debug!(id = %req.id, retry_after_ms = wait, "rate limited");
+    return Outcome {
+      response: Response::err(
+        &req.id,
+        "rate_limited",
+        Some(format!("retry after {wait} ms")),
+      ),
+      forwards: Vec::new(),
+      joined: None,
+      ephemeral: None,
+    };
+  }
+  dispatch(state, &req, now(), caller)
+}
+
 // ------------------------------------------------------------------ transport
 
 pub fn endpoint(identity: &PunchIdentity, bind: SocketAddr) -> Result<Endpoint, CertError> {
@@ -247,6 +270,7 @@ pub async fn serve(endpoint: Endpoint, state: Arc<State>) {
 
 async fn handle_connection(conn: Connection, state: Arc<State>) {
   let remote = conn.remote_address();
+  let ip = remote.ip();
   tracing::debug!(%remote, "connection accepted");
 
   // heartbeats: loss is tolerated, so they do not need a stream
@@ -255,7 +279,7 @@ async fn handle_connection(conn: Connection, state: Arc<State>) {
   tokio::spawn(async move {
     while let Ok(bytes) = datagrams.read_datagram().await {
       let outcome = match parse_request(&bytes) {
-        Ok(req) => dispatch(&dg_state, &req, now(), &Caller::default()),
+        Ok(req) => handle_guarded(&dg_state, req, &Caller::default(), ip),
         Err(e) => Outcome {
           response: Response::err("unknown", &e.code, e.detail),
           forwards: Vec::new(),
@@ -290,7 +314,7 @@ async fn handle_connection(conn: Connection, state: Arc<State>) {
         return;
       };
       let outcome = match parse_request(&bytes) {
-        Ok(req) => dispatch(&st, &req, now(), &caller),
+        Ok(req) => handle_guarded(&st, req, &caller, ip),
         Err(e) => Outcome {
           response: Response::err("unknown", &e.code, e.detail),
           forwards: Vec::new(),
@@ -353,10 +377,24 @@ mod tests {
   use std::sync::Arc;
 
   fn state(ttl: u64) -> State {
+    state_with_limits(
+      ttl,
+      crate::limits::limiter_with(
+        crate::limits::JOIN_PER_MINUTE,
+        crate::limits::HEARTBEAT_PER_MINUTE,
+        crate::limits::CONNECT_PER_MINUTE,
+        crate::limits::SIGNAL_PER_MINUTE,
+      ),
+    )
+  }
+
+  /// A small bucket makes the limit observable in a test.
+  fn state_with_limits(ttl: u64, limits: Limiter) -> State {
     State {
       bindings: Bindings::new(ttl),
       connections: Connections::new(ttl),
       sinks: Arc::new(Sinks::default()),
+      limits,
       punch_id: "punch-1".into(),
       ttl,
       max_request_bytes: 64 * 1024,
@@ -615,6 +653,59 @@ mod tests {
     assert!(resp.error.is_none(), "{:?}", resp.error);
 
     conn.close(0u32.into(), b"done");
+    client.wait_idle().await;
+  }
+
+  #[tokio::test]
+  async fn a_second_join_from_the_same_network_is_rate_limited() {
+    let identity = crate::cert::PunchIdentity::generate("punch-1").unwrap();
+    let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let ep = endpoint(&identity, bind).unwrap();
+    let addr = ep.local_addr().unwrap();
+
+    // one join per minute per network
+    let st = Arc::new(state_with_limits(
+      60,
+      crate::limits::limiter_with(1, 120, 20, 120),
+    ));
+    let server_state = st.clone();
+    tokio::spawn(async move { serve(ep, server_state).await });
+
+    let client = test_client();
+    let now = q2q_punch::binding::now();
+
+    // two connections, but both from 127.0.0.1 — one bucket
+    let first = client.connect(addr, "punch-1").unwrap().await.unwrap();
+    let second = client.connect(addr, "punch-1").unwrap().await.unwrap();
+
+    let joined = rpc(
+      &first,
+      &Request {
+        v: 1,
+        id: "r-1".into(),
+        method: "punch.join".into(),
+        params: serde_json::to_value(join_request(7, "punch-1", now)).unwrap(),
+      },
+    )
+    .await;
+    assert!(joined.error.is_none(), "{:?}", joined.error);
+
+    let denied = rpc(
+      &second,
+      &Request {
+        v: 1,
+        id: "r-2".into(),
+        method: "punch.join".into(),
+        params: serde_json::to_value(join_request(8, "punch-1", now)).unwrap(),
+      },
+    )
+    .await;
+    let error = denied.error.expect("the second join must be refused");
+    assert_eq!(error.code, "rate_limited");
+    assert!(error.detail.unwrap_or_default().contains("retry after"));
+
+    first.close(0u32.into(), b"done");
+    second.close(0u32.into(), b"done");
     client.wait_idle().await;
   }
 

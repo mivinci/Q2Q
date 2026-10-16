@@ -1169,6 +1169,7 @@ dependencies = [
  "getrandom 0.4.3",
  "q2q-core",
  "q2q-punch",
+ "q2q-ratelimit",
  "quinn",
  "rcgen",
  "rustls",

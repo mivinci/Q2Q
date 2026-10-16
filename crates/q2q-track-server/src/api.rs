@@ -68,8 +68,7 @@ impl<S: TrackState> Clone for AppState<S> {
 
 /// One rule per endpoint class. Announce has to verify an Ed25519 signature and
 /// write the index, so it costs far more than a query.
-pub const RULE_ANNOUNCE: &str = "announce";
-pub const RULE_QUERY: &str = "query";
+pub use q2q_ratelimit::rules::{TRACK_ANNOUNCE as RULE_ANNOUNCE, TRACK_QUERY as RULE_QUERY};
 
 pub fn limiter() -> Arc<Limiter> {
   let mut rules = HashMap::new();
