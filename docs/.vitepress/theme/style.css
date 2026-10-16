@@ -24,8 +24,10 @@
   height: 28px;
 }
 
-/* navbar 背景色默认带 0.5s 过渡，首帧的不透明背景要花半秒才淡出，
-   这半秒它正好压在 hero 光晕上。首页直接让背景切换瞬时完成。 */
+/* navbar 的 home / top 两个 class 是在 watchPostEffect 里赋上去的（classes 初值
+   是空对象），所以 SSR 首帧它一个 class 都没有，拿到的是不透明背景，hydration
+   之后才淡出——首页这一下正好压在 hero 光晕上。首帧把过渡归零，让这个闪现
+   瞬间结束。 */
 .VPNav,
 .VPNavBar,
 .VPNavBar .content-body,
@@ -33,14 +35,16 @@
   transition-duration: 0s !important;
 }
 
-/* 滚动后 navbar 会切到不透明的 --vp-c-bg，首页 hero 的光晕延伸到 navbar
-   后面，会被这条不透明的色带硬生生截断。换成毛玻璃：内容照样可读，
-   光晕透过来只是被柔化，不再有那条硬边。 */
-.VPNavBar:not(.top) {
-  background-color: color-mix(in srgb, var(--vp-c-bg) 60%, transparent) !important;
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+/* 过了首帧就恢复默认过渡，否则滚动时背景是硬切出来的，很扎眼。
+   ready 由 theme/index.js 在 hydration 之后打在 <html> 上。 */
+html.ready .VPNavBar {
+  transition-duration: 0.25s !important;
 }
+
+/* 滚动后的背景就交给主题默认的 --vp-nav-bg-color（= --vp-c-bg，与页面背景
+   同色），不再自己叠一层半透明。半透明看着更"透"，实际上会在 navbar 那条
+   64px 的带子里留下一块雾面，比纯色更显眼；而且这条规则不只作用于首页，
+   文档页滚动后正文会从 navbar 后面透出来。 */
 
 /* 首页 hero logo 的光晕。
    主题内部有个 .image-bg 元素消费这两个变量：渐变 + 高斯模糊。
