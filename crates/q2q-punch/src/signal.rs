@@ -9,10 +9,10 @@
 use crate::binding::UnixSeconds;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
+use parking_lot::Mutex;
 use q2q_core::identity::{Audience, PeerId, TicketBody, TicketError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -116,6 +116,8 @@ pub enum SignalError {
   OfferConflict,
   Expired,
   BadSignalKey,
+  /// Nothing about the request was wrong; we could not mint a key.
+  Internal,
   MissingTicket,
   /// B has no binding — the standing channel is what makes it reachable.
   PeerOffline,
@@ -140,6 +142,7 @@ impl SignalError {
       SignalError::BadSignalKey => "unauthorized",
       SignalError::MissingTicket => "malformed_request",
       SignalError::PeerOffline => "peer_offline",
+      SignalError::Internal => "internal_error",
     }
   }
 }
@@ -157,6 +160,7 @@ impl std::fmt::Display for SignalError {
       SignalError::BadSignalKey => write!(f, "signal key does not match"),
       SignalError::MissingTicket => write!(f, "connect and offer need a token"),
       SignalError::PeerOffline => write!(f, "target has no binding"),
+      SignalError::Internal => write!(f, "could not mint a key"),
     }
   }
 }
@@ -247,7 +251,7 @@ impl Connections {
       return Err(SignalError::NotTheTarget);
     }
 
-    let mut spent = self.spent.lock().unwrap();
+    let mut spent = self.spent.lock();
     if spent.get(&cid).is_some_and(|until| *until > now) {
       return Err(SignalError::UnknownConnection);
     }
@@ -266,7 +270,7 @@ impl Connections {
       pending: Vec::new(),
       expires_at: now + self.ttl,
     };
-    self.map.lock().unwrap().insert(cid, connection.clone());
+    self.map.lock().insert(cid, connection.clone());
     Ok(connection)
   }
 
@@ -277,7 +281,7 @@ impl Connections {
     from: &PeerId,
     now: UnixSeconds,
   ) -> Result<Connection, SignalError> {
-    let mut map = self.map.lock().unwrap();
+    let mut map = self.map.lock();
     let c = self.live_mut(&mut map, connection_id, now)?;
     if &c.b != from {
       return Err(SignalError::NotAParticipant);
@@ -291,7 +295,7 @@ impl Connections {
 
   /// B declines. The connection is over; A gets a distinguishable reason.
   pub fn reject(&self, connection_id: &str, from: &PeerId) -> Result<Connection, SignalError> {
-    let mut map = self.map.lock().unwrap();
+    let mut map = self.map.lock();
     let c = map
       .get(connection_id)
       .ok_or(SignalError::UnknownConnection)?
@@ -312,7 +316,7 @@ impl Connections {
     sdp: &str,
     now: UnixSeconds,
   ) -> Result<Connection, SignalError> {
-    let mut map = self.map.lock().unwrap();
+    let mut map = self.map.lock();
     let c = self.live_mut(&mut map, connection_id, now)?;
     if &c.a != from {
       return Err(SignalError::NotAParticipant);
@@ -329,7 +333,7 @@ impl Connections {
     c.offer = Some(sdp.to_string());
     c.state = ConnectionState::Offered;
     if c.signal_key.is_none() {
-      c.signal_key = Some(random_key());
+      c.signal_key = Some(random_key()?);
     }
     Ok(c.clone())
   }
@@ -341,7 +345,7 @@ impl Connections {
     from: &PeerId,
     now: UnixSeconds,
   ) -> Result<Connection, SignalError> {
-    let mut map = self.map.lock().unwrap();
+    let mut map = self.map.lock();
     let c = self.live_mut(&mut map, connection_id, now)?;
     if &c.a != from && &c.b != from {
       return Err(SignalError::NotAParticipant);
@@ -351,7 +355,7 @@ impl Connections {
 
   /// The other end of a connection, given one of them.
   pub fn peer_of(&self, connection_id: &str, from: &PeerId) -> Option<PeerId> {
-    let map = self.map.lock().unwrap();
+    let map = self.map.lock();
     let c = map.get(connection_id)?;
     if &c.a == from {
       Some(c.b.clone())
@@ -364,7 +368,7 @@ impl Connections {
 
   /// Queue signalling for A while it is away, so a resume can replay it.
   pub fn buffer_for_a(&self, connection_id: &str, message: &str) {
-    let mut map = self.map.lock().unwrap();
+    let mut map = self.map.lock();
     if let Some(c) = map.get_mut(connection_id) {
       c.pending.push(message.to_string());
     }
@@ -377,7 +381,7 @@ impl Connections {
     signal_key: &str,
     now: UnixSeconds,
   ) -> Result<(Connection, Vec<String>), SignalError> {
-    let mut map = self.map.lock().unwrap();
+    let mut map = self.map.lock();
     let c = self.live_mut(&mut map, connection_id, now)?;
     let expected = c.signal_key.ok_or(SignalError::BadSignalKey)?;
     let given = B64
@@ -393,21 +397,21 @@ impl Connections {
   }
 
   pub fn remove(&self, connection_id: &str) -> Option<Connection> {
-    self.map.lock().unwrap().remove(connection_id)
+    self.map.lock().remove(connection_id)
   }
 
   pub fn get(&self, connection_id: &str) -> Option<Connection> {
-    self.map.lock().unwrap().get(connection_id).cloned()
+    self.map.lock().get(connection_id).cloned()
   }
 
   pub fn sweep(&self, now: UnixSeconds) -> usize {
-    let mut map = self.map.lock().unwrap();
+    let mut map = self.map.lock();
     let before = map.len();
     map.retain(|_, c| c.expires_at > now);
     let dropped = before - map.len();
     drop(map);
 
-    let mut spent = self.spent.lock().unwrap();
+    let mut spent = self.spent.lock();
     spent.retain(|_, until| *until > now);
     dropped
   }
@@ -428,10 +432,10 @@ impl Connections {
   }
 }
 
-fn random_key() -> [u8; 32] {
+fn random_key() -> Result<[u8; 32], SignalError> {
   let mut out = [0u8; 32];
-  getrandom::fill(&mut out).expect("system random is available");
-  out
+  getrandom::fill(&mut out).map_err(|_| SignalError::Internal)?;
+  Ok(out)
 }
 
 #[cfg(test)]

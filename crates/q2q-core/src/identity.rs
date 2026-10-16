@@ -63,17 +63,18 @@ impl std::fmt::Display for PeerId {
 /// `base32(SHA-256(public_key))` plus a six character bech32 checksum.
 pub fn peer_id_from_public_key(public_key: &[u8; 32]) -> PeerId {
   let hash = Sha256::digest(public_key);
-  let data = base32_encode(&hash);
-  let values: Vec<u8> = data.bytes().map(|c| base32_value(c).unwrap()).collect();
-  let mut out = data;
+  // keep the 5-bit values rather than re-decoding the string we just built
+  let values = base32_values(&hash);
+  let mut out = base32_string(&values);
   for v in checksum(&values) {
     out.push(BECH32_CHARSET[v as usize] as char);
   }
   PeerId(out)
 }
 
-fn base32_encode(data: &[u8]) -> String {
-  let mut out = String::new();
+/// Five-bit values, which is what the checksum works on.
+fn base32_values(data: &[u8]) -> Vec<u8> {
+  let mut out = Vec::new();
   let mut bits = 0u32;
   let mut nbits = 0;
   for &b in data {
@@ -81,14 +82,21 @@ fn base32_encode(data: &[u8]) -> String {
     nbits += 8;
     while nbits >= 5 {
       nbits -= 5;
-      out.push(BASE32_ALPHABET[((bits >> nbits) & 31) as usize] as char);
+      out.push(((bits >> nbits) & 31) as u8);
     }
   }
   if nbits > 0 {
     // 32 bytes leave a single bit over; pad it with zeros, no '=' padding
-    out.push(BASE32_ALPHABET[((bits << (5 - nbits)) & 31) as usize] as char);
+    out.push(((bits << (5 - nbits)) & 31) as u8);
   }
   out
+}
+
+fn base32_string(values: &[u8]) -> String {
+  values
+    .iter()
+    .map(|&v| BASE32_ALPHABET[v as usize] as char)
+    .collect()
 }
 
 fn base32_value(c: u8) -> Option<u8> {

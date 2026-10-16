@@ -6,13 +6,9 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use hmac::{Hmac, KeyInit, Mac};
 use q2q_core::identity::{Audience, PeerId, Ticket, TicketError};
 // the wire form is shared with Punch, so it lives in core and is re-exported
 pub use q2q_core::identity::TicketBody;
-use sha2::Sha256;
-
-type HmacSha256 = Hmac<Sha256>;
 
 /// Short-lived tickets and clock skew both live inside this window.
 pub const CLOCK_TOLERANCE: u64 = 60;
@@ -75,11 +71,14 @@ fn map_ticket_err(e: TicketError) -> AuthError {
 
 /// `HMAC-SHA-256(session_key, peer_id || seq || timestamp)`.
 pub fn mac_bytes(session_key: &[u8; 32], peer_id: &PeerId, seq: u64, timestamp: u64) -> [u8; 32] {
-  let mut mac = HmacSha256::new_from_slice(session_key).expect("HMAC takes any key length");
-  mac.update(peer_id.as_str().as_bytes());
-  mac.update(&seq.to_be_bytes());
-  mac.update(&timestamp.to_be_bytes());
-  mac.finalize().into_bytes().into()
+  q2q_core::mac::sha256(
+    session_key,
+    &[
+      peer_id.as_str().as_bytes(),
+      &seq.to_be_bytes(),
+      &timestamp.to_be_bytes(),
+    ],
+  )
 }
 
 /// Check a heartbeat-style request: clock within tolerance, sequence moving

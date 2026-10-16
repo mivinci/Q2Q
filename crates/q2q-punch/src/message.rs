@@ -7,10 +7,8 @@
 use crate::binding::{Generation, UnixSeconds};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use hmac::{Hmac, KeyInit, Mac};
 use q2q_core::identity::{Audience, TicketBody, TicketError, verify_signature};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
 
 /// Clock tolerance for a join request, in seconds.
 pub const CLOCK_TOLERANCE: UnixSeconds = 60;
@@ -168,6 +166,22 @@ pub struct ExitRequest {
 
 /// MAC over a binding message. Note this is hex, unlike Track's base64 — the
 /// spec specifies them differently and matching each is what matters.
+/// The bytes a binding MAC covers. Note the encoding is hex, unlike Track's
+/// base64 — the spec states them differently and matching each is what matters.
+fn mac_parts(
+  binding_id: &str,
+  seq: u64,
+  timestamp: UnixSeconds,
+  generation: Generation,
+) -> [Vec<u8>; 4] {
+  [
+    binding_id.as_bytes().to_vec(),
+    seq.to_be_bytes().to_vec(),
+    timestamp.to_be_bytes().to_vec(),
+    generation.to_be_bytes().to_vec(),
+  ]
+}
+
 pub fn binding_mac(
   key: &[u8; 32],
   binding_id: &str,
@@ -175,14 +189,9 @@ pub fn binding_mac(
   timestamp: UnixSeconds,
   generation: Generation,
 ) -> String {
-  let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC takes any key length");
-  mac.update(binding_id.as_bytes());
-  mac.update(&seq.to_be_bytes());
-  mac.update(&timestamp.to_be_bytes());
-  mac.update(&generation.to_be_bytes());
-  mac
-    .finalize()
-    .into_bytes()
+  let parts = mac_parts(binding_id, seq, timestamp, generation);
+  let parts: Vec<&[u8]> = parts.iter().map(|p| p.as_slice()).collect();
+  q2q_core::mac::sha256(key, &parts)
     .iter()
     .map(|b| format!("{b:02x}"))
     .collect()
@@ -200,12 +209,12 @@ pub fn verify_binding_mac(
   let Ok(expected) = hex_decode(mac) else {
     return false;
   };
-  let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC takes any key length");
-  mac.update(binding_id.as_bytes());
-  mac.update(&seq.to_be_bytes());
-  mac.update(&timestamp.to_be_bytes());
-  mac.update(&generation.to_be_bytes());
-  mac.verify_slice(&expected).is_ok()
+  let Ok(expected) = <[u8; 32]>::try_from(expected.as_slice()) else {
+    return false;
+  };
+  let parts = mac_parts(binding_id, seq, timestamp, generation);
+  let parts: Vec<&[u8]> = parts.iter().map(|p| p.as_slice()).collect();
+  q2q_core::mac::verify(expected, key, &parts)
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {

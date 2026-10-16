@@ -5,9 +5,9 @@
 //! signature — a heartbeat every few seconds does not want an Ed25519 verify
 //! each time.
 
+use parking_lot::Mutex;
 use q2q_core::identity::PeerId;
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type UnixSeconds = u64;
@@ -95,7 +95,7 @@ impl Bindings {
   /// Mark a ticket id as used. Returns false if it was already spent, which is
   /// what stops a captured join from being replayed.
   pub fn spend(&self, token_id: &str, now: UnixSeconds, ticket_exp: UnixSeconds) -> bool {
-    let mut spent = self.spent.lock().unwrap();
+    let mut spent = self.spent.lock();
     if spent.get(token_id).is_some_and(|until| *until > now) {
       return false;
     }
@@ -108,14 +108,14 @@ impl Bindings {
   }
 
   pub fn insert(&self, binding: Binding) {
-    let mut map = self.by_peer.lock().unwrap();
+    let mut map = self.by_peer.lock();
     // joining again replaces the old binding, so drop the stale id first
     if let Some(old) = map.get(binding.peer_id.as_str())
       && old.binding_id != binding.binding_id
     {
-      self.by_id.lock().unwrap().remove(&old.binding_id);
+      self.by_id.lock().remove(&old.binding_id);
     }
-    self.by_id.lock().unwrap().insert(
+    self.by_id.lock().insert(
       binding.binding_id.clone(),
       binding.peer_id.as_str().to_string(),
     );
@@ -123,19 +123,19 @@ impl Bindings {
   }
 
   pub fn get(&self, peer_id: &PeerId) -> Option<Binding> {
-    let map = self.by_peer.lock().unwrap();
+    let map = self.by_peer.lock();
     map.get(peer_id.as_str()).cloned()
   }
 
   pub fn find(&self, binding_id: &str) -> Option<Binding> {
-    let peer = self.by_id.lock().unwrap().get(binding_id).cloned()?;
+    let peer = self.by_id.lock().get(binding_id).cloned()?;
     self.get(&PeerId::unchecked(peer))
   }
 
   pub fn remove(&self, peer_id: &PeerId) -> Option<Binding> {
-    let mut map = self.by_peer.lock().unwrap();
+    let mut map = self.by_peer.lock();
     let old = map.remove(peer_id.as_str())?;
-    self.by_id.lock().unwrap().remove(&old.binding_id);
+    self.by_id.lock().remove(&old.binding_id);
     Some(old)
   }
 
@@ -183,23 +183,23 @@ impl Bindings {
 
   /// Drop expired bindings and spent-token records. Call it on a timer.
   pub fn sweep(&self, now: UnixSeconds) -> usize {
-    let mut map = self.by_peer.lock().unwrap();
+    let mut map = self.by_peer.lock();
     let before = map.len();
     map.retain(|_, b| b.expires_at > now);
     let dropped = before - map.len();
 
-    let mut ids = self.by_id.lock().unwrap();
+    let mut ids = self.by_id.lock();
     ids.retain(|_, peer| map.contains_key(peer));
     drop(ids);
     drop(map);
 
-    let mut spent = self.spent.lock().unwrap();
+    let mut spent = self.spent.lock();
     spent.retain(|_, until| *until > now);
     dropped
   }
 
   pub fn len(&self) -> usize {
-    self.by_peer.lock().unwrap().len()
+    self.by_peer.lock().len()
   }
 
   pub fn is_empty(&self) -> bool {

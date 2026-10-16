@@ -16,6 +16,7 @@ use crate::cert::{CertError, PunchIdentity};
 use crate::signalling::{Caller, Outcome, Sinks, handle_signal};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
+use parking_lot::Mutex;
 use q2q_core::identity::PeerId;
 use q2q_punch::binding::{Binding, Bindings, UnixSeconds, now};
 use q2q_punch::message::{
@@ -26,7 +27,7 @@ use q2q_punch::signal::{Connections, SignalRequest};
 use q2q_ratelimit::Limiter;
 use quinn::{Connection, Endpoint};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub struct State {
   pub bindings: Bindings,
@@ -129,10 +130,23 @@ fn handle_join(state: &State, req: &Request, join: &JoinRequest, now: UnixSecond
     return plain(Response::err(&req.id, "ticket_replayed", None));
   }
 
+  // both come from the system random source; without them there is no binding
+  let (binding_id, key) = match (random_hex(16), random_key()) {
+    (Ok(id), Ok(key)) => (id, key),
+    (Err(e), _) | (_, Err(e)) => {
+      tracing::error!("could not mint a binding key: {e}");
+      return plain(Response::err(
+        &req.id,
+        "internal_error",
+        Some(e.to_string()),
+      ));
+    }
+  };
+
   let binding = Binding {
-    binding_id: random_hex(16),
+    binding_id,
     peer_id: q2q_core::identity::PeerId::unchecked(&ticket.iss),
-    key: random_key(),
+    key,
     expires_at: now + state.ttl,
     last_seq: 0,
     generation: 0,
@@ -304,7 +318,7 @@ async fn handle_connection(conn: Connection, state: Arc<State>) {
   while let Ok((mut send, mut recv)) = conn.accept_bi().await {
     let st = state.clone();
     let caller = Caller {
-      peer: authed.lock().unwrap().clone(),
+      peer: authed.lock().clone(),
     };
     let joined = authed.clone();
     let opened = ephemeral.clone();
@@ -328,11 +342,11 @@ async fn handle_connection(conn: Connection, state: Arc<State>) {
       };
       if let Some(peer) = &outcome.joined {
         st.sinks.put_standing(peer, mine.clone());
-        *joined.lock().unwrap() = Some(peer.clone());
+        *joined.lock() = Some(peer.clone());
       }
       if let Some(cid) = &outcome.ephemeral {
         st.sinks.put_ephemeral(cid, mine.clone());
-        opened.lock().unwrap().push(cid.clone());
+        opened.lock().push(cid.clone());
       }
       crate::signalling::deliver(&st.sinks, outcome.forwards).await;
       let _ = send.write_all(&out).await;
@@ -341,10 +355,10 @@ async fn handle_connection(conn: Connection, state: Arc<State>) {
   }
 
   // a closed standing channel means an unreachable peer, so drop it here
-  if let Some(peer) = authed.lock().unwrap().as_ref() {
+  if let Some(peer) = authed.lock().as_ref() {
     state.sinks.drop_standing(peer);
   }
-  for cid in ephemeral.lock().unwrap().iter() {
+  for cid in ephemeral.lock().iter() {
     state.sinks.drop_ephemeral(cid);
   }
   tracing::debug!(%remote, "connection closed");
@@ -352,16 +366,29 @@ async fn handle_connection(conn: Connection, state: Arc<State>) {
 
 // ---------------------------------------------------------------------- rand
 
-fn random_key() -> [u8; 32] {
-  let mut out = [0u8; 32];
-  getrandom::fill(&mut out).expect("system random is available");
-  out
+/// The system random source gave us nothing. Nothing about the request was
+/// wrong, so this is a 5xx rather than a rejection of the client.
+#[derive(Debug)]
+pub struct RandomError;
+
+impl std::fmt::Display for RandomError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "system random is unavailable")
+  }
 }
 
-fn random_hex(n_bytes: usize) -> String {
+impl std::error::Error for RandomError {}
+
+fn random_key() -> Result<[u8; 32], RandomError> {
+  let mut out = [0u8; 32];
+  getrandom::fill(&mut out).map_err(|_| RandomError)?;
+  Ok(out)
+}
+
+fn random_hex(n_bytes: usize) -> Result<String, RandomError> {
   let mut buf = vec![0u8; n_bytes];
-  getrandom::fill(&mut buf).expect("system random is available");
-  buf.iter().map(|b| format!("{b:02x}")).collect()
+  getrandom::fill(&mut buf).map_err(|_| RandomError)?;
+  Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 #[cfg(test)]
@@ -805,7 +832,7 @@ mod tests {
     tokio::spawn(async move {
       while let Ok(mut stream) = c.accept_uni().await {
         if let Ok(bytes) = stream.read_to_end(64 * 1024).await {
-          sink.lock().unwrap().push(bytes);
+          sink.lock().push(bytes);
         }
       }
     });
@@ -887,7 +914,7 @@ mod tests {
     // B has to be told before A offers anything
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     {
-      let inbox = b_inbox.lock().unwrap();
+      let inbox = b_inbox.lock();
       assert_eq!(inbox.len(), 1, "B should have received the connect");
       let got: SignalRequest = serde_json::from_slice(&inbox[0]).unwrap();
       assert_eq!(got.kind, SignalType::Connect);
@@ -913,14 +940,14 @@ mod tests {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     {
-      let inbox = b_inbox.lock().unwrap();
+      let inbox = b_inbox.lock();
       assert_eq!(inbox.len(), 2, "B gets the connect and the offer");
       let got: SignalRequest = serde_json::from_slice(&inbox[1]).unwrap();
       assert_eq!(got.kind, SignalType::Offer);
     }
     {
       // the accept itself went the other way, to A
-      let inbox = a_inbox.lock().unwrap();
+      let inbox = a_inbox.lock();
       assert_eq!(inbox.len(), 1);
       let got: SignalRequest = serde_json::from_slice(&inbox[0]).unwrap();
       assert_eq!(got.kind, SignalType::Accept);
@@ -933,7 +960,7 @@ mod tests {
     assert!(resp.error.is_none(), "{:?}", resp.error);
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let inbox = a_inbox.lock().unwrap();
+    let inbox = a_inbox.lock();
     assert_eq!(inbox.len(), 2, "A gets the accept, then the answer");
     let got: SignalRequest = serde_json::from_slice(&inbox[1]).unwrap();
     assert_eq!(got.kind, SignalType::Answer);

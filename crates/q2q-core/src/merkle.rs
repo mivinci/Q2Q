@@ -49,41 +49,58 @@ pub struct Proof {
   pub nodes: Vec<Node>,
 }
 
+/// A tree over no leaves has no root. This stands in for it: SHA-256 never
+/// outputs all zeroes, so it cannot be mistaken for a real root.
+pub const EMPTY_ROOT: Hash = [0u8; 32];
+
 /// Node count per layer, leaves first. The last entry is always 1 (the root).
 fn layer_sizes(leaf_count: usize) -> Vec<usize> {
-  let mut sizes = vec![leaf_count.max(1)];
-  while *sizes.last().unwrap() > 1 {
-    let prev = *sizes.last().unwrap();
-    sizes.push(prev.div_ceil(2));
+  let mut sizes = Vec::new();
+  let mut size = leaf_count.max(1);
+  loop {
+    sizes.push(size);
+    if size == 1 {
+      return sizes;
+    }
+    size = size.div_ceil(2);
   }
-  sizes
 }
 
 fn build_layers(leaves: &[Hash]) -> Vec<Vec<Hash>> {
-  let mut layers = vec![leaves.to_vec()];
-  while layers.last().unwrap().len() > 1 {
-    let prev = layers.last().unwrap();
-    let mut next = Vec::with_capacity(prev.len().div_ceil(2));
-    let mut i = 0;
-    while i < prev.len() {
-      if i + 1 < prev.len() {
-        next.push(node_hash(&prev[i], &prev[i + 1]));
-        i += 2;
-      } else {
-        next.push(prev[i]); // promoted, not duplicated
-        i += 1;
-      }
-    }
-    layers.push(next);
+  let mut layer = leaves.to_vec();
+  let mut layers = vec![layer.clone()];
+  while layer.len() > 1 {
+    layer = next_layer(&layer);
+    layers.push(layer.clone());
   }
   layers
 }
 
-/// Root over the given leaf hashes. A single leaf is its own root.
+fn next_layer(prev: &[Hash]) -> Vec<Hash> {
+  let mut next = Vec::with_capacity(prev.len().div_ceil(2));
+  let mut i = 0;
+  while i < prev.len() {
+    if i + 1 < prev.len() {
+      next.push(node_hash(&prev[i], &prev[i + 1]));
+      i += 2;
+    } else {
+      next.push(prev[i]); // promoted, not duplicated
+      i += 1;
+    }
+  }
+  next
+}
+
+/// Root over the given leaf hashes. A single leaf is its own root; no leaves is
+/// `EMPTY_ROOT`.
 pub fn root(leaves: &[Hash]) -> Hash {
-  match leaves.first() {
-    None => [0u8; 32],
-    Some(_) => build_layers(leaves).last().unwrap()[0],
+  match leaves {
+    [] => EMPTY_ROOT,
+    [only] => *only,
+    _ => build_layers(leaves)
+      .last()
+      .and_then(|top| top.first().copied())
+      .unwrap_or(EMPTY_ROOT),
   }
 }
 
@@ -216,6 +233,13 @@ mod tests {
     let blocks: Vec<Vec<u8>> = (0..n).map(|i| vec![(i % 251) as u8; block_len]).collect();
     let leaves: Vec<Hash> = blocks.iter().map(|b| leaf_hash(b)).collect();
     (blocks, leaves)
+  }
+
+  #[test]
+  fn an_empty_tree_has_a_defined_root() {
+    // a zero-length file has no blocks; this must not panic
+    assert_eq!(root(&[]), EMPTY_ROOT);
+    assert_ne!(EMPTY_ROOT, leaf_hash(b""));
   }
 
   #[test]

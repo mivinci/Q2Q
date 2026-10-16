@@ -12,12 +12,13 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
+use parking_lot::Mutex;
 use q2q_core::identity::PeerId;
 use q2q_punch::message::{Request, Response, SignalResponse};
 use q2q_punch::signal::{SignalError, SignalRequest, SignalType, verify_connect};
 use quinn::Connection;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Default)]
 pub struct Sinks {
@@ -27,41 +28,36 @@ pub struct Sinks {
 
 impl Sinks {
   pub fn put_standing(&self, peer: &PeerId, conn: Connection) {
-    self
-      .standing
-      .lock()
-      .unwrap()
-      .insert(peer.as_str().to_string(), conn);
+    self.standing.lock().insert(peer.as_str().to_string(), conn);
   }
 
   pub fn drop_standing(&self, peer: &PeerId) {
-    self.standing.lock().unwrap().remove(peer.as_str());
+    self.standing.lock().remove(peer.as_str());
   }
 
   /// Being here is what makes a peer reachable; `connect` asks exactly this.
   pub fn has_standing(&self, peer: &PeerId) -> bool {
-    self.standing.lock().unwrap().contains_key(peer.as_str())
+    self.standing.lock().contains_key(peer.as_str())
   }
 
   pub fn put_ephemeral(&self, connection_id: &str, conn: Connection) {
     self
       .ephemeral
       .lock()
-      .unwrap()
       .insert(connection_id.to_string(), conn);
   }
 
   pub fn drop_ephemeral(&self, connection_id: &str) {
-    self.ephemeral.lock().unwrap().remove(connection_id);
+    self.ephemeral.lock().remove(connection_id);
   }
 
   pub fn has_ephemeral(&self, connection_id: &str) -> bool {
-    self.ephemeral.lock().unwrap().contains_key(connection_id)
+    self.ephemeral.lock().contains_key(connection_id)
   }
 
   /// Push onto B's channel. False means B went away.
   pub async fn to_peer(&self, peer: &PeerId, bytes: &[u8]) -> bool {
-    let conn = self.standing.lock().unwrap().get(peer.as_str()).cloned();
+    let conn = self.standing.lock().get(peer.as_str()).cloned();
     match conn {
       Some(conn) => push(&conn, bytes).await,
       None => false,
@@ -69,7 +65,7 @@ impl Sinks {
   }
 
   pub async fn to_initiator(&self, connection_id: &str, bytes: &[u8]) -> bool {
-    let conn = self.ephemeral.lock().unwrap().get(connection_id).cloned();
+    let conn = self.ephemeral.lock().get(connection_id).cloned();
     match conn {
       Some(conn) => push(&conn, bytes).await,
       None => false,

@@ -6,9 +6,9 @@
 //! trait rather than process-local memory — if announce lands on one instance
 //! and query on another, the lookup has to succeed.
 
+use parking_lot::Mutex;
 use q2q_core::identity::PeerId;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type InfoHash = [u8; 32];
@@ -123,17 +123,17 @@ fn key(h: &InfoHash) -> String {
 
 impl TrackState for MemoryState {
   fn put_online(&self, record: OnlineRecord) {
-    let mut online = self.online.lock().unwrap();
+    let mut online = self.online.lock();
     online.insert(record.peer_id.as_str().to_string(), record);
   }
 
   fn online(&self, peer_id: &PeerId) -> Option<OnlineRecord> {
-    let online = self.online.lock().unwrap();
+    let online = self.online.lock();
     online.get(peer_id.as_str()).cloned()
   }
 
   fn touch_sequence(&self, peer_id: &PeerId, seq: u64) -> Result<(), SequenceError> {
-    let mut online = self.online.lock().unwrap();
+    let mut online = self.online.lock();
     let record = online
       .get_mut(peer_id.as_str())
       .ok_or(SequenceError::UnknownSession)?;
@@ -152,7 +152,7 @@ impl TrackState for MemoryState {
     complete: &[InfoHash],
     ttl: UnixSeconds,
   ) {
-    let mut files = self.files.lock().unwrap();
+    let mut files = self.files.lock();
     let expires_at = now() + ttl;
 
     for h in del {
@@ -184,8 +184,8 @@ impl TrackState for MemoryState {
     after: Option<&PeerId>,
     now: UnixSeconds,
   ) -> Vec<Candidate> {
-    let files = self.files.lock().unwrap();
-    let online = self.online.lock().unwrap();
+    let files = self.files.lock();
+    let online = self.online.lock();
     let empty = BTreeMap::new();
     let holders = files.get(&key(info_hash)).unwrap_or(&empty);
 
@@ -214,7 +214,7 @@ impl TrackState for MemoryState {
 
   fn sweep(&self, now: UnixSeconds) -> usize {
     let mut removed = 0;
-    let mut online = self.online.lock().unwrap();
+    let mut online = self.online.lock();
     online.retain(|_, r| {
       let keep = r.expires_at > now;
       if !keep {
@@ -224,7 +224,7 @@ impl TrackState for MemoryState {
     });
     drop(online);
 
-    let mut files = self.files.lock().unwrap();
+    let mut files = self.files.lock();
     let mut dead = Vec::new();
     for (hash, holders) in files.iter_mut() {
       holders.retain(|_, h| h.expires_at > now);

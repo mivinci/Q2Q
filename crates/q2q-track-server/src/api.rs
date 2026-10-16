@@ -10,13 +10,11 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use hmac::{Hmac, KeyInit, Mac};
 use q2q_core::identity::PeerId;
 use q2q_ratelimit::{Limiter, RateLimitLayer, Rule};
 use q2q_track::auth::{self, AuthError, TicketBody};
 use q2q_track::state::{Candidate, InfoHash, PunchAssignment, TrackState, UnixSeconds};
 use serde::{Deserialize, Serialize};
-use sha1::Sha1;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -246,7 +244,17 @@ async fn announce<S: TrackState>(
       public_key: Vec::new(),
     });
 
-  let session_key = random_32();
+  let session_key = match random_32() {
+    Ok(k) => k,
+    Err(e) => {
+      // not the client's fault: nothing about its ticket was wrong
+      tracing::error!("could not mint a session key: {e}");
+      return Err(fail(
+        "internal_error",
+        Some("session key unavailable".into()),
+      ));
+    }
+  };
   app.state.put_online(q2q_track::state::OnlineRecord {
     peer_id: ticket.iss.clone(),
     public_key: ticket.public_key,
@@ -283,11 +291,7 @@ async fn announce<S: TrackState>(
 /// HMAC-SHA1 of that username under the shared secret.
 fn turn_credential(config: &TrackConfig, user: &str, expires_at: UnixSeconds) -> TurnWire {
   let username = format!("{expires_at}:{user}");
-  let credential = Hmac::<Sha1>::new_from_slice(config.turn_secret.as_bytes())
-    .expect("HMAC accepts any key length")
-    .chain_update(username.as_bytes())
-    .finalize()
-    .into_bytes();
+  let credential = q2q_core::mac::sha1(config.turn_secret.as_bytes(), &[username.as_bytes()]);
   TurnWire {
     url: config.turn_url.clone(),
     username,
@@ -296,10 +300,10 @@ fn turn_credential(config: &TrackConfig, user: &str, expires_at: UnixSeconds) ->
   }
 }
 
-fn random_32() -> [u8; 32] {
+fn random_32() -> Result<[u8; 32], getrandom::Error> {
   let mut out = [0u8; 32];
-  getrandom::fill(&mut out).expect("system CSPRNG");
-  out
+  getrandom::fill(&mut out)?;
+  Ok(out)
 }
 
 // ----------------------------------------------------------------- heartbeat
@@ -706,11 +710,7 @@ mod tests {
     let wire = turn_credential(&cfg, "peer-1", 1_700_000_000);
     assert_eq!(wire.username, "1700000000:peer-1");
     // base64 of HMAC-SHA1 under the shared secret
-    let expected = Hmac::<Sha1>::new_from_slice(b"test-secret")
-      .unwrap()
-      .chain_update(wire.username.as_bytes())
-      .finalize()
-      .into_bytes();
+    let expected = q2q_core::mac::sha1(b"test-secret", &[wire.username.as_bytes()]);
     assert_eq!(wire.credential, B64.encode(expected));
   }
 }
