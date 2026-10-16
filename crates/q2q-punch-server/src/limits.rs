@@ -12,26 +12,48 @@ use q2q_ratelimit::{Key, Limiter, NetworkKey, Rule, Verdict};
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-/// Defaults, per network prefix, per minute.
-pub const JOIN_PER_MINUTE: u32 = 10;
-pub const HEARTBEAT_PER_MINUTE: u32 = 120;
-pub const CONNECT_PER_MINUTE: u32 = 20;
-pub const SIGNAL_PER_MINUTE: u32 = 120;
+/// Per network prefix, per minute.
+#[derive(Debug, Clone, Copy)]
+pub struct Rates {
+  /// Establishing a binding verifies a signature, so it is the expensive one.
+  pub join: u32,
+  /// Frequent, but cheap to reject: a forged one fails its MAC first.
+  pub heartbeat: u32,
+  /// The only call that lands on somebody else.
+  pub connect: u32,
+  pub signal: u32,
+}
 
-/// Every call site passes its own numbers: from config in production, or a
-/// bucket small enough to observe in a test.
-pub fn limiter_with(join: u32, heartbeat: u32, connect: u32, signal: u32) -> Limiter {
+impl Default for Rates {
+  fn default() -> Self {
+    Rates {
+      join: 10,
+      heartbeat: 120,
+      connect: 20,
+      signal: 120,
+    }
+  }
+}
+
+/// Buckets are per instance, so each one enforces only its share. Without this,
+/// N instances each holding the full quota would allow N times the rate we
+/// intended — which is exactly what an attacker gets by spreading requests
+/// across every instance (they are all directly reachable).
+fn share(per_minute: u32, cluster_size: u32) -> u32 {
+  (per_minute / cluster_size.max(1)).max(1)
+}
+
+pub fn limiter(rates: Rates, cluster_size: u32) -> Limiter {
   let mut rules = HashMap::new();
-  rules.insert(PUNCH_JOIN.to_string(), Rule::per_minute(join, join));
-  rules.insert(
-    PUNCH_HEARTBEAT.to_string(),
-    Rule::per_minute(heartbeat, heartbeat),
-  );
-  rules.insert(
-    PUNCH_CONNECT.to_string(),
-    Rule::per_minute(connect, connect),
-  );
-  rules.insert(PUNCH_SIGNAL.to_string(), Rule::per_minute(signal, signal));
+  for (name, per_minute) in [
+    (PUNCH_JOIN, rates.join),
+    (PUNCH_HEARTBEAT, rates.heartbeat),
+    (PUNCH_CONNECT, rates.connect),
+    (PUNCH_SIGNAL, rates.signal),
+  ] {
+    let share = share(per_minute, cluster_size);
+    rules.insert(name.to_string(), Rule::per_minute(share, share));
+  }
   Limiter::new(rules)
 }
 
@@ -148,9 +170,37 @@ mod tests {
     assert_eq!(file, Some([9u8; 32]));
   }
 
+  fn rates(join: u32, heartbeat: u32, connect: u32, signal: u32) -> Rates {
+    Rates {
+      join,
+      heartbeat,
+      connect,
+      signal,
+    }
+  }
+
+  #[test]
+  fn many_instances_each_enforce_a_share() {
+    // three instances, no shared bucket: one of them gets a third, so that
+    // spreading requests across all three still adds up to the intended rate
+    let limits = limiter(
+      Rates {
+        join: 9,
+        ..Rates::default()
+      },
+      3,
+    );
+    let ip: IpAddr = "10.0.0.9".parse().unwrap();
+    let join = req("punch.join", json!({}));
+    for _ in 0..3 {
+      assert!(charge(&limits, &join, ip, 0).allowed);
+    }
+    assert!(!charge(&limits, &join, ip, 0).allowed);
+  }
+
   #[test]
   fn one_network_runs_out_of_joins() {
-    let limits = limiter_with(1, 120, 20, 120);
+    let limits = limiter(rates(1, 120, 20, 120), 1);
     let ip: IpAddr = "10.0.0.1".parse().unwrap();
     let join = req("punch.join", json!({}));
 
@@ -162,7 +212,7 @@ mod tests {
 
   #[test]
   fn another_network_is_unaffected() {
-    let limits = limiter_with(1, 120, 20, 120);
+    let limits = limiter(rates(1, 120, 20, 120), 1);
     let join = req("punch.join", json!({}));
     assert!(charge(&limits, &join, "10.0.0.1".parse().unwrap(), 0).allowed);
     assert!(
@@ -173,7 +223,7 @@ mod tests {
 
   #[test]
   fn a_heartbeat_does_not_draw_from_the_join_bucket() {
-    let limits = limiter_with(1, 1, 20, 120);
+    let limits = limiter(rates(1, 1, 20, 120), 1);
     let ip: IpAddr = "10.0.0.2".parse().unwrap();
     assert!(charge(&limits, &req("punch.join", json!({})), ip, 0).allowed);
     assert!(charge(&limits, &req("punch.heartbeat", json!({})), ip, 0).allowed);

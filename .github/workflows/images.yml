@@ -1,0 +1,104 @@
+name: Images
+
+# One tag per service, so either can be released on its own:
+#   git tag track/v0.1.0   ->  ghcr.io/mivinci/q2q-track-server:v0.1.0
+#   git tag punch/v0.2.0   ->  ghcr.io/mivinci/q2q-punch-server:v0.2.0
+on:
+  push:
+    tags:
+      - "track/v*"
+      - "punch/v*"
+  # the image cannot be built locally here (no Docker), so this is how a build
+  # gets tried without publishing a tag first
+  workflow_dispatch:
+    inputs:
+      service:
+        description: which image to build
+        type: choice
+        options: [track, punch]
+        required: true
+      tag:
+        description: image tag to publish
+        default: dev
+        required: true
+
+jobs:
+  track:
+    if: startsWith(github.ref, 'refs/tags/track/v') || (github.event_name == 'workflow_dispatch' && inputs.service == 'track')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: version
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "tag=$DISPATCH_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME#track/v}" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: crates/q2q-track-server/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/q2q-track-server:${{ steps.version.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/q2q-track-server:latest
+          cache-from: type=gha,scope=track
+          cache-to: type=gha,mode=max,scope=track
+
+  punch:
+    if: startsWith(github.ref, 'refs/tags/punch/v') || (github.event_name == 'workflow_dispatch' && inputs.service == 'punch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: version
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "tag=$DISPATCH_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME#punch/v}" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: crates/q2q-punch-server/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/q2q-punch-server:${{ steps.version.outputs.tag }}
+            ghcr.io/${{ github.repository_owner }}/q2q-punch-server:latest
+          cache-from: type=gha,scope=punch
+          cache-to: type=gha,mode=max,scope=punch

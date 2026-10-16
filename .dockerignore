@@ -1,0 +1,6 @@
+target/
+.tmp/
+.git/
+.workbuddy/
+node_modules/
+docs/.vitepress/dist/
