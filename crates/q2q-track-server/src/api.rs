@@ -4,8 +4,6 @@
 //! it *does* issue is a TURN credential, because relay capacity costs money and
 //! has to be rate limited somewhere.
 
-use crate::auth::{self, AuthError, TicketBody};
-use crate::state::{Candidate, InfoHash, PunchAssignment, TrackState, UnixSeconds};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
@@ -14,6 +12,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use hmac::{Hmac, KeyInit, Mac};
 use q2q_core::identity::PeerId;
+use q2q_track::auth::{self, AuthError, TicketBody};
+use q2q_track::state::{Candidate, InfoHash, PunchAssignment, TrackState, UnixSeconds};
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use std::sync::Arc;
@@ -156,7 +156,7 @@ async fn announce<S: TrackState>(
   Path(peer_id): Path<String>,
   Json(req): Json<AnnounceRequest>,
 ) -> Result<Json<AnnounceResponse>, (StatusCode, Json<ErrorBody>)> {
-  let now = crate::state::now();
+  let now = q2q_track::state::now();
 
   if peer_id != req.token.iss {
     return Err(fail(
@@ -204,7 +204,7 @@ async fn announce<S: TrackState>(
     });
 
   let session_key = random_32();
-  app.state.put_online(crate::state::OnlineRecord {
+  app.state.put_online(q2q_track::state::OnlineRecord {
     peer_id: ticket.iss.clone(),
     public_key: ticket.public_key,
     session_key,
@@ -272,7 +272,7 @@ async fn heartbeat<S: TrackState>(
   Path(peer_id): Path<String>,
   Json(req): Json<HeartbeatRequest>,
 ) -> Result<Json<HeartbeatResponse>, (StatusCode, Json<ErrorBody>)> {
-  let now = crate::state::now();
+  let now = q2q_track::state::now();
   let peer = PeerId::unchecked(peer_id);
 
   let record = app
@@ -299,7 +299,7 @@ async fn heartbeat<S: TrackState>(
 
   let ttl = app.config.max_ttl.min(3600);
   let expires_at = now + ttl;
-  app.state.put_online(crate::state::OnlineRecord {
+  app.state.put_online(q2q_track::state::OnlineRecord {
     expires_at,
     ..record
   });
@@ -341,7 +341,7 @@ async fn query<S: TrackState>(
   Path(info_hash): Path<String>,
   Query(params): Query<QueryParams>,
 ) -> Result<Json<QueryResponse>, (StatusCode, Json<ErrorBody>)> {
-  let now = crate::state::now();
+  let now = q2q_track::state::now();
 
   // spec 7.2.1 says query carries the session; there is no body, so the
   // HMAC triple rides along as query parameters.
@@ -401,10 +401,10 @@ async fn query<S: TrackState>(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::state::MemoryState;
   use axum::body::Body;
   use axum::http::{Request, StatusCode};
   use q2q_core::identity::{Audience, Ticket, keypair_from_seed, peer_id_of};
+  use q2q_track::state::MemoryState;
   use tower::ServiceExt;
 
   fn config() -> Arc<TrackConfig> {
@@ -428,8 +428,8 @@ mod tests {
       v: 1,
       iss: peer_id_of(&sk),
       public_key: sk.verifying_key().to_bytes(),
-      iat: crate::state::now(),
-      exp: crate::state::now() + 600,
+      iat: q2q_track::state::now(),
+      exp: q2q_track::state::now() + 600,
       aud: Audience::from_wire(aud),
       tgt: None,
       ih: None,
@@ -518,7 +518,7 @@ mod tests {
     let json = body_json(resp).await;
     // max_ttl is 600, so expiry must be well short of what was asked for
     let expires_at = json["expires_at"].as_u64().unwrap();
-    assert!(expires_at < crate::state::now() + 601);
+    assert!(expires_at < q2q_track::state::now() + 601);
   }
 
   #[tokio::test]
@@ -530,7 +530,7 @@ mod tests {
       .header("content-type", "application/json")
       .body(Body::from(
         serde_json::to_vec(
-          &serde_json::json!({"seq": 1, "timestamp": crate::state::now(), "mac": ""}),
+          &serde_json::json!({"seq": 1, "timestamp": q2q_track::state::now(), "mac": ""}),
         )
         .unwrap(),
       ))
