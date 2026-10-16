@@ -1,6 +1,6 @@
-# Punch Server
+# Punch
 
-A Punch Server does two things: it keeps a live channel open for each peer
+A Punch does two things: it keeps a live channel open for each peer
 assigned to it, and it relays signalling between a peer that wants to connect and
 one that is bound here.
 
@@ -35,7 +35,7 @@ server, and gets back a `binding_id` and a `binding_key`. From then on:
 ```mermaid
 sequenceDiagram
   participant P as Peer
-  participant PS as Punch Server
+  participant PS as Punch
 
   P->>PS: join (ticket)
   PS-->>P: binding_id, binding_key
@@ -62,7 +62,7 @@ Setting up a connection has two phases, and their order is deliberate.
 ```mermaid
 sequenceDiagram
   participant A as Peer A
-  participant PS as Punch Server
+  participant PS as Punch
   participant B as Peer B
 
   A->>PS: connect (ticket naming B)
@@ -91,7 +91,7 @@ ticket's expiry.
 
 ## Server authentication
 
-A client must be able to tell whether it is talking to the real Punch Server. The
+A client must be able to tell whether it is talking to the real Punch. The
 anchor is the public key Track publishes alongside the address — the client checks
 that the certificate in front of it carries exactly that key.
 
@@ -118,7 +118,7 @@ tell "the channel dropped but the mapping is still there" from "both are gone".
 
 ## Running it
 
-See [Deployment](./deploy). A Punch Server needs:
+See [Deploy](./deploy). A Punch needs:
 
 - a `punch_id` that matches what Track lists
 - a persisted identity keypair

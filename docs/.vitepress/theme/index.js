@@ -32,5 +32,9 @@ export default {
 
     onMounted(renderDiagrams);
     watch(() => route.path, renderDiagrams);
+
+    // navbar 首帧拿不到 home / top，背景会先不透明再淡出（见 style.css）。
+    // DOM 更新完之后打个标记，让过渡从这一刻起恢复正常。
+    onMounted(() => nextTick(() => document.documentElement.classList.add('ready')));
   },
 };

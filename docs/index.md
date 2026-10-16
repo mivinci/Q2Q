@@ -21,7 +21,7 @@ features:
     details: Keys are identity. There is no registration, and no server that vouches for who you are
   - icon: 🛡️
     title: End-to-end verification
-    details: Merkle proofs anchored in the signed root — neither a malicious peer nor a malicious Punch Server can alter content
+    details: Merkle proofs anchored in the signed root — neither a malicious peer nor a malicious Punch can alter content
   - icon: 🔀
     title: Two sources
     details: Each block independently chooses CDN or P2P, so a cold start can finish entirely over CDN
