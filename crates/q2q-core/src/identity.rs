@@ -135,6 +135,85 @@ pub enum Audience {
   Punch(String),
 }
 
+/// A ticket as it appears on the wire.
+///
+/// The spec never spells out how a ticket is encoded inside a request body, so
+/// this is the shared answer: a JSON object with binary fields in base64. Both
+/// Track and Punch parse tickets, so it lives here rather than in either.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TicketBody {
+  pub v: u32,
+  pub iss: String,
+  /// base64 of the 32-byte public key — `peer_id` is a hash of it and cannot be
+  /// reversed, so it has to travel along.
+  #[serde(rename = "pub")]
+  pub public_key: String,
+  pub iat: u64,
+  pub exp: u64,
+  pub aud: String,
+  #[serde(default)]
+  pub tgt: Option<String>,
+  #[serde(default)]
+  pub ih: Option<String>,
+  #[serde(default)]
+  pub cid: Option<String>,
+  /// base64 of the 64-byte signature over the canonical payload.
+  pub sig: String,
+}
+
+impl TicketBody {
+  /// Decode into a `Ticket` ready for `verify`. Only the encoding is checked
+  /// here; correctness is `verify`'s job.
+  pub fn to_ticket(&self) -> Result<Ticket, TicketError> {
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine as _;
+
+    let public_key: [u8; 32] = B64
+      .decode(&self.public_key)
+      .map_err(|e| TicketError::Malformed(format!("pub: {e}")))?
+      .try_into()
+      .map_err(|_| TicketError::Malformed("pub must be 32 bytes".into()))?;
+    let sig: [u8; 64] = B64
+      .decode(&self.sig)
+      .map_err(|e| TicketError::Malformed(format!("sig: {e}")))?
+      .try_into()
+      .map_err(|_| TicketError::Malformed("sig must be 64 bytes".into()))?;
+    let ih = match &self.ih {
+      Some(s) => Some(
+        B64
+          .decode(s)
+          .map_err(|e| TicketError::Malformed(format!("ih: {e}")))?
+          .try_into()
+          .map_err(|_| TicketError::Malformed("ih must be 32 bytes".into()))?,
+      ),
+      None => None,
+    };
+
+    Ok(Ticket {
+      v: self.v,
+      iss: PeerId::unchecked(self.iss.clone()),
+      public_key,
+      iat: self.iat,
+      exp: self.exp,
+      aud: Audience::from_wire(&self.aud),
+      tgt: self.tgt.as_ref().map(|t| PeerId::unchecked(t.clone())),
+      ih,
+      cid: self.cid.clone(),
+      sig,
+    })
+  }
+
+  /// Decode and run the four checks of spec 3.1.2.
+  pub fn verify(
+    &self,
+    audience: &Audience,
+    me: Option<&PeerId>,
+    now: u64,
+  ) -> Result<(), TicketError> {
+    self.to_ticket()?.verify(audience, me, now)
+  }
+}
+
 impl Audience {
   fn as_str(&self) -> &str {
     match self {
@@ -256,6 +335,8 @@ impl Ticket {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TicketError {
   MalformedPeerId,
+  /// The wire form could not be decoded — bad base64, wrong field length.
+  Malformed(String),
   KeyDoesNotMatchIssuer,
   BadKey,
   BadSignature,
@@ -268,6 +349,7 @@ impl std::fmt::Display for TicketError {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let s = match self {
       TicketError::MalformedPeerId => "peer_id fails its checksum",
+      TicketError::Malformed(d) => return write!(f, "malformed ticket: {d}"),
       TicketError::KeyDoesNotMatchIssuer => "embedded public key does not derive iss",
       TicketError::BadKey => "public key is not a valid Ed25519 key",
       TicketError::BadSignature => "signature does not verify",

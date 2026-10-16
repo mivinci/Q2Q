@@ -8,6 +8,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use hmac::{Hmac, KeyInit, Mac};
 use q2q_core::identity::{Audience, PeerId, Ticket, TicketError};
+// the wire form is shared with Punch, so it lives in core and is re-exported
+pub use q2q_core::identity::TicketBody;
 use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -19,29 +21,6 @@ pub const CLOCK_TOLERANCE: u64 = 60;
 /// numbers guard against replay, so they must go up; the window only absorbs
 /// reordering in transit.
 pub const SEQ_REORDER_WINDOW: u64 = 8;
-
-/// A ticket as it appears in a JSON body. The wire form has to be spelled out
-/// somewhere, and the spec leaves the encoding of `token` implicit.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct TicketBody {
-  pub v: u32,
-  pub iss: String,
-  /// base64 of the 32-byte Ed25519 public key — `peer_id` is a hash of it and
-  /// cannot be reversed, so it has to travel along.
-  #[serde(rename = "pub")]
-  pub public_key: String,
-  pub iat: u64,
-  pub exp: u64,
-  pub aud: String,
-  #[serde(default)]
-  pub tgt: Option<String>,
-  #[serde(default)]
-  pub ih: Option<String>,
-  #[serde(default)]
-  pub cid: Option<String>,
-  /// base64 of the 64-byte signature over the canonical payload.
-  pub sig: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthError {
@@ -73,42 +52,9 @@ impl AuthError {
 /// Track is the audience it must name; there is no pre-stored mapping to lean
 /// on, which is the whole point of self-signed tickets.
 pub fn verify_announce(body: &TicketBody, now: u64) -> Result<Ticket, AuthError> {
-  let public_key: [u8; 32] = B64
-    .decode(&body.public_key)
-    .map_err(|e| AuthError::MalformedTicket(format!("pub: {e}")))?
-    .try_into()
-    .map_err(|_| AuthError::MalformedTicket("pub must be 32 bytes".into()))?;
-
-  let sig: [u8; 64] = B64
-    .decode(&body.sig)
-    .map_err(|e| AuthError::MalformedTicket(format!("sig: {e}")))?
-    .try_into()
-    .map_err(|_| AuthError::MalformedTicket("sig must be 64 bytes".into()))?;
-
-  let ih = match &body.ih {
-    Some(s) => Some(
-      B64
-        .decode(s)
-        .map_err(|e| AuthError::MalformedTicket(format!("ih: {e}")))?
-        .try_into()
-        .map_err(|_| AuthError::MalformedTicket("ih must be 32 bytes".into()))?,
-    ),
-    None => None,
-  };
-
-  let ticket = Ticket {
-    v: body.v,
-    iss: PeerId::unchecked(body.iss.clone()),
-    public_key,
-    iat: body.iat,
-    exp: body.exp,
-    aud: Audience::from_wire(&body.aud),
-    tgt: body.tgt.as_ref().map(|t| PeerId::unchecked(t.clone())),
-    ih,
-    cid: body.cid.clone(),
-    sig,
-  };
-
+  let ticket = body
+    .to_ticket()
+    .map_err(|e| AuthError::MalformedTicket(e.to_string()))?;
   ticket
     .verify(&Audience::Track, None, now)
     .map_err(map_ticket_err)?;
@@ -122,6 +68,7 @@ fn map_ticket_err(e: TicketError) -> AuthError {
     TicketError::Expired => AuthError::Expired,
     TicketError::WrongAudience => AuthError::WrongAudience,
     TicketError::WrongTarget => AuthError::WrongAudience,
+    TicketError::Malformed(d) => AuthError::MalformedTicket(d),
     TicketError::MalformedPeerId | TicketError::BadKey => AuthError::MalformedTicket(e.to_string()),
   }
 }
