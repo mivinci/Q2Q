@@ -1,0 +1,8 @@
+[package]
+name = "q2q-core"
+version = "0.1.0"
+edition = "2021"
+description = "Q2Q 网络无关的核心：身份、种子、Merkle 证明与本地存储"
+license = "MIT"
+
+[dependencies]
