@@ -1,0 +1,27 @@
+# Track configuration. Mounted into the container at /etc/q2q/track.toml.
+
+# 0.0.0.0, not 127.0.0.1: inside a container the loopback address is
+# unreachable from outside.
+bind = "0.0.0.0:8080"
+
+# coturn's REST mechanism: the credential Track hands out is HMAC-SHA1 of the
+# username under this secret, so it has to match coturn's --static-auth-secret.
+turn_url = "turn:203.0.113.10:3478"
+turn_secret = "replace-with-a-long-random-string"
+turn_ttl = 3600
+max_ttl = 3600
+heartbeat_interval = 30
+sweep_interval = 60
+
+# How often to check whether this file changed. The Punch list below is swapped
+# in without a restart.
+reload_interval = 5
+
+[[punch]]
+punch_id = "punch-1"
+# Where clients reach this Punch Server. It is a URL, not a socket — the
+# transport is QUIC over UDP.
+url = "https://punch.example.com:4433"
+# Filled in during bootstrap: start Punch first, read its public key from the
+# log, paste it here. Leaving it wrong means clients reject the server.
+public_key = "PASTE_PUNCH_PUBLIC_KEY_HERE"

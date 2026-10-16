@@ -10,3 +10,7 @@ docs/.vitepress/config.*.timestamp-*
 
 # Rust 构建产物
 target/
+
+# local deployment secrets
+deploy/.env
+deploy/punch-identity/

@@ -1,0 +1,23 @@
+# Punch configuration. Mounted into the container at /etc/q2q/punch.toml.
+
+bind = "0.0.0.0:4433"
+# Must match the punch_id Track assigns in track.toml.
+punch_id = "punch-1"
+ttl_secs = 300
+sweep_secs = 60
+
+# The public key derived from this key pair is what Track publishes and what
+# clients check the certificate against. Keep the directory mounted, or every
+# restart mints a new identity and every client stops trusting this server.
+[identity]
+cert = "/etc/q2q/identity/cert.pem"
+key = "/etc/q2q/identity/key.pem"
+
+[limits]
+# Buckets are per instance. Running N Punch instances? Set this to N so the
+# quota is split rather than multiplied.
+cluster_size = 1
+join_per_minute = 10
+heartbeat_per_minute = 120
+connect_per_minute = 20
+signal_per_minute = 120

@@ -172,12 +172,7 @@ git tag punch/v0.2.0 && git push origin punch/v0.2.0   # -> ghcr.io/mivinci/q2q-
 
 ### 跑起来
 
-配置挂到 `/etc/q2q/`：
-
-```sh
-docker run -d -p 8080:8080 -v ./track.toml:/etc/q2q/track.toml:ro \
-  ghcr.io/mivinci/q2q-track-server:v0.1.0
-```
+`deploy/` 下有一份可以直接改的 compose：Track + 一个 Punch + coturn，配置分别挂到 `/etc/q2q/`。
 
 **容器里的 `bind` 必须是 `0.0.0.0`**，不能用默认的 `127.0.0.1`——那样只有容器自己能连上：
 
@@ -185,15 +180,29 @@ docker run -d -p 8080:8080 -v ./track.toml:/etc/q2q/track.toml:ro \
 bind = "0.0.0.0:8080"
 ```
 
-Punch 走 QUIC（UDP），端口要按 UDP 转发：`-p 4433:4433/udp`。
+Punch 走 QUIC（UDP），端口要按 UDP 转发：`-p 4433:4433/udp`。镜像以 root 运行。
 
-镜像以 root 运行（QUIC 需要绑 UDP 端口，非 root 也能绑高端口，但省掉这层麻烦）。Punch 若用持久化身份，把证书目录也挂进去：
+### Bootstrap 顺序（不能一次 up 起来）
+
+Punch 的公钥是 Track 要发布、客户端要用来验证服务器证书的锚点。它得先存在，Track 才能引用——所以第一次部署有两步：
 
 ```sh
--v ./punch-identity:/etc/q2q/identity
+cd deploy
+cp .env.example .env          # 填 TURN_SECRET 和 PUBLIC_IP
+mkdir -p punch-identity
+
+# 1. 先起 Punch，它会生成身份并落盘
+docker compose up -d punch
+docker compose logs punch | grep punch_public_key
+#   INFO server identity punch=punch-1 punch_public_key=Y+gqLeqXKKd81...
+
+# 2. 把公钥填进 track.toml 的 [[punch]] public_key
+docker compose up -d track coturn
 ```
 
-并在 `punch.toml` 里指向它（`[identity] cert = ...`），否则每次重建容器公钥都会变。
+Track 每 5 秒检查一次 `track.toml`，所以第 2 步之后改清单不需要重启——但如果是在 Track **已经跑起来之后**才填公钥，等几秒即可。
+
+注意 `turn_secret` 必须与 coturn 的 `--static-auth-secret` 一致：Track 用 `HMAC-SHA1(secret, "<expiry>:<user>")` 签发凭据，coturn 用同一把钥匙验。不一致的话中继连接会被拒，而直连看起来正常——故障只在打洞失败时才暴露。
 
 ---
 
