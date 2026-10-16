@@ -81,7 +81,7 @@ so it gets a much smaller bucket than query.
 
 ## Running it
 
-See [Deployment](./deploy). Track needs:
+See [Deploy](./deploy). Track needs:
 
 - a Punch list (or, later, a registration interface)
 - the same TURN shared secret as coturn

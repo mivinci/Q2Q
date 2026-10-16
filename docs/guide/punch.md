@@ -118,7 +118,7 @@ tell "the channel dropped but the mapping is still there" from "both are gone".
 
 ## Running it
 
-See [Deployment](./deploy). A Punch needs:
+See [Deploy](./deploy). A Punch needs:
 
 - a `punch_id` that matches what Track lists
 - a persisted identity keypair

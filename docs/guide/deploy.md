@@ -1,4 +1,4 @@
-# Deployment
+# Deploy
 
 Track and Punch are ordinary servers: they listen on a port, read a TOML
 file, and hold no state that has to survive a restart except Punch's identity

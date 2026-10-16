@@ -6,7 +6,7 @@ import { mermaidBlock } from './mermaid.js';
 // linked from either nav until it is translated.
 const guide = (prefix) => [
   { text: 'Overview', link: `${prefix}guide/` },
-  { text: 'Deployment', link: `${prefix}guide/deploy` },
+  { text: 'Deploy', link: `${prefix}guide/deploy` },
   { text: 'Track', link: `${prefix}guide/track` },
   { text: 'Punch', link: `${prefix}guide/punch` },
 ];
