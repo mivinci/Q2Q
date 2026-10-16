@@ -67,9 +67,9 @@ impl<S: TrackState> Clone for AppState<S> {
 pub fn router<S: TrackState + 'static>(state: Arc<S>, config: Arc<TrackConfig>) -> Router {
   let app = AppState { state, config };
   Router::new()
-    .route("/peers/{peer_id}/resources", put(announce::<S>))
+    .route("/peers/{peer_id}/files", put(announce::<S>))
     .route("/peers/{peer_id}/heartbeat", post(heartbeat::<S>))
-    .route("/resources/{info_hash}/peers", get(query::<S>))
+    .route("/files/{info_hash}/peers", get(query::<S>))
     .with_state(app)
 }
 
@@ -223,7 +223,7 @@ async fn announce<S: TrackState>(
   });
   app
     .state
-    .update_resources(&ticket.iss, &add, &del, &complete, ttl);
+    .update_files(&ticket.iss, &add, &del, &complete, ttl);
 
   let turn_expires_at = now + app.config.turn_ttl;
   tracing::info!(
@@ -480,7 +480,7 @@ mod tests {
     let peer = body.iss.clone();
     let req = Request::builder()
       .method("PUT")
-      .uri(format!("/peers/{peer}/resources"))
+      .uri(format!("/peers/{peer}/files"))
       .header("content-type", "application/json")
       .body(Body::from(
         serde_json::to_vec(&serde_json::json!({
@@ -505,7 +505,7 @@ mod tests {
     let peer = body.iss.clone();
     let req = Request::builder()
       .method("PUT")
-      .uri(format!("/peers/{peer}/resources"))
+      .uri(format!("/peers/{peer}/files"))
       .header("content-type", "application/json")
       .body(Body::from(
         serde_json::to_vec(&serde_json::json!({"token": body, "ttl": 600})).unwrap(),
@@ -523,7 +523,7 @@ mod tests {
     let peer = body.iss.clone();
     let req = Request::builder()
       .method("PUT")
-      .uri(format!("/peers/{peer}/resources"))
+      .uri(format!("/peers/{peer}/files"))
       .header("content-type", "application/json")
       .body(Body::from(
         serde_json::to_vec(&serde_json::json!({"token": body, "ttl": 999_999})).unwrap(),
@@ -565,7 +565,7 @@ mod tests {
 
     let announce_req = Request::builder()
       .method("PUT")
-      .uri(format!("/peers/{peer}/resources"))
+      .uri(format!("/peers/{peer}/files"))
       .header("content-type", "application/json")
       .body(Body::from(
         serde_json::to_vec(&serde_json::json!({
@@ -581,7 +581,7 @@ mod tests {
     let app2 = router(state, config());
     let req = Request::builder()
       .method("GET")
-      .uri(format!("/resources/sha256:{hash}/peers"))
+      .uri(format!("/files/sha256:{hash}/peers"))
       .body(Body::empty())
       .unwrap();
     let resp = app2.oneshot(req).await.unwrap();
@@ -600,7 +600,7 @@ mod tests {
     let app = router(Arc::new(MemoryState::new()), config());
     let req = Request::builder()
       .method("GET")
-      .uri("/resources/not-a-hash/peers")
+      .uri("/files/not-a-hash/peers")
       .body(Body::empty())
       .unwrap();
     let resp = app.oneshot(req).await.unwrap();

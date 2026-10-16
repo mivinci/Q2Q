@@ -82,7 +82,7 @@ impl Config {
   }
 }
 
-/// Q2Q Track 服务：资源索引与会话。
+/// Q2Q Track 服务：文件索引与会话。
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Args {

@@ -51,7 +51,7 @@ pub struct Candidate {
   pub complete: bool,
 }
 
-/// An entry in the resource index.
+/// An entry in the file index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Holding {
   peer_id: PeerId,
@@ -66,7 +66,7 @@ pub trait TrackState: Send + Sync {
 
   /// Register holdings. `del` is applied before `add`, so the two can be sent
   /// together without a same-hash entry being dropped by ordering.
-  fn update_resources(
+  fn update_files(
     &self,
     peer_id: &PeerId,
     add: &[InfoHash],
@@ -99,14 +99,14 @@ pub enum SequenceError {
 pub struct MemoryState {
   online: Mutex<HashMap<String, OnlineRecord>>,
   /// info_hash hex -> holdings keyed by peer_id string for stable ordering.
-  resources: Mutex<BTreeMap<String, BTreeMap<String, Holding>>>,
+  files: Mutex<BTreeMap<String, BTreeMap<String, Holding>>>,
 }
 
 impl MemoryState {
   pub fn new() -> Self {
     MemoryState {
       online: Mutex::new(HashMap::new()),
-      resources: Mutex::new(BTreeMap::new()),
+      files: Mutex::new(BTreeMap::new()),
     }
   }
 }
@@ -144,7 +144,7 @@ impl TrackState for MemoryState {
     Ok(())
   }
 
-  fn update_resources(
+  fn update_files(
     &self,
     peer_id: &PeerId,
     add: &[InfoHash],
@@ -152,21 +152,21 @@ impl TrackState for MemoryState {
     complete: &[InfoHash],
     ttl: UnixSeconds,
   ) {
-    let mut resources = self.resources.lock().unwrap();
+    let mut files = self.files.lock().unwrap();
     let expires_at = now() + ttl;
 
     for h in del {
-      if let Some(holders) = resources.get_mut(&key(h)) {
+      if let Some(holders) = files.get_mut(&key(h)) {
         holders.remove(peer_id.as_str());
         if holders.is_empty() {
-          resources.remove(&key(h));
+          files.remove(&key(h));
         }
       }
     }
 
     for h in add {
       let is_complete = complete.contains(h);
-      resources.entry(key(h)).or_default().insert(
+      files.entry(key(h)).or_default().insert(
         peer_id.as_str().to_string(),
         Holding {
           peer_id: peer_id.clone(),
@@ -184,10 +184,10 @@ impl TrackState for MemoryState {
     after: Option<&PeerId>,
     now: UnixSeconds,
   ) -> Vec<Candidate> {
-    let resources = self.resources.lock().unwrap();
+    let files = self.files.lock().unwrap();
     let online = self.online.lock().unwrap();
     let empty = BTreeMap::new();
-    let holders = resources.get(&key(info_hash)).unwrap_or(&empty);
+    let holders = files.get(&key(info_hash)).unwrap_or(&empty);
 
     holders
       .values()
@@ -224,16 +224,16 @@ impl TrackState for MemoryState {
     });
     drop(online);
 
-    let mut resources = self.resources.lock().unwrap();
+    let mut files = self.files.lock().unwrap();
     let mut dead = Vec::new();
-    for (hash, holders) in resources.iter_mut() {
+    for (hash, holders) in files.iter_mut() {
       holders.retain(|_, h| h.expires_at > now);
       if holders.is_empty() {
         dead.push(hash.clone());
       }
     }
     for h in dead {
-      resources.remove(&h);
+      files.remove(&h);
     }
     removed
   }
@@ -272,7 +272,7 @@ mod tests {
     let s = MemoryState::new();
     let hash = [1u8; 32];
     s.put_online(online_record(1, 1000));
-    s.update_resources(&peer(1), &[hash], &[], &[hash], 600);
+    s.update_files(&peer(1), &[hash], &[], &[hash], 600);
 
     let got = s.query(&hash, 10, None, 500);
     assert_eq!(got.len(), 1);
@@ -286,11 +286,11 @@ mod tests {
     let s = MemoryState::new();
     let hash = [2u8; 32];
     s.put_online(online_record(2, 1000));
-    s.update_resources(&peer(2), &[hash], &[], &[], 600);
+    s.update_files(&peer(2), &[hash], &[], &[], 600);
     assert_eq!(s.query(&hash, 10, None, 500).len(), 1);
 
     // same request carries both: the entry must survive, not be deleted after
-    s.update_resources(&peer(2), &[hash], &[hash], &[], 600);
+    s.update_files(&peer(2), &[hash], &[hash], &[], 600);
     assert_eq!(s.query(&hash, 10, None, 500).len(), 1);
   }
 
@@ -299,7 +299,7 @@ mod tests {
     let s = MemoryState::new();
     let hash = [3u8; 32];
     s.put_online(online_record(3, 1000));
-    s.update_resources(&peer(3), &[hash], &[], &[], 100);
+    s.update_files(&peer(3), &[hash], &[], &[], 100);
     // ttl was 100 from "now", so at now+500 it is gone
     assert_eq!(s.query(&hash, 10, None, now() + 500).len(), 0);
     assert_eq!(s.query(&hash, 10, None, now()).len(), 1);
@@ -311,7 +311,7 @@ mod tests {
     let hash = [4u8; 32];
     for n in 1..=5u8 {
       s.put_online(online_record(n, 1000));
-      s.update_resources(&peer(n), &[hash], &[], &[], 600);
+      s.update_files(&peer(n), &[hash], &[], &[], 600);
     }
     let page1 = s.query(&hash, 2, None, 500);
     assert_eq!(page1.len(), 2);
@@ -328,7 +328,7 @@ mod tests {
     let hash = [5u8; 32];
     for n in 1..=5u8 {
       s.put_online(online_record(n, 1000));
-      s.update_resources(&peer(n), &[hash], &[], &[], 600);
+      s.update_files(&peer(n), &[hash], &[], &[], 600);
     }
     assert_eq!(s.query(&hash, 3, None, 500).len(), 3);
   }
@@ -339,7 +339,7 @@ mod tests {
     let whole = [6u8; 32];
     let partial = [7u8; 32];
     s.put_online(online_record(6, 1000));
-    s.update_resources(&peer(6), &[whole, partial], &[], &[whole], 600);
+    s.update_files(&peer(6), &[whole, partial], &[], &[whole], 600);
 
     assert!(s.query(&whole, 10, None, 500)[0].complete);
     assert!(!s.query(&partial, 10, None, 500)[0].complete);
@@ -386,7 +386,7 @@ mod tests {
     let s = MemoryState::new();
     let hash = [12u8; 32];
     // holding registered, but the peer never announced
-    s.update_resources(&peer(12), &[hash], &[], &[], 600);
+    s.update_files(&peer(12), &[hash], &[], &[], 600);
     assert_eq!(s.query(&hash, 10, None, 500).len(), 0);
   }
 }
