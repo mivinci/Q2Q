@@ -342,6 +342,7 @@ dependencies = [
  "percent-encoding",
  "proptest",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]
