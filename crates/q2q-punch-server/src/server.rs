@@ -406,12 +406,7 @@ mod tests {
   fn state(ttl: u64) -> State {
     state_with_limits(
       ttl,
-      crate::limits::limiter_with(
-        crate::limits::JOIN_PER_MINUTE,
-        crate::limits::HEARTBEAT_PER_MINUTE,
-        crate::limits::CONNECT_PER_MINUTE,
-        crate::limits::SIGNAL_PER_MINUTE,
-      ),
+      crate::limits::limiter(crate::limits::Rates::default(), 1),
     )
   }
 
@@ -693,7 +688,13 @@ mod tests {
     // one join per minute per network
     let st = Arc::new(state_with_limits(
       60,
-      crate::limits::limiter_with(1, 120, 20, 120),
+      crate::limits::limiter(
+        crate::limits::Rates {
+          join: 1,
+          ..Default::default()
+        },
+        1,
+      ),
     ));
     let server_state = st.clone();
     tokio::spawn(async move { serve(ep, server_state).await });

@@ -6,6 +6,7 @@ mod signalling;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use clap::Parser;
+use limits::Rates;
 use q2q_punch::binding::{Bindings, now};
 use q2q_punch::signal::Connections;
 use signalling::Sinks;
@@ -42,6 +43,8 @@ struct Config {
   identity: Option<IdentityConfig>,
 }
 
+/// Buckets live in memory, so a multi-instance deployment divides the quota
+/// by the number of instances rather than sharing a bucket.
 #[derive(Debug, serde::Deserialize)]
 #[serde(default)]
 struct LimitConfig {
@@ -49,15 +52,24 @@ struct LimitConfig {
   heartbeat_per_minute: u32,
   connect_per_minute: u32,
   signal_per_minute: u32,
+  /// How many Punch instances share these limits. Bucket size is divided by it.
+  cluster_size: u32,
 }
 
 impl Default for LimitConfig {
   fn default() -> Self {
+    let Rates {
+      join,
+      heartbeat,
+      connect,
+      signal,
+    } = Rates::default();
     LimitConfig {
-      join_per_minute: limits::JOIN_PER_MINUTE,
-      heartbeat_per_minute: limits::HEARTBEAT_PER_MINUTE,
-      connect_per_minute: limits::CONNECT_PER_MINUTE,
-      signal_per_minute: limits::SIGNAL_PER_MINUTE,
+      join_per_minute: join,
+      heartbeat_per_minute: heartbeat,
+      connect_per_minute: connect,
+      signal_per_minute: signal,
+      cluster_size: 1,
     }
   }
 }
@@ -122,11 +134,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     bindings: Bindings::new(config.ttl_secs),
     connections: Connections::new(config.ttl_secs),
     sinks: Arc::new(Sinks::default()),
-    limits: limits::limiter_with(
-      config.limits.join_per_minute,
-      config.limits.heartbeat_per_minute,
-      config.limits.connect_per_minute,
-      config.limits.signal_per_minute,
+    limits: limits::limiter(
+      Rates {
+        join: config.limits.join_per_minute,
+        heartbeat: config.limits.heartbeat_per_minute,
+        connect: config.limits.connect_per_minute,
+        signal: config.limits.signal_per_minute,
+      },
+      config.limits.cluster_size,
     ),
     punch_id: config.punch_id.clone(),
     ttl: config.ttl_secs,

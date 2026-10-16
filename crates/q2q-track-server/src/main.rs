@@ -31,6 +31,9 @@ struct Config {
   heartbeat_interval: u32,
   #[serde(default = "default_sweep")]
   sweep_interval: u64,
+  /// How often to check whether the Punch list file changed.
+  #[serde(default = "default_reload")]
+  reload_interval: u64,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -61,6 +64,9 @@ fn default_heartbeat() -> u32 {
 fn default_sweep() -> u64 {
   60
 }
+fn default_reload() -> u64 {
+  5
+}
 
 impl Config {
   fn load(path: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
@@ -68,18 +74,31 @@ impl Config {
     Ok(toml::from_str(&text)?)
   }
 
-  fn punch_servers(&self) -> Vec<PunchAssignment> {
+  /// Rejects the whole config on a bad key: a wrong `public_key` would be
+  /// handed to clients as the anchor for verifying that Punch Server, so
+  /// silently falling back to an empty one is worse than refusing to start.
+  fn punch_servers(&self) -> Result<Vec<PunchAssignment>, String> {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD as B64;
-    self
-      .punch
-      .iter()
-      .map(|p| PunchAssignment {
+    let mut out = Vec::new();
+    for p in &self.punch {
+      let key = B64
+        .decode(&p.public_key)
+        .map_err(|e| format!("punch '{}': public_key is not base64: {e}", p.punch_id))?;
+      if key.len() != 32 {
+        return Err(format!(
+          "punch '{}': public_key must be 32 bytes, got {}",
+          p.punch_id,
+          key.len()
+        ));
+      }
+      out.push(PunchAssignment {
         punch_id: p.punch_id.clone(),
         url: p.url.clone(),
-        public_key: B64.decode(&p.public_key).unwrap_or_default(),
-      })
-      .collect()
+        public_key: key,
+      });
+    }
+    Ok(out)
   }
 }
 
@@ -111,8 +130,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   tracing::info!(?config.bind, "config loaded from {}", args.config.display());
 
   let state = Arc::new(MemoryState::new());
+  let punch_list = api::PunchList::new(config.punch_servers()?);
   let track_config = Arc::new(api::TrackConfig {
-    punch_servers: config.punch_servers(),
     turn_url: config.turn_url.clone(),
     turn_secret: config.turn_secret.clone(),
     turn_ttl: config.turn_ttl,
@@ -133,9 +152,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
   });
 
-  let app = api::router(state, track_config);
+  // the list is deployment state: an instance can move, so watch the file and
+  // swap it in without a restart
+  let watch = punch_list.clone();
+  let path = args.config.clone();
+  let every = Duration::from_secs(config.reload_interval.max(1));
+  tokio::spawn(async move {
+    let mut seen = modified(&path);
+    loop {
+      tokio::time::sleep(every).await;
+      let now = modified(&path);
+      if now == seen {
+        continue;
+      }
+      seen = now;
+      match Config::load(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|c| c.punch_servers())
+      {
+        Ok(next) => {
+          tracing::info!(count = next.len(), "reloaded the Punch list");
+          watch.replace(next);
+        }
+        // keep serving the old list: a typo should not take the service down
+        Err(e) => tracing::warn!("keeping the old Punch list: {e}"),
+      }
+    }
+  });
+
+  let app = api::router_with(state, track_config, punch_list, api::limiter());
   let listener = tokio::net::TcpListener::bind(config.bind).await?;
   tracing::info!(bind = %config.bind, "listening");
   axum::serve(listener, app).await?;
   Ok(())
+}
+
+fn modified(path: &PathBuf) -> Option<std::time::SystemTime> {
+  std::fs::metadata(path).ok()?.modified().ok()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use base64::Engine as _;
+  use base64::engine::general_purpose::STANDARD as B64;
+
+  fn config_with_key(key: &str) -> Config {
+    let text = format!(
+      "turn_secret = \"s\"\n\
+       [[punch]]\n\
+       punch_id = \"punch-1\"\n\
+       url = \"https://punch-1.example.com\"\n\
+       public_key = \"{key}\"\n"
+    );
+    toml::from_str(&text).expect("the fixture parses")
+  }
+
+  #[test]
+  fn a_well_formed_punch_key_is_accepted() {
+    let key = B64.encode([7u8; 32]);
+    let list = config_with_key(&key).punch_servers().unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].public_key, vec![7u8; 32]);
+  }
+
+  #[test]
+  fn a_short_punch_key_refuses_to_start() {
+    // it would be handed to clients as the anchor for verifying that server
+    let key = B64.encode([7u8; 16]);
+    let e = config_with_key(&key).punch_servers().unwrap_err();
+    assert!(e.contains("punch-1"), "{e}");
+    assert!(e.contains("32 bytes"), "{e}");
+  }
+
+  #[test]
+  fn key_that_is_not_base64_refuses_to_start() {
+    let e = config_with_key("not base64 !!!")
+      .punch_servers()
+      .unwrap_err();
+    assert!(e.contains("punch-1"), "{e}");
+  }
 }
