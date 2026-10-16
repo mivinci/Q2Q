@@ -769,6 +769,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "q2q-ratelimit"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http",
+ "tower",
+]
+
+[[package]]
 name = "q2q-track"
 version = "0.1.0"
 dependencies = [
@@ -790,6 +799,7 @@ dependencies = [
  "getrandom",
  "hmac",
  "q2q-core",
+ "q2q-ratelimit",
  "q2q-track",
  "serde",
  "serde_json",
