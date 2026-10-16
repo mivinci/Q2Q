@@ -24,6 +24,12 @@ impl PeerId {
     &self.0
   }
 
+  /// Wrap a `peer_id` taken from the wire. The checksum is not checked here;
+  /// `Ticket::verify` does it, so a caller that verifies does not pay twice.
+  pub fn unchecked(s: impl Into<String>) -> Self {
+    PeerId(s.into())
+  }
+
   /// Recompute the checksum and compare. Call this on any `peer_id` that came
   /// from the network — it catches transcription errors before they turn into a
   /// lookup against the wrong identity.
@@ -134,6 +140,15 @@ impl Audience {
     match self {
       Audience::Track => "track",
       Audience::Punch(id) => id.as_str(),
+    }
+  }
+
+  /// Parse `aud` as it appears on the wire: either the literal `track`, or the
+  /// id of the one Punch Server the ticket may be spent at.
+  pub fn from_wire(s: &str) -> Self {
+    match s {
+      "track" => Audience::Track,
+      other => Audience::Punch(other.to_string()),
     }
   }
 }
