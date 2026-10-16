@@ -7,3 +7,6 @@ docs/.vitepress/dist/
 docs/.vitepress/cache/
 docs/.vitepress/config.*.timestamp-*
 .tmp/
+
+# Rust 构建产物
+target/
