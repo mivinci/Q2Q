@@ -6,3 +6,4 @@ description = "Q2Q 网络无关的核心：身份、种子、Merkle 证明与本
 license = "MIT"
 
 [dependencies]
+sha2 = "0.11.1"
