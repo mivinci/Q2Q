@@ -4,8 +4,9 @@
 //! and Punch only ever see a public key inside a ticket the client signed
 //! itself.
 
-use crate::bencode::{self, BValue, Dict};
+use crate::bencode::{self, BValue};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 /// RFC 4648 alphabet (A–Z then 2–7), used for the data part of a `peer_id`.
@@ -129,12 +130,31 @@ pub enum Audience {
 }
 
 impl Audience {
-  fn as_bytes(&self) -> Vec<u8> {
+  fn as_str(&self) -> &str {
     match self {
-      Audience::Track => b"track".to_vec(),
-      Audience::Punch(id) => id.as_bytes().to_vec(),
+      Audience::Track => "track",
+      Audience::Punch(id) => id.as_str(),
     }
   }
+}
+
+/// The part of a ticket that gets signed. `sig` is deliberately absent, and the
+/// key order is fixed by the serialiser rather than by declaration order.
+#[derive(Serialize)]
+struct Payload<'a> {
+  v: u32,
+  iss: &'a str,
+  #[serde(rename = "pub", with = "serde_bytes")]
+  public_key: &'a [u8],
+  iat: u64,
+  exp: u64,
+  aud: &'a str,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  tgt: Option<&'a str>,
+  #[serde(skip_serializing_if = "Option::is_none", with = "serde_bytes")]
+  ih: Option<&'a [u8]>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  cid: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,23 +177,18 @@ impl Ticket {
   /// The signed payload. Absent optional fields are omitted rather than encoded
   /// empty — otherwise the same ticket could have two different signatures.
   fn payload(&self) -> BValue {
-    let mut d = Dict::new();
-    d.insert(b"v".to_vec(), BValue::Int(self.v as i64));
-    d.insert(b"iss".to_vec(), BValue::bytes(self.iss.as_str().as_bytes()));
-    d.insert(b"pub".to_vec(), BValue::Bytes(self.public_key.to_vec()));
-    d.insert(b"iat".to_vec(), BValue::Int(self.iat as i64));
-    d.insert(b"exp".to_vec(), BValue::Int(self.exp as i64));
-    d.insert(b"aud".to_vec(), BValue::Bytes(self.aud.as_bytes()));
-    if let Some(tgt) = &self.tgt {
-      d.insert(b"tgt".to_vec(), BValue::bytes(tgt.as_str().as_bytes()));
-    }
-    if let Some(ih) = &self.ih {
-      d.insert(b"ih".to_vec(), BValue::Bytes(ih.to_vec()));
-    }
-    if let Some(cid) = &self.cid {
-      d.insert(b"cid".to_vec(), BValue::bytes(cid.as_bytes()));
-    }
-    BValue::Dict(d)
+    let p = Payload {
+      v: self.v,
+      iss: self.iss.as_str(),
+      public_key: &self.public_key,
+      iat: self.iat,
+      exp: self.exp,
+      aud: self.aud.as_str(),
+      tgt: self.tgt.as_ref().map(|t| t.as_str()),
+      ih: self.ih.as_ref().map(|h| h.as_slice()),
+      cid: self.cid.as_deref(),
+    };
+    crate::bencode_serde::to_value(&p).expect("ticket payload is always serialisable")
   }
 
   pub fn sign(&mut self, key: &SigningKey) {

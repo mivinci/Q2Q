@@ -11,6 +11,7 @@
 //! - `file` — block states, piece bitmaps, in-place writes
 
 pub mod bencode;
+pub mod bencode_serde;
 pub mod file;
 pub mod identity;
 pub mod merkle;

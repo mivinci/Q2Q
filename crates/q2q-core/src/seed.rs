@@ -7,22 +7,32 @@
 use crate::bencode::{self, BValue, Dict};
 use crate::merkle::{self, Hash};
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use serde::Serialize;
 
 pub const INFO_VERSION: u32 = 2;
 pub const MIN_BLOCK_SIZE: u32 = 256 * 1024;
 pub const MAX_BLOCK_SIZE: u32 = 4 * 1024 * 1024;
 pub const DEFAULT_BLOCK_SIZE: u32 = MIN_BLOCK_SIZE;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The info dict. `info_hash` is taken over its canonical encoding, so which
+/// fields are present is part of the content's identity.
+///
+/// Deriving `Serialize` is safe here: the bencode serialiser sorts keys by byte
+/// before emitting, so the output does not depend on the field order below.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Info {
   /// Must be `INFO_VERSION`. Anything else is rejected outright.
   pub v: u32,
+  /// Dropped from the encoding when absent, which changes `info_hash`.
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub name: Option<String>,
   pub length: u64,
   /// Power of two within `[MIN_BLOCK_SIZE, MAX_BLOCK_SIZE]`.
   pub block_size: u32,
+  #[serde(skip_serializing_if = "Option::is_none")]
   pub mime: Option<String>,
-  /// Merkle root, 32 bytes.
+  /// Merkle root, 32 raw bytes — not hex.
+  #[serde(with = "serde_bytes")]
   pub root: Hash,
 }
 
@@ -43,21 +53,10 @@ impl Info {
     self.length.div_ceil(self.block_size as u64) as usize
   }
 
-  /// Canonical bencode of the info dict. Optional fields are omitted when
-  /// absent rather than encoded as null.
+  /// Canonical bencode of the info dict: keys sorted by byte, optional fields
+  /// omitted when absent.
   pub fn to_value(&self) -> BValue {
-    let mut d = Dict::new();
-    d.insert(b"v".to_vec(), BValue::Int(self.v as i64));
-    if let Some(name) = &self.name {
-      d.insert(b"name".to_vec(), BValue::bytes(name.as_bytes()));
-    }
-    d.insert(b"length".to_vec(), BValue::Int(self.length as i64));
-    d.insert(b"block_size".to_vec(), BValue::Int(self.block_size as i64));
-    if let Some(mime) = &self.mime {
-      d.insert(b"mime".to_vec(), BValue::bytes(mime.as_bytes()));
-    }
-    d.insert(b"root".to_vec(), BValue::Bytes(self.root.to_vec()));
-    BValue::Dict(d)
+    crate::bencode_serde::to_value(self).expect("info is always serialisable")
   }
 
   pub fn info_hash(&self) -> Hash {
