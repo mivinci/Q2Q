@@ -151,6 +151,52 @@ Track 用 payload 里声明的公钥验签，通过后**把这个公钥当作清
 
 ---
 
+## 容器镜像
+
+两个服务各有自己的 `Dockerfile`（`crates/q2q-*/Dockerfile`），最终镜像是 `alpine` 加一个静态二进制。
+
+**编译放在容器里**，不在 runner 上交叉编译：rustls 默认用 aws-lc-rs，它带一个 C 库（aws-lc-sys），需要 cmake 和 C 工具链，交叉编译到 musl 是个容易翻车的组合。在 `rust:1-alpine` 里 native 编译就没有这层不确定性。
+
+依赖单独一层：先只拷 `Cargo.toml` + 占位源码编一遍，这样改我们自己的代码不会让整层依赖重新编译。CI 再用 `type=gha` 缓存这些层。
+
+### 发布
+
+每个服务独立打 tag：
+
+```sh
+git tag track/v0.1.0 && git push origin track/v0.1.0   # -> ghcr.io/mivinci/q2q-track-server:v0.1.0
+git tag punch/v0.2.0 && git push origin punch/v0.2.0   # -> ghcr.io/mivinci/q2q-punch-server:v0.2.0
+```
+
+`.github/workflows/images.yml` 按 tag 前缀挑对应的 job，同时打 `latest`。目前只有 `linux/amd64`（加 arm64 需要在 buildx 上挂 QEMU，而 aws-lc 在 QEMU 里编译会很慢）。
+
+### 跑起来
+
+配置挂到 `/etc/q2q/`：
+
+```sh
+docker run -d -p 8080:8080 -v ./track.toml:/etc/q2q/track.toml:ro \
+  ghcr.io/mivinci/q2q-track-server:v0.1.0
+```
+
+**容器里的 `bind` 必须是 `0.0.0.0`**，不能用默认的 `127.0.0.1`——那样只有容器自己能连上：
+
+```toml
+bind = "0.0.0.0:8080"
+```
+
+Punch 走 QUIC（UDP），端口要按 UDP 转发：`-p 4433:4433/udp`。
+
+镜像以 root 运行（QUIC 需要绑 UDP 端口，非 root 也能绑高端口，但省掉这层麻烦）。Punch 若用持久化身份，把证书目录也挂进去：
+
+```sh
+-v ./punch-identity:/etc/q2q/identity
+```
+
+并在 `punch.toml` 里指向它（`[identity] cert = ...`），否则每次重建容器公钥都会变。
+
+---
+
 ## 顺序
 
 ```
