@@ -5,5 +5,6 @@
 //! attached to. It never issues identity tickets (clients sign their own) and
 //! never stores connection state.
 
+pub mod api;
 pub mod auth;
 pub mod state;
