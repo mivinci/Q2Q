@@ -21,6 +21,113 @@ pub enum BlockState {
   Verified,
 }
 
+/// One block: how much of it has landed, and where it stands.
+///
+/// State and bitmap live together because they are one thing. Keeping them in
+/// parallel vectors means every access has to index twice and stay in step by
+/// hand; here the association is structural.
+pub struct Block {
+  state: BlockState,
+  /// Byte length; only the last block is shorter than the store's block size.
+  len: usize,
+  /// One bit per piece, held as u64 words.
+  bitmap: Vec<u64>,
+}
+
+impl Block {
+  fn new(len: usize) -> Self {
+    let pieces = len.div_ceil(PIECE_SIZE);
+    Block {
+      state: BlockState::Missing,
+      len,
+      bitmap: vec![0u64; pieces.div_ceil(64)],
+    }
+  }
+
+  pub fn state(&self) -> BlockState {
+    self.state
+  }
+
+  pub fn len(&self) -> usize {
+    self.len
+  }
+
+  /// Only true for a block of a zero-length file; exists because `len` is
+  /// public and callers expect the pair.
+  pub fn is_empty(&self) -> bool {
+    self.len == 0
+  }
+
+  pub fn piece_count(&self) -> usize {
+    self.len.div_ceil(PIECE_SIZE)
+  }
+
+  /// Bytes in one piece. Only the last piece of a short block can be short.
+  pub fn piece_len(&self, piece: usize) -> usize {
+    let start = piece * PIECE_SIZE;
+    (self.len - start).min(PIECE_SIZE)
+  }
+
+  pub fn piece_present(&self, piece: usize) -> bool {
+    let (word, bit) = (piece / 64, piece % 64);
+    self.bitmap[word] & (1 << bit) != 0
+  }
+
+  fn set_piece(&mut self, piece: usize, present: bool) {
+    let (word, bit) = (piece / 64, piece % 64);
+    if present {
+      self.bitmap[word] |= 1 << bit;
+    } else {
+      self.bitmap[word] &= !(1 << bit);
+    }
+  }
+
+  fn all_pieces_present(&self) -> bool {
+    (0..self.piece_count()).all(|p| self.piece_present(p))
+  }
+
+  /// Record a piece and advance the state. Returns the state afterwards.
+  fn mark_piece(&mut self, piece: usize) -> BlockState {
+    self.set_piece(piece, true);
+    if self.state == BlockState::Missing {
+      self.state = BlockState::Partial;
+    }
+    if self.state == BlockState::Partial && self.all_pieces_present() {
+      self.state = BlockState::Downloaded;
+    }
+    self.state
+  }
+
+  fn mark_verified(&mut self) {
+    self.state = BlockState::Verified;
+  }
+
+  /// Drop every piece. Called when verification fails: a root mismatch usually
+  /// means the bytes themselves came from a bad peer, so keeping them would
+  /// only fail again.
+  fn reset(&mut self) {
+    self.bitmap.fill(0);
+    self.state = BlockState::Partial;
+  }
+
+  fn bitmap_bytes(&self) -> Vec<u8> {
+    self.bitmap.iter().flat_map(|w| w.to_le_bytes()).collect()
+  }
+
+  fn set_bitmap_bytes(&mut self, bytes: &[u8]) -> bool {
+    let expected = self.bitmap.len() * 8;
+    if bytes.len() != expected {
+      return false;
+    }
+    for (w, chunk) in self.bitmap.iter_mut().zip(bytes.chunks(8)) {
+      let mut arr = [0u8; 8];
+      arr.copy_from_slice(chunk);
+      *w = u64::from_le_bytes(arr);
+    }
+    true
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
   Io(String),
@@ -60,9 +167,7 @@ pub struct FileStore {
   path: PathBuf,
   length: u64,
   block_size: u32,
-  states: Vec<BlockState>,
-  /// One bitmap per block, held as u64 words.
-  bitmaps: Vec<Vec<u64>>,
+  blocks: Vec<Block>,
 }
 
 impl FileStore {
@@ -72,60 +177,58 @@ impl FileStore {
     if length > 0 {
       f.set_len(length)?;
     }
-    let block_count = length.div_ceil(block_size as u64) as usize;
-    let mut store = FileStore {
+    let blocks = (0..length.div_ceil(block_size as u64))
+      .map(|i| {
+        let start = i * block_size as u64;
+        Block::new((length - start).min(block_size as u64) as usize)
+      })
+      .collect();
+    Ok(FileStore {
       path,
       length,
       block_size,
-      states: vec![BlockState::Missing; block_count],
-      bitmaps: Vec::new(),
-    };
-    store.bitmaps = (0..block_count).map(|i| store.empty_bitmap(i)).collect();
-    Ok(store)
+      blocks,
+    })
   }
 
   pub fn block_count(&self) -> usize {
-    self.states.len()
+    self.blocks.len()
   }
 
-  /// Byte length of one block; the last one may be short.
-  pub fn block_len(&self, block: usize) -> usize {
-    let start = block as u64 * self.block_size as u64;
-    (self.length - start).min(self.block_size as u64) as usize
-  }
-
-  /// Number of pieces in a block; the last block may hold fewer.
-  pub fn piece_count(&self, block: usize) -> usize {
-    self.block_len(block).div_ceil(PIECE_SIZE)
-  }
-
-  fn empty_bitmap(&self, block: usize) -> Vec<u64> {
-    vec![0u64; self.piece_count(block).div_ceil(64)]
-  }
-
-  pub fn state(&self, block: usize) -> Result<BlockState, StoreError> {
+  pub fn block(&self, index: usize) -> Result<&Block, StoreError> {
     self
-      .states
-      .get(block)
-      .copied()
-      .ok_or(StoreError::BlockOutOfRange(block))
+      .blocks
+      .get(index)
+      .ok_or(StoreError::BlockOutOfRange(index))
   }
 
-  /// Write one piece at its final offset and advance the block state.
+  pub fn block_len(&self, index: usize) -> Result<usize, StoreError> {
+    Ok(self.block(index)?.len())
+  }
+
+  pub fn piece_count(&self, index: usize) -> Result<usize, StoreError> {
+    Ok(self.block(index)?.piece_count())
+  }
+
+  pub fn state(&self, index: usize) -> Result<BlockState, StoreError> {
+    Ok(self.block(index)?.state())
+  }
+
+  /// Write one piece at its final offset and advance the block's state.
   pub fn write_piece(
     &mut self,
     block: usize,
     piece: usize,
     data: &[u8],
   ) -> Result<BlockState, StoreError> {
-    if block >= self.block_count() {
-      return Err(StoreError::BlockOutOfRange(block));
-    }
-    let piece_count = self.piece_count(block);
-    if piece >= piece_count {
+    let b = self
+      .blocks
+      .get_mut(block)
+      .ok_or(StoreError::BlockOutOfRange(block))?;
+    if piece >= b.piece_count() {
       return Err(StoreError::PieceOutOfRange(piece));
     }
-    let expected = self.piece_len(block, piece);
+    let expected = b.piece_len(piece);
     if data.len() != expected {
       return Err(StoreError::WrongDataLength {
         expected,
@@ -134,52 +237,16 @@ impl FileStore {
     }
 
     let offset = block as u64 * self.block_size as u64 + piece as u64 * PIECE_SIZE as u64;
-    let mut f = FsFile::options().write(true).open(&self.path)?;
-    f.seek(SeekFrom::Start(offset))?;
-    f.write_all(data)?;
-
-    self.set_bit(block, piece, true);
-    if self.states[block] == BlockState::Missing {
-      self.states[block] = BlockState::Partial;
+    {
+      let mut f = FsFile::options().write(true).open(&self.path)?;
+      f.seek(SeekFrom::Start(offset))?;
+      f.write_all(data)?;
     }
-    if self.all_pieces_present(block) && self.states[block] == BlockState::Partial {
-      self.states[block] = BlockState::Downloaded;
-    }
-    Ok(self.states[block])
+    Ok(b.mark_piece(piece))
   }
 
-  /// Bytes in one piece; only the very last piece of the file can be short.
-  pub fn piece_len(&self, block: usize, piece: usize) -> usize {
-    let block_len = self.block_len(block);
-    let start = piece * PIECE_SIZE;
-    (block_len - start).min(PIECE_SIZE)
-  }
-
-  fn set_bit(&mut self, block: usize, piece: usize, value: bool) {
-    let word = piece / 64;
-    let bit = piece % 64;
-    if value {
-      self.bitmaps[block][word] |= 1 << bit;
-    } else {
-      self.bitmaps[block][word] &= !(1 << bit);
-    }
-  }
-
-  fn get_bit(&self, block: usize, piece: usize) -> bool {
-    let word = piece / 64;
-    let bit = piece % 64;
-    self.bitmaps[block][word] & (1 << bit) != 0
-  }
-
-  fn all_pieces_present(&self, block: usize) -> bool {
-    (0..self.piece_count(block)).all(|p| self.get_bit(block, p))
-  }
-
-  /// Read a block back and check it against the tree root.
-  ///
-  /// A failure sends the block back to `Partial` and clears its bitmap: a root
-  /// mismatch usually means the data itself came from a bad peer, so keeping it
-  /// would only fail again.
+  /// Read a block back and check it against the tree root. On failure the block
+  /// goes back to `Partial` with its bitmap cleared.
   pub fn verify(
     &mut self,
     block: usize,
@@ -195,21 +262,17 @@ impl FileStore {
     let data = self.read_block(block)?;
     let slice = [data.as_slice()];
     if merkle::verify_range(&slice, block, self.block_count(), proof, root) {
-      self.states[block] = BlockState::Verified;
+      self.blocks[block].mark_verified();
       Ok(BlockState::Verified)
     } else {
-      self.states[block] = BlockState::Partial;
-      self.bitmaps[block] = self.empty_bitmap(block);
+      self.blocks[block].reset();
       Ok(BlockState::Partial)
     }
   }
 
   pub fn read_block(&self, block: usize) -> Result<Vec<u8>, StoreError> {
-    if block >= self.block_count() {
-      return Err(StoreError::BlockOutOfRange(block));
-    }
+    let len = self.block(block)?.len();
     let offset = block as u64 * self.block_size as u64;
-    let len = self.block_len(block);
     let mut buf = vec![0u8; len];
     let mut f = FsFile::open(&self.path)?;
     f.seek(SeekFrom::Start(offset))?;
@@ -220,8 +283,8 @@ impl FileStore {
   /// Bitfield for the wire: only verified blocks are set.
   pub fn verified_bitfield(&self) -> Vec<u8> {
     let mut out = vec![0u8; self.block_count().div_ceil(8)];
-    for (i, s) in self.states.iter().enumerate() {
-      if *s == BlockState::Verified {
+    for (i, b) in self.blocks.iter().enumerate() {
+      if b.state() == BlockState::Verified {
         out[i / 8] |= 1 << (7 - (i % 8));
       }
     }
@@ -235,16 +298,16 @@ impl FileStore {
   }
 
   pub fn save_progress(&self) -> Result<(), StoreError> {
-    let mut states = Vec::with_capacity(self.block_count());
-    let mut maps = Vec::with_capacity(self.block_count());
-    for (i, s) in self.states.iter().enumerate() {
-      states.push(BValue::Int(*s as i64));
-      let bytes: Vec<u8> = self.bitmaps[i]
-        .iter()
-        .flat_map(|w| w.to_le_bytes())
-        .collect();
-      maps.push(BValue::Bytes(bytes));
-    }
+    let states: Vec<BValue> = self
+      .blocks
+      .iter()
+      .map(|b| BValue::Int(b.state() as i64))
+      .collect();
+    let maps: Vec<BValue> = self
+      .blocks
+      .iter()
+      .map(|b| BValue::Bytes(b.bitmap_bytes()))
+      .collect();
 
     let mut d = Dict::new();
     d.insert(b"v".to_vec(), BValue::Int(1));
@@ -297,7 +360,7 @@ impl FileStore {
         BValue::Int(n) => *n,
         _ => return Err(StoreError::MalformedProgress),
       };
-      self.states[i] = match n {
+      self.blocks[i].state = match n {
         0 => BlockState::Missing,
         1 => BlockState::Partial,
         2 => BlockState::Downloaded,
@@ -309,17 +372,9 @@ impl FileStore {
         BValue::Bytes(b) => b,
         _ => return Err(StoreError::MalformedProgress),
       };
-      let expected = self.empty_bitmap(i).len() * 8;
-      if bytes.len() != expected {
+      if !self.blocks[i].set_bitmap_bytes(bytes) {
         return Err(StoreError::MalformedProgress);
       }
-      let mut words = vec![0u64; expected / 8];
-      for (w, chunk) in words.iter_mut().zip(bytes.chunks(8)) {
-        let mut arr = [0u8; 8];
-        arr.copy_from_slice(chunk);
-        *w = u64::from_le_bytes(arr);
-      }
-      self.bitmaps[i] = words;
     }
     Ok(())
   }
@@ -342,14 +397,16 @@ mod tests {
     let dir = TempDir::new().unwrap();
     let store = FileStore::create(dir.path().join("f"), 700_000, 256 * 1024).unwrap();
     assert_eq!(store.block_count(), 3);
-    assert_eq!(store.block_len(0), 256 * 1024);
-    assert_eq!(store.piece_count(0), 256);
+    assert_eq!(store.block_len(0).unwrap(), 256 * 1024);
+    assert_eq!(store.piece_count(0).unwrap(), 256);
     // 700_000 - 2*262_144 = 175_712
-    assert_eq!(store.block_len(2), 175_712);
-    assert_eq!(store.piece_count(2), 175_712 / PIECE_SIZE + 1);
-    // the final piece holds the remainder
-    let last = store.piece_count(2) - 1;
-    assert_eq!(store.piece_len(2, last), 175_712 % PIECE_SIZE);
+    assert_eq!(store.block_len(2).unwrap(), 175_712);
+    assert_eq!(store.piece_count(2).unwrap(), 175_712 / PIECE_SIZE + 1);
+    let last = store.piece_count(2).unwrap() - 1;
+    assert_eq!(
+      store.block(2).unwrap().piece_len(last),
+      175_712 % PIECE_SIZE
+    );
   }
 
   #[test]
@@ -365,8 +422,10 @@ mod tests {
     for p in 0..3 {
       let start = p * PIECE_SIZE;
       let chunk = blocks[0][start..start + PIECE_SIZE].to_vec();
-      let s = store.write_piece(0, p, &chunk).unwrap();
-      assert_eq!(s, BlockState::Partial);
+      assert_eq!(
+        store.write_piece(0, p, &chunk).unwrap(),
+        BlockState::Partial
+      );
     }
     let start = 3 * PIECE_SIZE;
     let last = blocks[0][start..].to_vec();
@@ -396,6 +455,17 @@ mod tests {
     assert_eq!(&on_disk[..PIECE_SIZE], &[1u8; PIECE_SIZE][..]);
     assert_eq!(&on_disk[PIECE_SIZE..2 * PIECE_SIZE], &[0u8; PIECE_SIZE][..]);
     assert_eq!(&on_disk[2 * PIECE_SIZE..], &[3u8; PIECE_SIZE][..]);
+  }
+
+  #[test]
+  fn piece_presence_is_tracked_per_block() {
+    let dir = TempDir::new().unwrap();
+    let mut store =
+      FileStore::create(dir.path().join("f"), 4 * PIECE_SIZE as u64, 256 * 1024).unwrap();
+    assert!(!store.block(0).unwrap().piece_present(0));
+    store.write_piece(0, 0, &[1u8; PIECE_SIZE]).unwrap();
+    assert!(store.block(0).unwrap().piece_present(0));
+    assert!(!store.block(0).unwrap().piece_present(1));
   }
 
   #[test]
@@ -436,12 +506,12 @@ mod tests {
     let (leaves, root) = tree_of(&blocks);
 
     // block 0 fully written but not verified, block 1 verified
-    for p in 0..store.piece_count(0) {
+    for p in 0..store.piece_count(0).unwrap() {
       let start = p * PIECE_SIZE;
       let chunk = blocks[0][start..start + PIECE_SIZE].to_vec();
       store.write_piece(0, p, &chunk).unwrap();
     }
-    for p in 0..store.piece_count(1) {
+    for p in 0..store.piece_count(1).unwrap() {
       let start = p * PIECE_SIZE;
       let chunk = blocks[1][start..start + PIECE_SIZE].to_vec();
       store.write_piece(1, p, &chunk).unwrap();
@@ -467,7 +537,8 @@ mod tests {
     let mut reopened = FileStore::create(&path, 4 * PIECE_SIZE as u64, block_size).unwrap();
     reopened.load_progress().unwrap();
     assert_eq!(reopened.state(0).unwrap(), BlockState::Partial);
-    assert_eq!(reopened.piece_count(0), store.piece_count(0));
+    assert!(reopened.block(0).unwrap().piece_present(0));
+    assert!(!reopened.block(0).unwrap().piece_present(1));
   }
 
   #[test]
