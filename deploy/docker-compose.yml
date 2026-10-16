@@ -1,0 +1,51 @@
+# Single-node deployment: Track, one Punch Server, and coturn for the cases
+# where a direct connection cannot be made.
+#
+# See the bootstrap order in todos/deployment.md — the Punch public key has to
+# be generated before Track can be told about it, so this is not a one-shot
+# `up`.
+
+services:
+  track:
+    image: ghcr.io/mivinci/q2q-track-server:v0.1.0
+    restart: unless-stopped
+    volumes:
+      - ./track.toml:/etc/q2q/track.toml:ro
+    ports:
+      - "8080:8080/tcp"
+    # the Punch list is re-read from track.toml every few seconds, so editing
+    # it does not need a restart
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/files/sha256:00/peers"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  punch:
+    image: ghcr.io/mivinci/q2q-punch-server:v0.1.0
+    restart: unless-stopped
+    volumes:
+      - ./punch.toml:/etc/q2q/punch.toml:ro
+      # the identity outlives the container: clients verify this server by its
+      # public key, so it must not change on restart
+      - ./punch-identity:/etc/q2q/identity
+    ports:
+      # QUIC is UDP; a TCP mapping here would silently do nothing
+      - "4433:4433/udp"
+
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    command:
+      - -n
+      - --listening-port=3478
+      - --realm=q2q.local
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET}
+      - --external-ip=${PUBLIC_IP}
+      - --no-multicast-peers
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
