@@ -8,7 +8,7 @@ const guide = (prefix) => [
   { text: 'Overview', link: `${prefix}guide/` },
   { text: 'Deployment', link: `${prefix}guide/deploy` },
   { text: 'Track', link: `${prefix}guide/track` },
-  { text: 'Punch Server', link: `${prefix}guide/punch` },
+  { text: 'Punch', link: `${prefix}guide/punch` },
 ];
 
 export default defineConfig({
@@ -90,7 +90,7 @@ export default defineConfig({
               { text: '总览', link: '/zh/guide/' },
               { text: '部署', link: '/zh/guide/deploy' },
               { text: 'Track', link: '/zh/guide/track' },
-              { text: 'Punch 服务', link: '/zh/guide/punch' },
+              { text: 'Punch', link: '/zh/guide/punch' },
             ],
           },
           { text: 'API 参考', link: '/zh/api/' },
@@ -109,7 +109,7 @@ export default defineConfig({
                 { text: '总览', link: '/zh/guide/' },
                 { text: '部署', link: '/zh/guide/deploy' },
                 { text: 'Track', link: '/zh/guide/track' },
-                { text: 'Punch 服务', link: '/zh/guide/punch' },
+                { text: 'Punch', link: '/zh/guide/punch' },
               ],
             },
           ],
