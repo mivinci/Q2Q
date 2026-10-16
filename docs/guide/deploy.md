@@ -1,23 +1,23 @@
 # Deployment
 
-Track and Punch Server are ordinary servers: they listen on a port, read a TOML
+Track and Punch are ordinary servers: they listen on a port, read a TOML
 file, and hold no state that has to survive a restart except Punch's identity
 keypair.
 
 They do **not** need to run on the same machine, and they do not talk to each
-other on the request path — a Punch Server verifies tickets on its own, without
+other on the request path — a Punch verifies tickets on its own, without
 asking Track. The only coupling is operational: Track needs to know which Punch
-Servers exist.
+nodes exist.
 
 ## Single node
 
-The simplest deployment: one Track, one Punch Server, and coturn for the cases
+The simplest deployment: one Track, one Punch, and coturn for the cases
 where a direct connection cannot be established.
 
 ```mermaid
 flowchart LR
   P[Peer] -->|HTTPS| T[Track]
-  P -->|QUIC over UDP| PS[Punch Server]
+  P -->|QUIC over UDP| PS[Punch]
   P -->|relay| CT[coturn]
 ```
 
@@ -35,7 +35,7 @@ has a compose file and configuration you can start from.
 
 ### Bootstrap order
 
-This is the one thing that cannot be done in a single `up`: a Punch Server's
+This is the one thing that cannot be done in a single `up`: a Punch's
 public key must exist before Track can publish it, because clients use it to
 verify the server's certificate.
 
@@ -46,7 +46,7 @@ docker compose logs punch | grep punch_public_key
 docker compose up -d track coturn
 ```
 
-Keep the identity directory mounted. If the Punch Server starts without a
+Keep the identity directory mounted. If the Punch starts without a
 persisted keypair it mints a new one, and every client that learned the old key
 will reject it.
 
@@ -85,10 +85,10 @@ heartbeat lands somewhere else.
 TURN credentials are the exception that needs no storage at all — they are
 computed from a shared secret, so every instance produces the same answer.
 
-**Punch Server is sharded, not stateless.** A peer is bound to one Punch Server,
+**Punch is sharded, not stateless.** A peer is bound to one Punch,
 and whoever wants to reach it connects to *that* instance. All signalling for a
 connection therefore happens inside one instance, and instances never need to
-talk to each other. That is why a Punch Server can keep its state in memory.
+talk to each other. That is why a Punch can keep its state in memory.
 
 Two consequences:
 
@@ -112,14 +112,14 @@ needs to see everything. Shared storage is the simpler answer.
 
 Recovery is cheap because identities are self-signed. If Track restarts and loses
 its index, a peer's next heartbeat fails with an unknown session and it simply
-announces again — a fresh ticket, no negotiation. If a Punch Server restarts, its
+announces again — a fresh ticket, no negotiation. If a Punch restarts, its
 peers re-join the same way.
 
 ### Not built yet
 
 - A shared-storage backend for Track's state (the trait exists; only an
   in-memory one is implemented)
-- A registration interface, so Punch Servers can announce themselves instead of
+- A registration interface, so Punch nodes can announce themselves instead of
   being listed in a config file
 - Cluster-wide rate limiting (each instance currently enforces `1/N` of the quota
   via `cluster_size`)

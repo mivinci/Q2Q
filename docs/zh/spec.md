@@ -4,7 +4,7 @@
 | --- | --- |
 | 设计稿（Experimental） | 2026-09-20 |
 
-> 变更摘要：2026-09-20 起数据面改为 Merkle 证明校验（`info` 的 `hashes` 列表 → `root`，`v: 1` → `v: 2`），新增 `request_proof` / `proof` / `pause` / `resume` 消息与叶子哈希列表的两种来源（envelope 内联 `leaf_hashes`、`proof_list` URL）。证明走可靠控制通道、先于数据到达，载荷默认含叶子哈希以便缓存复用（对齐 BEP 52 的 `base layer = 0`）。2026-09-21 收敛 Track 与 Punch Server 的耦合面：两者之间只保留 Punch → Track 的吊销查询这一条单向依赖，revoke 通知降级为尽力而为。
+> 变更摘要：2026-09-20 起数据面改为 Merkle 证明校验（`info` 的 `hashes` 列表 → `root`，`v: 1` → `v: 2`），新增 `request_proof` / `proof` / `pause` / `resume` 消息与叶子哈希列表的两种来源（envelope 内联 `leaf_hashes`、`proof_list` URL）。证明走可靠控制通道、先于数据到达，载荷默认含叶子哈希以便缓存复用（对齐 BEP 52 的 `base layer = 0`）。2026-09-21 收敛 Track 与 Punch 的耦合面：两者之间只保留 Punch → Track 的吊销查询这一条单向依赖，revoke 通知降级为尽力而为。
 >
 > **2026-10-15 控制面改为自签票据**（本次修订）：去掉 `register` / `login` / `revoke`——身份不再需要服务端背书，公钥内嵌在票据里，随 `announce` 上报、随 `query` 下发，Track 只在 peer 在线期间持有。会话续约改用 `session_key` + HMAC，不再每次携带票据。`grace_until` 移除：中继凭据改为按需自签请求，凭据过期再请求一次即可。新增两项：连接前的**显式同意**（`connect` / `accept` / `reject`，必须先于 offer）与 **block 级来源选择**（逐 block 决定走 CDN 还是 P2P）。组件名由 Tracker 统一改为 Track。代价见 3.1.4 节：**本设计没有吊销机制**。
 
@@ -23,7 +23,7 @@
 本文统一使用以下名称：
 
 - **Track Server**：在线索引、文件索引、Peer 发现、Punch 分配与 TURN 凭据签发。
-- **Punch Server**：维护 Peer 的在线 Binding，转发 WebRTC 信令（SDP 与 ICE candidate）。
+- **Punch**：维护 Peer 的在线 Binding，转发 WebRTC 信令（SDP 与 ICE candidate）。
 - **STUN Server**：供 ICE 收集公网映射候选地址。
 - **TURN / Relay Server**：无法直连时经 ICE relay candidate 转发数据流。
 
@@ -175,7 +175,7 @@ sig = sign(sk, canonical(payload))
 | 请求连接目标 Peer | 指定 `punch_b_id` | `tgt`、`ih`、`cid` | 数十秒（打洞窗口） |
 | 请求 TURN 中继凭据 | `track` | `ih`、对端 `peer_id` | 分钟级 |
 
-`aud` 在 Punch 场景下是**具体的 Punch Server 标识**（`punch_id` / `punch_b_id`），不是字面量 `punch`——票据只能在指定的那个 Punch 节点消费，泄露了也拿不到别的节点使用（见第 6 章）。
+`aud` 在 Punch 场景下是**具体的 Punch 标识**（`punch_id` / `punch_b_id`），不是字面量 `punch`——票据只能在指定的那个 Punch 节点消费，泄露了也拿不到别的节点使用（见第 6 章）。
 
 `cid` 用于防重放：Punch 维护已消费 `cid` 记录（覆盖票据 `exp` 两倍时长），重复 `cid` **必须**拒绝。
 
@@ -223,7 +223,7 @@ MAC 固定为 `HMAC-SHA-256(session_key, peer_id || seq || timestamp)`，服务�
 
 ### 3.2 Binding：`join`、`heartbeat` 与 `exit`
 
-客户端使用自签票据（`aud=punch`）建立 Binding。票据内嵌公钥（见 3.1.2），Punch 按四步校验即可确认请求方控制该身份——不需要 Track 预先下发令牌，也不需要 Punch 预存 `peer_id → public_key` 映射。防重放依赖票据的一次性 `cid`——Punch Server 维护已消费 `cid` 记录（覆盖票据 `exp` 两倍时长），首次 join 消费 `cid`，后续同 `cid` 的请求**必须**拒绝；客户端重连或 binding 过期时重新自签一个票据即可，不需要任何网络往返。`timestamp` 仍纳入签名内容以约束签名时效，超出短窗口的请求**必须**拒绝。Punch Server 验签并验证该证明后创建 `binding_id`，并通过该加密信道的已认证响应返回随机生成的会话级 `binding_key`。此 Binding 代表"该 peer 当前可通过这个 Punch Server 被联系到"。
+客户端使用自签票据（`aud=punch`）建立 Binding。票据内嵌公钥（见 3.1.2），Punch 按四步校验即可确认请求方控制该身份——不需要 Track 预先下发令牌，也不需要 Punch 预存 `peer_id → public_key` 映射。防重放依赖票据的一次性 `cid`——Punch 维护已消费 `cid` 记录（覆盖票据 `exp` 两倍时长），首次 join 消费 `cid`，后续同 `cid` 的请求**必须**拒绝；客户端重连或 binding 过期时重新自签一个票据即可，不需要任何网络往返。`timestamp` 仍纳入签名内容以约束签名时效，超出短窗口的请求**必须**拒绝。Punch 验签并验证该证明后创建 `binding_id`，并通过该加密信道的已认证响应返回随机生成的会话级 `binding_key`。此 Binding 代表"该 peer 当前可通过这个 Punch 被联系到"。
 
 之后的保活使用 `heartbeat(binding_id, seq, MAC)`，而不是每次发送完整票据。MAC 固定为 `HMAC-SHA-256(binding_key, binding_id || seq || timestamp || transport_generation)`；服务端仅接受递增序列号（允许一个有限乱序窗口）且 timestamp 在短窗口内的请求。Binding 到期、客户端重新 join、或网络切换时，旧 `binding_key` 和旧序列号空间立即失效。这样既刷新 NAT 映射和在线 TTL，也避免频繁验签与较大的 UDP 包。
 
@@ -239,7 +239,7 @@ Track 不保存或下发这些地址：候选地址会随网络切换而变化�
 
 B 使用 `announce` 登记自己可提供的文件：可一次 `add` 一组 `info_hash`（各带 `complete` 标志、TTL），或一次 `del` 一组 `info_hash` 主动撤下索引（不必等 TTL 过期）；记录**必须**带 TTL（服务端设置最大值），离线后自动失效。A 使用 `query(info_hash)` 查询少量候选 Peer。`info_hash` 固定为 info 的 SHA-256 摘要，info 的编码与字段见第 5 节。`complete` 标记是否持有整个文件，供 query 做粗粒度候选筛选（避开与自己没有交集的 Peer，降低 connect 票据 的无效消耗）；块级信息不上报 Track——Track 只维护 peer_id → info_hash 映射与 `complete` 标志，不保存全局块位图，细粒度的块可见性与稀缺度属于数据面，由直连双方交换维护。**不得**使用调用方自定义的文件名或非规范哈希作为文件标识。
 
-Track 的查询结果仅包含 B 的 `peer_id`、B 的身份公钥、B 所在 Punch Server 的地址与其公钥（`punch_public_key`，供 A 验证 Punch B 的服务器身份）；**不包含** B 的公网地址或候选地址，也**不包含**连接凭据——`connect` 票据由 A 自己签发（见 3.1.2），Track 不参与。Punch Server 的地址与公钥均由 Track 在 query 时实时读取并随响应下发——客户端**不得**缓存 Punch 清单或地址，时效性由 Track 的当前状态保证（见 7.1 节的部署模型）。
+Track 的查询结果仅包含 B 的 `peer_id`、B 的身份公钥、B 所在 Punch 的地址与其公钥（`punch_public_key`，供 A 验证 Punch B 的服务器身份）；**不包含** B 的公网地址或候选地址，也**不包含**连接凭据——`connect` 票据由 A 自己签发（见 3.1.2），Track 不参与。Punch 的地址与公钥均由 Track 在 query 时实时读取并随响应下发——客户端**不得**缓存 Punch 清单或地址，时效性由 Track 的当前状态保证（见 7.1 节的部署模型）。
 
 `connection_id` 由 A 生成（不可预测的随机数），签入 `connect` 票据的 `cid` 字段；票据同时携带 `tgt`（B 的 `peer_id`）与 `ih`（`info_hash`），Punch B 据此校验这次请求的指向。**Track 不保存 connection 记录**：它不参与 connect 票据的签发，因此没有状态可保存（见 7.1 节）。**应当**限制候选数量（默认 `limit=10`，见 7.2.1 节）、对 query/announce 按身份和文件施加速率限制，并限制单个文件的返回分页，以避免热门文件的索引放大和完整 Peer 列表泄露。
 
@@ -251,7 +251,7 @@ Track 的查询结果仅包含 B 的 `peer_id`、B 的身份公钥、B 所在 Pu
 | `CONNECT_TOKEN_EXP` | 60 s | connect 票据有效期（打洞窗口） |
 | `RELAY_CREDENTIAL_TTL` | 3600 s | TURN 凭据有效期，由 Track 在签发时决定 |
 
-两者**必须**满足 `ICE_TIMEOUT < CONNECT_TOKEN_EXP`——否则直连尚未判定失败，票据已经过期，回退拿不到凭据。Punch Server 侧维护 `cid` 一次性消费记录的时长**应当**与 `CONNECT_TOKEN_EXP` 对齐。
+两者**必须**满足 `ICE_TIMEOUT < CONNECT_TOKEN_EXP`——否则直连尚未判定失败，票据已经过期，回退拿不到凭据。Punch 侧维护 `cid` 一次性消费记录的时长**应当**与 `CONNECT_TOKEN_EXP` 对齐。
 
 原设计中的 `grace_until`（中继授权截止时刻）在本设计中**不存在**：中继凭据不再由 connect 票据的签发时刻推导，而是 A 在需要中继时自签一个 `aud=track` 的票据向 Track 请求（见 4.7 节）。A 持有私钥、随时可签，因此中继会话可以长于任何单个票据的有效期——凭据过期后重新自签再请求一次即可。代价是 Track 失去"一次连接一次授权"的审计粒度，只能按身份与 `info_hash` 限流。
 
@@ -265,15 +265,15 @@ Track 的查询结果仅包含 B 的 `peer_id`、B 的身份公钥、B 所在 Pu
 
 同一 `connection_id` 的连接记录有效期内，相同 offer 的重传**必须**幂等，并返回已有处理结果；不同内容复用同一 `connection_id` **必须**拒绝。若在连接建立超时前未收到 answer，A **应当**重新自签一个带新 `cid` 的 `connect` 票据发起新连接；若怀疑 B 已不可达则重新 `query`。`cancel` 会使 Punch B 删除该连接记录、停止转发，并向对端转发一条 `type=cancel`，对端收到后立即清理本地状态；未收到通知的一端仍**应当**在固定连接超时后清理记录。离线、令牌过期、目标拒绝、限流**应当**返回可区分的错误码，但对未授权请求不泄露目标是否在线。
 
-`offer`、`answer`、`candidate` 和 `cancel` 都是 `punch.signal` 的消息类型，而不是独立接口。`offer` / `answer` 承载 SDP，Punch Server 将其视为不透明数据中继，**不得**解析；`candidate` 承载标准 ICE candidate 字符串（trickle ICE），均使用同一个 `connection_id`。SDP 中的 DTLS 证书指纹经 Punch 认证信道送达，构成端到端身份校验的锚点（见第 4.1 节）。
+`offer`、`answer`、`candidate` 和 `cancel` 都是 `punch.signal` 的消息类型，而不是独立接口。`offer` / `answer` 承载 SDP，Punch 将其视为不透明数据中继，**不得**解析；`candidate` 承载标准 ICE candidate 字符串（trickle ICE），均使用同一个 `connection_id`。SDP 中的 DTLS 证书指纹经 Punch 认证信道送达，构成端到端身份校验的锚点（见第 4.1 节）。
 
 因此，A 直接请求 **Punch B**，而不是先经由 Punch A 再转发。Punch A 的职责仅是维护 A 自己的在线 Binding；只有当其他 Peer 主动连接 A 时，Punch A 才进入信令路径——本流程中 A 是发起方，Punch A 不出现。Punch B 则因为持有 B 的有效 Binding，能够把信令送达 B。
 
 A 一侧的信令走**连接范围的瞬时加密信道**：随 A 的首个 `signal`（offer）建立，生命周期与 Punch B 上的连接记录一致（连接建立成功或超时即关闭），answer、trickle candidate、cancel 与错误都经它双向传递。首个 `signal` 以 connect 票据 认证；此后同一信道上的消息不再重复验证票据——信道即凭据，relay 回退阶段的 candidate 交换因此不受票据 `exp` 限制。Punch B 在首个 `signal` 的响应中同时下发随机生成的 `signal_key`（对称密钥，只在加密信道内出现，有效期与连接记录一致）；这与 Binding 的模式同构：join 票据 之于 `binding_key`，正如 connect 票据 之于 `signal_key`。若瞬时信道意外断开，A 重连 Punch B 并出示 `connection_id` 与 `signal_key` 即可恢复该连接的信令；Punch B 在连接记录中保留已收到但未送达 A 的信令（通常是 answer 与少量 candidate），重连后按序补发，送达或超时后丢弃。
 
-B 一侧的信令送达依赖 B 与 Punch B 之间在 join 时建立的常驻加密信道；信道断开即视为 Binding 失效，Punch Server 对后续连接请求返回可区分的"目标不可达"错误。注意 `heartbeat` 与常驻信道是**两条独立的路径**：heartbeat 走 UDP（见 7.2.2 节），职责是维持 NAT 映射与刷新 Binding TTL；常驻信道的存活由传输层自身判定（TCP keepalive、QUIC idle timeout 或 DTLS 超时），不由 heartbeat 承载——否则 Punch 无法区分"信道断了但 NAT 映射还在"与"两者都断了"。两类信道的具体传输均不作限定，TCP+TLS、UDP+DTLS 或 QUIC 均可，硬性要求相同——机密性与完整性（`binding_key`、`signal_key` 与 connect 票据 均只经此类信道传输）、服务器认证（防止假 Punch Server 接管信令面；验证锚点为 announce / query 响应下发的 Punch Server 公钥，客户端连接 Punch 时校验其证书与公钥匹配）、以及网络切换后的可恢复性（常驻信道凭重新 join 与 `transport_generation` 语义恢复，瞬时信道凭 `signal_key` 重连）。
+B 一侧的信令送达依赖 B 与 Punch B 之间在 join 时建立的常驻加密信道；信道断开即视为 Binding 失效，Punch 对后续连接请求返回可区分的"目标不可达"错误。注意 `heartbeat` 与常驻信道是**两条独立的路径**：heartbeat 走 UDP（见 7.2.2 节），职责是维持 NAT 映射与刷新 Binding TTL；常驻信道的存活由传输层自身判定（TCP keepalive、QUIC idle timeout 或 DTLS 超时），不由 heartbeat 承载——否则 Punch 无法区分"信道断了但 NAT 映射还在"与"两者都断了"。两类信道的具体传输均不作限定，TCP+TLS、UDP+DTLS 或 QUIC 均可，硬性要求相同——机密性与完整性（`binding_key`、`signal_key` 与 connect 票据 均只经此类信道传输）、服务器认证（防止假 Punch 接管信令面；验证锚点为 announce / query 响应下发的 Punch 公钥，客户端连接 Punch 时校验其证书与公钥匹配）、以及网络切换后的可恢复性（常驻信道凭重新 join 与 `transport_generation` 语义恢复，瞬时信道凭 `signal_key` 重连）。
 
-这也是部署前提：Punch Server 的容量需按两类连接估算——面向 B 的常驻 Binding 数（小时级），以及面向 A 的挂起瞬时信道数（数十秒级，受 connect 票据 有效期与连接超时共同框定），并对单个 peer/IP 的并发挂起信道数设上限，防止批量挂连接耗尽资源。
+这也是部署前提：Punch 的容量需按两类连接估算——面向 B 的常驻 Binding 数（小时级），以及面向 A 的挂起瞬时信道数（数十秒级，受 connect 票据 有效期与连接超时共同框定），并对单个 peer/IP 的并发挂起信道数设上限，防止批量挂连接耗尽资源。
 
 ## 4. 数据面协议
 
@@ -289,7 +289,7 @@ B 一侧的信令送达依赖 B 与 Punch B 之间在 join 时建立的常驻加
 
 连通性检查失败或超时按第 3.5 节的重试规则处理；candidate 失效或网络切换通过 ICE restart 恢复（对应 `transport_generation` 递增）。直连失败时进入第 4.7 节的 TURN 回退。
 
-连接建立后，文件数据走 DataChannel，Punch Server 不参与文件传输。数据的组织、校验、可见性与传输见后续各节。
+连接建立后，文件数据走 DataChannel，Punch 不参与文件传输。数据的组织、校验、可见性与传输见后续各节。
 
 ### 4.2 数据组织：block 与 piece
 
@@ -432,7 +432,7 @@ CDN 侧按 block 对齐用 HTTP `Range` 拉取（block 是字节区间，见 4.2
 
 对称 NAT、企业防火墙或 CGNAT 等环境可能导致直连失败。ICE 在连通性检查未通过时自动引入 relay candidate：双方各自调用 `relay_credentials(token)`，携带**当场自签的** `aud=track` 票据（`ih` 与对端 `peer_id`）。Track 校验票据本体——`pub` 与 `iss` 一致、签名有效、`ih` 未封禁——随后换发短期 TURN REST 凭据（coturn 的 static-auth-secret HMAC 方案，username 编码过期时间与配额），有效期为 `RELAY_CREDENTIAL_TTL`。
 
-**凭据过期后重新自签一个票据再请求一次即可**，因此中继会话的长度不受任何单个票据有效期的约束——这正是原设计中 `grace_until`（中继授权截止时刻）在本设计里不再需要的原因（见 3.4.1 节）。代价是 Track 失去"一次连接一次授权"的审计粒度，只能按身份与 `info_hash` 限流。relay 候选地址经 `punch.signal` 的 `type=candidate` trickle 交换，Punch Server 侧的连接记录在超时前**不得**清理。
+**凭据过期后重新自签一个票据再请求一次即可**，因此中继会话的长度不受任何单个票据有效期的约束——这正是原设计中 `grace_until`（中继授权截止时刻）在本设计里不再需要的原因（见 3.4.1 节）。代价是 Track 失去"一次连接一次授权"的审计粒度，只能按身份与 `info_hash` 限流。relay 候选地址经 `punch.signal` 的 `type=candidate` trickle 交换，Punch 侧的连接记录在超时前**不得**清理。
 
 TURN 的选型必须显式评估其**按 allocation 约束对端地址**的能力：coturn 只提供全局静态的 `--allowed-peer-ip` / `--denied-peer-ip`（配置文件里的 IP 段），**没有**按连接动态下发对端白名单的机制。若要求 per-connection 约束，前置网关必须能解析 TURN 的 CreatePermission / ChannelBind 目标地址并做动态决策——这实质是自研一层 TURN 访问控制，工作量须计入实施计划。不做该约束时 TURN 即开放中继，存在滥用与合规风险。
 
@@ -535,9 +535,9 @@ scheme 复用通用的 `magnet:`（BT 未发明专属 scheme，复用的正是 m
 | 请求连接目标 Peer | 指定 `punch_b_id` | `tgt`、`ih`、`cid` | 数十秒（`CONNECT_TOKEN_EXP`） |
 | 请求 TURN 中继凭据 | `track` | `ih`、对端 `peer_id` | 分钟级 |
 
-`punch_id` 是 Punch Server 的稳定标识（由 Track 维护，见 7.1 节），作为 `aud` 限定票据
-只能在指定的 Punch Server 消费——一张泄露的票据不能拿去其他 Punch 节点使用。`punch_id`
-只承担授权受众语义、不参与路由；Punch Server 的地址与公钥由 announce / query 响应实时下发，
+`punch_id` 是 Punch 的稳定标识（由 Track 维护，见 7.1 节），作为 `aud` 限定票据
+只能在指定的 Punch 消费——一张泄露的票据不能拿去其他 Punch 节点使用。`punch_id`
+只承担授权受众语义、不参与路由；Punch 的地址与公钥由 announce / query 响应实时下发，
 客户端不得自行缓存或推断。
 
 每个服务**应当**至少校验：
@@ -561,16 +561,16 @@ scheme 复用通用的 `magnet:`（BT 未发明专属 scheme，复用的正是 m
 
 Track API 基于 HTTPS REST：每个请求独立无状态，请求/响应体使用 JSON 编码（`Content-Type: application/json`）。会话建立时 `announce` 携带完整自签票据，此后各请求改用 `peer_id` + `seq` + `mac`（`HMAC-SHA-256(session_key, peer_id || seq || timestamp)`）认证，不再重复携带票据——见 3.1.3 节。Track 不向客户端推送消息，两者之间不维护常驻信道。
 
-Track **可以**部署为无状态多实例：实例间共享一致的状态存储（在线记录、`session_key`、`peer_id → public_key` 缓存、文件索引）。注意 `session_key` **不得**只存于实例内存——多实例下 announce 与后续 query 落在不同的实例会直接失败。连接授权已完全无状态化（票据自签自证），不进入共享存储（见 3.4 节）。对客户端与 Punch Server 的契约只暴露 Track 的**逻辑服务地址**（如负载均衡前的域名），**不得**暴露具体实例——横向扩展是内部实现细节，不影响任何协议契约。Punch Server 清单由 Track 维护，来源为部署配置或 Punch Server 向 Track 注册（注册携带 `punch_id`、自身公钥、地址、region 与容量，注册对象为 Track 的逻辑服务地址而非具体实例，注册协议为内部运维契约、不在本规范的客户端接口范围内）；Track 从清单中为 announce 分配 Punch Server，并在 query 时实时回填目标 Peer 所在 Punch Server 的地址与公钥。Punch Server 公钥是客户端验证 Punch 服务器身份的锚点（见 3.5 节），与地址解耦——地址会随部署变化，公钥是长期身份。
+Track **可以**部署为无状态多实例：实例间共享一致的状态存储（在线记录、`session_key`、`peer_id → public_key` 缓存、文件索引）。注意 `session_key` **不得**只存于实例内存——多实例下 announce 与后续 query 落在不同的实例会直接失败。连接授权已完全无状态化（票据自签自证），不进入共享存储（见 3.4 节）。对客户端与 Punch 的契约只暴露 Track 的**逻辑服务地址**（如负载均衡前的域名），**不得**暴露具体实例——横向扩展是内部实现细节，不影响任何协议契约。Punch 清单由 Track 维护，来源为部署配置或 Punch 向 Track 注册（注册携带 `punch_id`、自身公钥、地址、region 与容量，注册对象为 Track 的逻辑服务地址而非具体实例，注册协议为内部运维契约、不在本规范的客户端接口范围内）；Track 从清单中为 announce 分配 Punch，并在 query 时实时回填目标 Peer 所在 Punch 的地址与公钥。Punch 公钥是客户端验证 Punch 服务器身份的锚点（见 3.5 节），与地址解耦——地址会随部署变化，公钥是长期身份。
 
-**Track 与 Punch Server 的耦合面**：票据自签自证之后，Punch 验票不需要查询 Track，两个服务在**请求路径上没有运行时依赖**——这比原设计少了一条关键耦合。仅剩的耦合是运维面的：Punch 向 Track 注册自身（`punch_id`、公钥、地址、region、容量）。方向性是刻意的——Track 暴露逻辑服务地址，Punch 是它的客户端；反过来要求 Punch 具备被 Track 连接的入站可达性，会把整个 Punch 集群的部署前提（公网地址、防火墙策略）绑死在一条极低频的通知上。因此：
+**Track 与 Punch 的耦合面**：票据自签自证之后，Punch 验票不需要查询 Track，两个服务在**请求路径上没有运行时依赖**——这比原设计少了一条关键耦合。仅剩的耦合是运维面的：Punch 向 Track 注册自身（`punch_id`、公钥、地址、region、容量）。方向性是刻意的——Track 暴露逻辑服务地址，Punch 是它的客户端；反过来要求 Punch 具备被 Track 连接的入站可达性，会把整个 Punch 集群的部署前提（公网地址、防火墙策略）绑死在一条极低频的通知上。因此：
 
 - **不得**要求两者之间维护常驻信道或长连接——注册与容量上报都是低频事件，普通 HTTPS 请求即可；
 - Punch 注册（`punch_id`、公钥、地址、region、容量）**可以**走"向 Track 注册"，也**可以**完全由部署配置下发，两种方式都属内部运维契约；
 
-**两者的存储扩展模型是相反的**：Track 多实例**必须**共享状态存储（在线记录、`session_key`、`peer_id → public_key` 缓存、文件索引）；Punch 侧的状态（Binding、已消费 `cid`、连接记录）**不必**跨实例共享——票据的 `aud` 绑定到单个 Punch Server（`punch_id` / `punch_b_id`），每张票只可能被那一台消费。只有当同一个 `punch_id` 需要多实例容灾时，才需要为 Binding 引入共享存储或粘性路由。
+**两者的存储扩展模型是相反的**：Track 多实例**必须**共享状态存储（在线记录、`session_key`、`peer_id → public_key` 缓存、文件索引）；Punch 侧的状态（Binding、已消费 `cid`、连接记录）**不必**跨实例共享——票据的 `aud` 绑定到单个 Punch（`punch_id` / `punch_b_id`），每张票只可能被那一台消费。只有当同一个 `punch_id` 需要多实例容灾时，才需要为 Binding 引入共享存储或粘性路由。
 
-`punch.join` / `punch.exit` / `punch.signal` 的请求响应控制面经加密认证信道传输（TCP+TLS、UDP+DTLS 或 QUIC 均可，客户端与 Punch Server 间的常驻与瞬时信令信道同此要求）；为维持 NAT 映射的 `punch.heartbeat` 可以使用 UDP，但**必须**遵循前述 MAC、时钟窗口和序列号校验。消息使用版本化 schema；未知必填字段、超出大小限制的 candidate 列表和不匹配的 `connection_id` 都**必须**拒绝。每个响应至少带协议版本、请求 ID 和明确的错误码。所有时钟校验（`nbf`/`exp`、heartbeat 的时间戳窗口）使用统一的服务端可配置容差（如 ±60 秒），客户端**应当**与可信时间源对时，容差需计入 Track 的 nonce 去重窗口、Punch/Track 的 `jti` 去重窗口与序列号乱序窗口的计算。
+`punch.join` / `punch.exit` / `punch.signal` 的请求响应控制面经加密认证信道传输（TCP+TLS、UDP+DTLS 或 QUIC 均可，客户端与 Punch 间的常驻与瞬时信令信道同此要求）；为维持 NAT 映射的 `punch.heartbeat` 可以使用 UDP，但**必须**遵循前述 MAC、时钟窗口和序列号校验。消息使用版本化 schema；未知必填字段、超出大小限制的 candidate 列表和不匹配的 `connection_id` 都**必须**拒绝。每个响应至少带协议版本、请求 ID 和明确的错误码。所有时钟校验（`nbf`/`exp`、heartbeat 的时间戳窗口）使用统一的服务端可配置容差（如 ±60 秒），客户端**应当**与可信时间源对时，容差需计入 Track 的 nonce 去重窗口、Punch/Track 的 `jti` 去重窗口与序列号乱序窗口的计算。
 
 ### 7.2 接口契约表
 
@@ -595,7 +595,7 @@ Track **可以**部署为无状态多实例：实例间共享一致的状态存�
 | 响应字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `session_key` | string | 会话对称密钥，后续请求用它做 HMAC（见 3.1.3 节） |
-| `punch` | object | 分配的 Punch Server：`punch_id`、`url`、`public_key` |
+| `punch` | object | 分配的 Punch：`punch_id`、`url`、`public_key` |
 | `turn` | object | TURN 配置：`url`、`username`、`credential`、`expires_at` |
 | `heartbeat_interval` | int32 | 建议心跳间隔（秒） |
 | `expires_at` | int64 | 在线记录的过期时间 |
@@ -658,8 +658,8 @@ sequenceDiagram
 | --- | --- | --- |
 | `peer_id` | string | 候选身份 |
 | `public_key` | string | Ed25519 公钥 base64 |
-| `punch_server` | string | 该 peer 所在 Punch Server 地址（Track 实时读取） |
-| `punch_public_key` | string | 该 Punch Server 的 Ed25519 公钥 base64（32 字节解码后），客户端验证其服务器身份用 |
+| `punch_server` | string | 该 peer 所在 Punch 地址（Track 实时读取） |
+| `punch_public_key` | string | 该 Punch 的 Ed25519 公钥 base64（32 字节解码后），客户端验证其服务器身份用 |
 | `connect_token` | string | 一次连接所需的 connect 票据（`scope=connect`，`sub`、`target_peer_id`、`info_hash`、`connection_id` 绑定） |
 
 **授权与限制**：session `query`；限流、防枚举、不得返回 candidates 的公网地址或候选地址；候选数上限防放大——返回 N 个候选即 N 次签名，故 `limit` 不宜取大值（默认 10）。
@@ -682,11 +682,11 @@ sequenceDiagram
     Note over A: 自签 connect 票据 (tgt=B, ih, cid)<br/>向 Punch B 发起 connect<br/>票据过期重新自签即可，无需重新 query
 ```
 
-**为什么 query 不下发 connect 票据**：Track 只做发现，不做授权——开放模式下没有需要 Track 授予的连接权限。A 自签 connect 票据后直接联系 B 所在的 Punch Server，Punch B 验票据后转发信令。这样 Track 不在数据路径上，也不必为每次连接保存状态。
+**为什么 query 不下发 connect 票据**：Track 只做发现，不做授权——开放模式下没有需要 Track 授予的连接权限。A 自签 connect 票据后直接联系 B 所在的 Punch，Punch B 验票据后转发信令。这样 Track 不在数据路径上，也不必为每次连接保存状态。
 
 **为什么 connection_id = 票据的 `cid`**：`cid` 是一次性标识，由 A 生成并签入票据。Punch B 消费这个 `cid` 后就不再接受同一 `cid` 的请求——天然防重放，且不需要 Track 参与生成。
 
-**为什么 Track 不再记录 connection_id**：身份与指向所需的全部信息（`iss` / `pub`、`tgt`、`ih`、`cid`）都已签进票据，Track 只需验签即可完成 `relay_credentials` 授权。保留一份短命记录既带来写放大（一次 `query` 返回 N 个候选就要写 N 条），又要求多实例间共享它（见 7.1 节），还引入了"记录 TTL 与 ICE 超时谁先到期"的时序耦合——relay 回退发生在 ICE 超时之后，任何以"连接建立超时"为 TTL 的记录都在那一刻已过期。去掉记录后，一次性消费语义仍由 Punch Server 侧的 `cid` 记录保证：**Punch 管 `cid`，Track 管签名与中继授权**。
+**为什么 Track 不再记录 connection_id**：身份与指向所需的全部信息（`iss` / `pub`、`tgt`、`ih`、`cid`）都已签进票据，Track 只需验签即可完成 `relay_credentials` 授权。保留一份短命记录既带来写放大（一次 `query` 返回 N 个候选就要写 N 条），又要求多实例间共享它（见 7.1 节），还引入了"记录 TTL 与 ICE 超时谁先到期"的时序耦合——relay 回退发生在 ICE 超时之后，任何以"连接建立超时"为 TTL 的记录都在那一刻已过期。去掉记录后，一次性消费语义仍由 Punch 侧的 `cid` 记录保证：**Punch 管 `cid`，Track 管签名与中继授权**。
 
 ##### `POST /connections/relay` — relay_credentials
 
@@ -728,7 +728,7 @@ sequenceDiagram
 
 #### 7.2.2 Punch RPC 接口
 
-Punch Server 上的接口走加密认证信道（非 REST），以 RPC 风格的接口名 + 消息体交互。
+Punch 上的接口走加密认证信道（非 REST），以 RPC 风格的接口名 + 消息体交互。
 
 ##### `punch.join`
 
@@ -747,14 +747,14 @@ Punch Server 上的接口走加密认证信道（非 REST），以 RPC 风格的
 | `binding_key` | string | 会话级对称密钥（HMAC 用） |
 | `expires_at` | int64 | Binding 过期时间 |
 
-**授权与限制**：自签票据 + 持钥证明；join 票据的 `cid` 一次性消费（Punch Server 维护已消费 `cid` 记录，覆盖票据 `exp` 两倍时长）；新 binding 替换旧 binding。客户端重连或 binding 过期时重新自签一个票据即可，无需任何网络往返。
+**授权与限制**：自签票据 + 持钥证明；join 票据的 `cid` 一次性消费（Punch 维护已消费 `cid` 记录，覆盖票据 `exp` 两倍时长）；新 binding 替换旧 binding。客户端重连或 binding 过期时重新自签一个票据即可，无需任何网络往返。
 
 **交互流程**：
 
 ```mermaid
 sequenceDiagram
     participant B as client (B)
-    participant PB as Punch Server
+    participant PB as Punch
 
     Note over B: 已自签 join 票据 (含 cid 与 pub)
     Note over B: 已建立到 PB 的加密信道
@@ -777,9 +777,9 @@ sequenceDiagram
     Note over B: 本地保存 binding_id + binding_key<br/>后续 heartbeat/exit 用 binding_key 做 HMAC, 不再签名
 ```
 
-**为什么 join 不需要 challenge**：防重放靠 join 票据的一次性 `cid`——首次 join 消费 `cid`，重放同 `cid` 的请求被拒。客户端重连时重新自签一个票据（新 `cid`），不需要在 Punch Server 侧维护 nonce 内存表。`timestamp` 仍纳入签名以约束签名时效。相比 challenge 两步方案，少一次往返，Punch Server 状态更少。
+**为什么 join 不需要 challenge**：防重放靠 join 票据的一次性 `cid`——首次 join 消费 `cid`，重放同 `cid` 的请求被拒。客户端重连时重新自签一个票据（新 `cid`），不需要在 Punch 侧维护 nonce 内存表。`timestamp` 仍纳入签名以约束签名时效。相比 challenge 两步方案，少一次往返，Punch 状态更少。
 
-**为什么票据必须内嵌公钥并由私钥签名**：Punch Server 是独立服务，对客户端**零先验**，也没有任何预存的 `peer_id → public_key` 映射。票据内嵌 `pub` 且携带签名，使 Punch 能独立确认"请求方持有 `iss` 对应身份的私钥"——不需要信任任何第三方，也不需要查询 Track。
+**为什么票据必须内嵌公钥并由私钥签名**：Punch 是独立服务，对客户端**零先验**，也没有任何预存的 `peer_id → public_key` 映射。票据内嵌 `pub` 且携带签名，使 Punch 能独立确认"请求方持有 `iss` 对应身份的私钥"——不需要信任任何第三方，也不需要查询 Track。
 
 **为什么 join 后改用 HMAC**：join 时已经用非对称签名建立了 binding_key，后续 heartbeat 每隔几秒发一次（维持 NAT 映射），用对称 HMAC 比 Ed25519 签名快 10-50 倍，UDP 包也更小。binding_key 只在加密信道内传输，泄露面小。
 
@@ -805,7 +805,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant C as client
-    participant P as Punch Server
+    participant P as Punch
 
     Note over C: 每隔 N 秒, 维持 NAT 映射
     Note over C: seq = 上次 seq + 1
@@ -820,7 +820,7 @@ sequenceDiagram
     P-->>C: {expires_at}
 ```
 
-**为什么用 HMAC 不用签名**：heartbeat 每隔几秒发一次（保活 + 刷新 NAT），用 Ed25519 每次验签成本高。HMAC 是对称运算，快 10-50 倍。binding_key 在 join 时通过加密信道下发，只有客户端和 Punch Server 持有。
+**为什么用 HMAC 不用签名**：heartbeat 每隔几秒发一次（保活 + 刷新 NAT），用 Ed25519 每次验签成本高。HMAC 是对称运算，快 10-50 倍。binding_key 在 join 时通过加密信道下发，只有客户端和 Punch 持有。
 
 **为什么走 UDP**：heartbeat 的目的是刷新 NAT 映射（让路由器保持端口转发），UDP 天然适合——不需要 TCP 的握手开销。UDP 不加密但 MAC 已防篡改和防重放。
 
@@ -843,7 +843,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant C as client
-    participant P as Punch Server
+    participant P as Punch
 
     Note over C: 客户端主动下线
     Note over C: seq = 当前 seq + 1
@@ -858,9 +858,9 @@ sequenceDiagram
     Note over C,P: 此后该 peer 的信令信道关闭<br/>其他 peer 无法再通过 PB 联系到它
 ```
 
-**为什么 exit 复用 heartbeat 的 MAC 机制**：客户端已经持有 binding_key，不需要新凭据。exit 和 heartbeat 用同样的 MAC 算法，Punch Server 用同样的校验逻辑，代码路径统一。
+**为什么 exit 复用 heartbeat 的 MAC 机制**：客户端已经持有 binding_key，不需要新凭据。exit 和 heartbeat 用同样的 MAC 算法，Punch 用同样的校验逻辑，代码路径统一。
 
-**为什么不先 announce(del) 再 exit**：客户端下线时**应当**先通过 `announce` 的 `del` 撤下自己的全部文件（让 Track 停止把该 peer 作为查询候选返回），再 `exit` Punch Server。如果只 exit 不 del，Track 的文件索引要等 TTL 过期才消失，期间其他 peer query 到该 peer 后发起连接会失败。
+**为什么不先 announce(del) 再 exit**：客户端下线时**应当**先通过 `announce` 的 `del` 撤下自己的全部文件（让 Track 停止把该 peer 作为查询候选返回），再 `exit` Punch。如果只 exit 不 del，Track 的文件索引要等 TTL 过期才消失，期间其他 peer query 到该 peer 后发起连接会失败。
 
 ##### `punch.signal`
 
@@ -885,7 +885,7 @@ sequenceDiagram
 | `ok` | bool | 转发确认 |
 | `error` | string? | 错误码（如 `peer_offline`、`rate_limited`、`invalid_jwt`） |
 
-**授权与限制**：`connect` 与 `offer` 均验证 connect 票据（`pub` 与 `iss` 一致、签名、`aud`、`tgt`、`ih`、`cid`、`exp`），`offer` 额外要求该 `cid` 已被 `accept`；`answer` / `candidate` / `cancel` 仅接受已登记连接的双方；SDP 对 Punch Server 不透明；A 断线重连凭 `connection_id` + `signal_key` 恢复。
+**授权与限制**：`connect` 与 `offer` 均验证 connect 票据（`pub` 与 `iss` 一致、签名、`aud`、`tgt`、`ih`、`cid`、`exp`），`offer` 额外要求该 `cid` 已被 `accept`；`answer` / `candidate` / `cancel` 仅接受已登记连接的双方；SDP 对 Punch 不透明；A 断线重连凭 `connection_id` + `signal_key` 恢复。
 
 **交互流程（offer — A 发起连接）**：
 
@@ -991,14 +991,14 @@ sequenceDiagram
 | `SendRegisterReq` / `OnRegisterRsp` | client ↔ Track | `POST /peers` | 首次启动或密钥轮换时调用，一次性 |
 | `SendRevokeReq` / `OnRevokeRsp` | client → Track | `DELETE /peers/{peer_id}` | 私钥泄露时提交 revocation token，一次性 |
 | `SendLoginChallengeReq` / `OnLoginChallengeRsp` | client ↔ Track | `GET /sessions/challenge` | 获取登录挑战 nonce |
-| `SendLoginReq` / `OnLoginRsp` | client ↔ Track | `POST /sessions` | 提交签名，rsp 含 会话票据、join 票据、Punch Server 分配（地址与公钥）与 STUN/TURN 配置 |
+| `SendLoginReq` / `OnLoginRsp` | client ↔ Track | `POST /sessions` | 提交签名，rsp 含 会话票据、join 票据、Punch 分配（地址与公钥）与 STUN/TURN 配置 |
 | `SendAnnounceReq` / `OnAnnounceRsp` | client ↔ Track | `PUT /peers/{peer_id}/files` | `add` / `del` 批量登记与撤下文件 |
 | `SendQueryReq` / `OnQueryRsp` | client ↔ Track | `GET /files/{info_hash}/peers` | rsp 含候选 Peer 的 `peer_id`、公钥、Punch 地址与公钥及 connect 票据 |
 | `SendRelayCredentialsReq` / `OnRelayCredentialsRsp` | client ↔ Track | `POST /connections/relay` | 请求体携带 connect 票据 本体；rsp 仅含请求方自身的 relay 凭据 |
 
 #### 7.3.2 Punch 通信接口
 
-客户端对 Punch Server 的通信面分为三类：**请求**（客户端发起，必有配对响应）、**响应**（对某个在途请求的确认或错误）、**Relay**（Punch Server 转发来的对端信令，客户端没有对应在途请求）。A / B 是运行时角色，不是两套接口——同一个 client 既维护到自己 Punch Server 的常驻信道（对应 B 角色），也在发起连接时临时连接目标 Punch Server（对应 A 角色）。表中以 A（发起方）、B（提供方）、PA / PB（各自与目标的 Punch Server）标注方向。
+客户端对 Punch 的通信面分为三类：**请求**（客户端发起，必有配对响应）、**响应**（对某个在途请求的确认或错误）、**Relay**（Punch 转发来的对端信令，客户端没有对应在途请求）。A / B 是运行时角色，不是两套接口——同一个 client 既维护到自己 Punch 的常驻信道（对应 B 角色），也在发起连接时临时连接目标 Punch（对应 A 角色）。表中以 A（发起方）、B（提供方）、PA / PB（各自与目标的 Punch）标注方向。
 
 | 函数 | 方向 | 说明 |
 | --- | --- | --- |
@@ -1015,7 +1015,7 @@ sequenceDiagram
 | `OnSignalRelay(candidate)` | PB → A 或 B | 转发的对端候选地址 |
 | `OnSignalRelay(cancel)` | PB → A 或 B | 非发送方收到后立即清理本地状态 |
 
-断线重连（`connection_id` + `signal_key`）属于信道层，不占业务函数；重连后补发的未送达信令同样从 `OnSignalRelay` 进入。`Relay` 在此指"经 Punch Server 转发的信令"，与 TURN / Relay Server 无关。
+断线重连（`connection_id` + `signal_key`）属于信道层，不占业务函数；重连后补发的未送达信令同样从 `OnSignalRelay` 进入。`Relay` 在此指"经 Punch 转发的信令"，与 TURN / Relay Server 无关。
 
 #### 7.3.3 Peer 通信接口
 
@@ -1040,13 +1040,13 @@ Peer 之间的消息是对称、单向的，没有控制面那种请求-响应�
 
 ## 8. 安全性考量
 
-本设计的信任模型：Track 是控制面的信任根（身份注册、授权签发、文件索引），其被攻破或作恶的破坏半径限于审查、拒绝服务与元数据监视——数据面内容的完整性由 Merkle 证明校验（锚点为 `info_hash` 自校验的 `info.root`）与端到端 DTLS 独立保证，与 Track 的可信度解耦（见 4.2 节与 5.2 节）。客户端与 Punch Server 对 Track 的访问只依赖其逻辑服务地址与签名公钥，不依赖任何具体实例。
+本设计的信任模型：Track 是控制面的信任根（身份注册、授权签发、文件索引），其被攻破或作恶的破坏半径限于审查、拒绝服务与元数据监视——数据面内容的完整性由 Merkle 证明校验（锚点为 `info_hash` 自校验的 `info.root`）与端到端 DTLS 独立保证，与 Track 的可信度解耦（见 4.2 节与 5.2 节）。客户端与 Punch 对 Track 的访问只依赖其逻辑服务地址与签名公钥，不依赖任何具体实例。
 
 ### 8.1 控制面
 
-- 没有面向 Punch 的 `join 票据`：攻击者可伪造任意 `peer_id` 绑定到 Punch Server，造成身份冒充、在线表污染或会话劫持。
+- 没有面向 Punch 的 `join 票据`：攻击者可伪造任意 `peer_id` 绑定到 Punch，造成身份冒充、在线表污染或会话劫持。
 - 没有 `heartbeat` 的 MAC、序列号和过期管理：攻击者可伪造或重放保活包，使虚假 Binding 长期存在，或干扰真实 Peer 的可达性。
-- 没有针对 B 的短期 `connect` 票据：任何人只要知道 Punch B 地址，就能要求它向 B 投递信令；Punch Server 会被用于骚扰、扫描、反射流量或对大量 Peer 发起连接请求。
+- 没有针对 B 的短期 `connect` 票据：任何人只要知道 Punch B 地址，就能要求它向 B 投递信令；Punch 会被用于骚扰、扫描、反射流量或对大量 Peer 发起连接请求。
 - 只靠 `scope=connect`、却不校验 `aud` 与 `target_peer_id`：一张泄露票据可被拿去联系其他 Punch 节点或其他 Peer，权限范围过大。
 - 没有 `exp`、`jti`：截获的连接请求可在很久以后无限重放。
 - 没有独立的 TURN 授权与配额：攻击者可把 TURN 当开放代理消耗带宽，造成高额成本与滥用风险。

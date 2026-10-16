@@ -51,11 +51,11 @@ an Ed25519 verification plus 96 bytes of key and signature each time.
 
 Field-level details live in the design document.
 
-## Assigning a Punch Server
+## Assigning a Punch
 
-Every peer is told which Punch Server to use, and a query returns the Punch
-Server of *each candidate* — resolved from the current list at query time, not
-from a snapshot taken when that peer announced.
+Every peer is told which Punch to use, and a query returns the Punch of *each
+candidate* — resolved from the current list at query time, not from a snapshot
+taken when that peer announced.
 
 That distinction is the whole point. An address is deployment state: instances
 move, get replaced, get retired. If Track handed out a recorded address, it would
@@ -66,7 +66,7 @@ filled in per query.
 Two things follow from resolving late:
 
 - Clients must not cache the list. It is re-read for every query.
-- A peer whose Punch Server has been retired is simply not returned — there is no
+- A peer whose Punch has been retired is simply not returned — there is no
   point offering a candidate nobody can reach.
 
 ## Limits
@@ -83,6 +83,6 @@ so it gets a much smaller bucket than query.
 
 See [Deployment](./deploy). Track needs:
 
-- a Punch Server list (or, later, a registration interface)
+- a Punch list (or, later, a registration interface)
 - the same TURN shared secret as coturn
 - inbound TCP on its advertised port, reachable by clients
