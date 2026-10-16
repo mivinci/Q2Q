@@ -6,6 +6,8 @@ description = "Q2Q 网络无关的核心：身份、种子、Merkle 证明与本
 license = "MIT"
 
 [dependencies]
+ed25519-dalek = "3.0.0"
+getrandom = "0.4.3"
 percent-encoding = "2.3.2"
 sha2 = "0.11.1"
 
