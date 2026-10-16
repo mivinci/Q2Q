@@ -66,6 +66,8 @@ await new Promise(r => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
 
 const browser = await chromium.launch({ executablePath: CHROME });
+// 站点图标之类的缺失不算问题，404 统计里滤掉
+const noise = /favicon|apple-touch-icon/i;
 
 let failed = 0;
 
