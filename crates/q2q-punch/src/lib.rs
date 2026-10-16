@@ -6,5 +6,7 @@
 //! and it does not parse the SDP it carries.
 
 pub mod binding;
+pub mod message;
 
 pub use binding::{Binding, BindingError, Bindings, Generation, UnixSeconds};
+pub use message::{JoinError, JoinRequest, JoinResponse};

@@ -140,7 +140,7 @@ pub enum Audience {
 /// The spec never spells out how a ticket is encoded inside a request body, so
 /// this is the shared answer: a JSON object with binary fields in base64. Both
 /// Track and Punch parse tickets, so it lives here rather than in either.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TicketBody {
   pub v: u32,
   pub iss: String,
@@ -395,6 +395,12 @@ pub fn verify_signature(public_key: &[u8; 32], message: &[u8], sig: &[u8; 64]) -
   verifying
     .verify(message, &Signature::from_bytes(sig))
     .is_ok()
+}
+
+/// Sign an arbitrary message. Counterpart of `verify_signature`, for callers
+/// that need a detached signature rather than the one inside a ticket.
+pub fn sign_message(sk: &SigningKey, message: &[u8]) -> [u8; 64] {
+  sk.sign(message).to_bytes()
 }
 
 pub fn peer_id_of(sk: &SigningKey) -> PeerId {
