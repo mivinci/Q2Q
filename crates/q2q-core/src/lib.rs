@@ -5,5 +5,7 @@
 //! call into it.
 //!
 //! - `bencode` — deterministic encoding, the basis of `info_hash` and signatures
+//! - `merkle` — tree, proofs and verification (RFC 6962 shape)
 
 pub mod bencode;
+pub mod merkle;
