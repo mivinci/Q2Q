@@ -8,11 +8,13 @@
 //! - `merkle` — tree, proofs and verification (RFC 6962 shape)
 //! - `seed` — info dict, `info_hash`, magnet links
 //! - `identity` — Ed25519 keys, `peer_id`, self-signed tickets
+//! - `mac` — HMAC-SHA-256, the cheap follow-up once a ticket has been signed
 //! - `file` — block states, piece bitmaps, in-place writes
 
 pub mod bencode;
 pub mod bencode_serde;
 pub mod file;
 pub mod identity;
+pub mod mac;
 pub mod merkle;
 pub mod seed;

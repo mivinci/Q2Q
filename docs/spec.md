@@ -764,7 +764,7 @@ sequenceDiagram
     B->>PB: punch.join(join_token, public_key, signature, ts)
     Note over PB: 验 join 票据 (pub 与 iss 一致, 签名, aud, exp)
     Note over PB: 查 jti 未被消费过
-    Note over PB: 查 peer_id 未被吊销 (查 Track 或缓存)<br/>查不到且 Track 不可达 → 拒绝 (fail-closed)
+    Note over PB: 不查询 Track —— 票据自签自证，请求路径上与 Track 无运行时依赖（见 3.1.4：本设计没有吊销机制）
     Note over PB: 校验 base32(SHA-256(public_key)) == iss (公钥与身份一致)
     Note over PB: 用 public_key 验签 signature
     Note over PB: 标记 jti 已消费 (一次性)
@@ -868,12 +868,16 @@ sequenceDiagram
 
 | 请求字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `type` | enum | `offer` / `answer` / `candidate` / `cancel` |
+| `type` | enum | `connect` / `accept` / `reject` / `offer` / `answer` / `candidate` / `cancel` |
 | `connection_id` | string | 来自 connect 票据 的 `jti` |
-| `connect_token` | string? | `type=offer` 时**必须**携带；其余类型不重复验证 |
+| `connect_token` | string? | `type=connect` 与 `type=offer` 时**必须**携带；其余类型不重复验证（信道即凭据） |
 | `sdp` | string? | `type=offer` / `answer` 时携带 SDP |
 | `candidate` | string? | `type=candidate` 时携带 ICE candidate 字符串 |
+| `reason` | string? | `type=reject` 时携带，取 `busy` / `quota_exceeded` / `not_found` / `denied` |
+| `accept_token` | string? | `type=accept` 时携带 B 自签的票据，供 A 独立验签 |
 | `signal_key` | string? | 断线重连时携带，用于恢复信令信道 |
+
+`connect` / `accept` / `reject` 构成同意阶段（见 3.5）：`connect` 不携带 SDP，B 回 `accept` 或 `reject` 之后 A 才发 `offer`。`type=cancel` 使连接记录删除、停止转发，并向对端转发一条 `cancel`。
 
 | 响应字段 | 类型 | 说明 |
 | --- | --- | --- |

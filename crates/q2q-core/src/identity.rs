@@ -63,17 +63,18 @@ impl std::fmt::Display for PeerId {
 /// `base32(SHA-256(public_key))` plus a six character bech32 checksum.
 pub fn peer_id_from_public_key(public_key: &[u8; 32]) -> PeerId {
   let hash = Sha256::digest(public_key);
-  let data = base32_encode(&hash);
-  let values: Vec<u8> = data.bytes().map(|c| base32_value(c).unwrap()).collect();
-  let mut out = data;
+  // keep the 5-bit values rather than re-decoding the string we just built
+  let values = base32_values(&hash);
+  let mut out = base32_string(&values);
   for v in checksum(&values) {
     out.push(BECH32_CHARSET[v as usize] as char);
   }
   PeerId(out)
 }
 
-fn base32_encode(data: &[u8]) -> String {
-  let mut out = String::new();
+/// Five-bit values, which is what the checksum works on.
+fn base32_values(data: &[u8]) -> Vec<u8> {
+  let mut out = Vec::new();
   let mut bits = 0u32;
   let mut nbits = 0;
   for &b in data {
@@ -81,14 +82,21 @@ fn base32_encode(data: &[u8]) -> String {
     nbits += 8;
     while nbits >= 5 {
       nbits -= 5;
-      out.push(BASE32_ALPHABET[((bits >> nbits) & 31) as usize] as char);
+      out.push(((bits >> nbits) & 31) as u8);
     }
   }
   if nbits > 0 {
     // 32 bytes leave a single bit over; pad it with zeros, no '=' padding
-    out.push(BASE32_ALPHABET[((bits << (5 - nbits)) & 31) as usize] as char);
+    out.push(((bits << (5 - nbits)) & 31) as u8);
   }
   out
+}
+
+fn base32_string(values: &[u8]) -> String {
+  values
+    .iter()
+    .map(|&v| BASE32_ALPHABET[v as usize] as char)
+    .collect()
 }
 
 fn base32_value(c: u8) -> Option<u8> {
@@ -133,6 +141,85 @@ fn checksum(data: &[u8]) -> [u8; 6] {
 pub enum Audience {
   Track,
   Punch(String),
+}
+
+/// A ticket as it appears on the wire.
+///
+/// The spec never spells out how a ticket is encoded inside a request body, so
+/// this is the shared answer: a JSON object with binary fields in base64. Both
+/// Track and Punch parse tickets, so it lives here rather than in either.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TicketBody {
+  pub v: u32,
+  pub iss: String,
+  /// base64 of the 32-byte public key — `peer_id` is a hash of it and cannot be
+  /// reversed, so it has to travel along.
+  #[serde(rename = "pub")]
+  pub public_key: String,
+  pub iat: u64,
+  pub exp: u64,
+  pub aud: String,
+  #[serde(default)]
+  pub tgt: Option<String>,
+  #[serde(default)]
+  pub ih: Option<String>,
+  #[serde(default)]
+  pub cid: Option<String>,
+  /// base64 of the 64-byte signature over the canonical payload.
+  pub sig: String,
+}
+
+impl TicketBody {
+  /// Decode into a `Ticket` ready for `verify`. Only the encoding is checked
+  /// here; correctness is `verify`'s job.
+  pub fn to_ticket(&self) -> Result<Ticket, TicketError> {
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine as _;
+
+    let public_key: [u8; 32] = B64
+      .decode(&self.public_key)
+      .map_err(|e| TicketError::Malformed(format!("pub: {e}")))?
+      .try_into()
+      .map_err(|_| TicketError::Malformed("pub must be 32 bytes".into()))?;
+    let sig: [u8; 64] = B64
+      .decode(&self.sig)
+      .map_err(|e| TicketError::Malformed(format!("sig: {e}")))?
+      .try_into()
+      .map_err(|_| TicketError::Malformed("sig must be 64 bytes".into()))?;
+    let ih = match &self.ih {
+      Some(s) => Some(
+        B64
+          .decode(s)
+          .map_err(|e| TicketError::Malformed(format!("ih: {e}")))?
+          .try_into()
+          .map_err(|_| TicketError::Malformed("ih must be 32 bytes".into()))?,
+      ),
+      None => None,
+    };
+
+    Ok(Ticket {
+      v: self.v,
+      iss: PeerId::unchecked(self.iss.clone()),
+      public_key,
+      iat: self.iat,
+      exp: self.exp,
+      aud: Audience::from_wire(&self.aud),
+      tgt: self.tgt.as_ref().map(|t| PeerId::unchecked(t.clone())),
+      ih,
+      cid: self.cid.clone(),
+      sig,
+    })
+  }
+
+  /// Decode and run the four checks of spec 3.1.2.
+  pub fn verify(
+    &self,
+    audience: &Audience,
+    me: Option<&PeerId>,
+    now: u64,
+  ) -> Result<(), TicketError> {
+    self.to_ticket()?.verify(audience, me, now)
+  }
 }
 
 impl Audience {
@@ -210,6 +297,25 @@ impl Ticket {
     self.sig = key.sign(&self.payload().encode()).to_bytes();
   }
 
+  /// The other direction: a signed ticket back into its wire form.
+  pub fn to_body(&self) -> TicketBody {
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine as _;
+
+    TicketBody {
+      v: self.v,
+      iss: self.iss.as_str().to_string(),
+      public_key: B64.encode(self.public_key),
+      iat: self.iat,
+      exp: self.exp,
+      aud: self.aud.as_str().to_string(),
+      tgt: self.tgt.as_ref().map(|t| t.as_str().to_string()),
+      ih: self.ih.map(|h| B64.encode(h)),
+      cid: self.cid.clone(),
+      sig: B64.encode(self.sig),
+    }
+  }
+
   /// The four checks of spec 3.1.2, in order. `expected_audience` is the
   /// verifier's own identity and `me` is its `peer_id` when it is also the
   /// connection target.
@@ -219,6 +325,38 @@ impl Ticket {
     me: Option<&PeerId>,
     now: u64,
   ) -> Result<(), TicketError> {
+    self.check_identity(now)?;
+
+    // 4. this ticket was meant for us
+    if &self.aud != expected_audience {
+      return Err(TicketError::WrongAudience);
+    }
+    if let Some(tgt) = &self.tgt {
+      match me {
+        Some(me) if me == tgt => {}
+        _ => return Err(TicketError::WrongTarget),
+      }
+    }
+    Ok(())
+  }
+
+  /// The same checks for a verifier that is the audience but *not* the target —
+  /// a Punch Server relaying a connect. Matching `tgt` against its own id would
+  /// reject every valid connect; the target is recorded on the connection and
+  /// checked there instead. A connect that names no target is refused outright.
+  pub fn verify_as_relay(&self, expected_audience: &Audience, now: u64) -> Result<(), TicketError> {
+    self.check_identity(now)?;
+    if &self.aud != expected_audience {
+      return Err(TicketError::WrongAudience);
+    }
+    if self.tgt.is_none() {
+      return Err(TicketError::WrongTarget);
+    }
+    Ok(())
+  }
+
+  /// Steps 1–3: the key is the issuer's, the signature holds, it has not expired.
+  fn check_identity(&self, now: u64) -> Result<(), TicketError> {
     // 1. the embedded key must actually be the issuer's
     if peer_id_from_public_key(&self.public_key) != self.iss {
       return Err(TicketError::KeyDoesNotMatchIssuer);
@@ -238,17 +376,6 @@ impl Ticket {
     if now >= self.exp {
       return Err(TicketError::Expired);
     }
-
-    // 4. this ticket was meant for us
-    if &self.aud != expected_audience {
-      return Err(TicketError::WrongAudience);
-    }
-    if let Some(tgt) = &self.tgt {
-      match me {
-        Some(me) if me == tgt => {}
-        _ => return Err(TicketError::WrongTarget),
-      }
-    }
     Ok(())
   }
 }
@@ -256,6 +383,8 @@ impl Ticket {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TicketError {
   MalformedPeerId,
+  /// The wire form could not be decoded — bad base64, wrong field length.
+  Malformed(String),
   KeyDoesNotMatchIssuer,
   BadKey,
   BadSignature,
@@ -268,6 +397,7 @@ impl std::fmt::Display for TicketError {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     let s = match self {
       TicketError::MalformedPeerId => "peer_id fails its checksum",
+      TicketError::Malformed(d) => return write!(f, "malformed ticket: {d}"),
       TicketError::KeyDoesNotMatchIssuer => "embedded public key does not derive iss",
       TicketError::BadKey => "public key is not a valid Ed25519 key",
       TicketError::BadSignature => "signature does not verify",
@@ -298,6 +428,27 @@ pub fn keypair_from_seed(seed: &[u8; 32]) -> (SigningKey, PeerId) {
 
 pub fn public_key_of(sk: &SigningKey) -> [u8; 32] {
   sk.verifying_key().to_bytes()
+}
+
+/// Verify a detached signature over an arbitrary message, made by the holder of
+/// the identity this public key belongs to.
+///
+/// Punch needs this for `join`, which signs `"join" || token || timestamp` in
+/// addition to carrying the ticket: the ticket proves who you claim to be, the
+/// detached signature proves you are on the other end of this channel right now.
+pub fn verify_signature(public_key: &[u8; 32], message: &[u8], sig: &[u8; 64]) -> bool {
+  let Ok(verifying) = VerifyingKey::from_bytes(public_key) else {
+    return false;
+  };
+  verifying
+    .verify(message, &Signature::from_bytes(sig))
+    .is_ok()
+}
+
+/// Sign an arbitrary message. Counterpart of `verify_signature`, for callers
+/// that need a detached signature rather than the one inside a ticket.
+pub fn sign_message(sk: &SigningKey, message: &[u8]) -> [u8; 64] {
+  sk.sign(message).to_bytes()
 }
 
 pub fn peer_id_of(sk: &SigningKey) -> PeerId {

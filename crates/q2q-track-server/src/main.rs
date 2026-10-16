@@ -43,7 +43,8 @@ struct PunchServer {
 }
 
 fn default_bind() -> SocketAddr {
-  "127.0.0.1:8080".parse().unwrap()
+  // built rather than parsed: there is no string here that could fail
+  SocketAddr::from(([127, 0, 0, 1], 8080))
 }
 fn default_turn_url() -> String {
   "turn:127.0.0.1:3478".into()

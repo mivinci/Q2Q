@@ -8,8 +8,8 @@
 //! tests deterministic and lets a caller with its own notion of time use it.
 
 use crate::network::NetworkKey;
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 pub type Millis = u64;
 
@@ -106,7 +106,7 @@ impl Limiter {
       }
     };
 
-    let mut buckets = self.buckets.lock().unwrap();
+    let mut buckets = self.buckets.lock();
     let entry = buckets.entry((rule.to_string(), *key)).or_insert(Bucket {
       tokens: spec.capacity as f64,
       updated_at: now,
@@ -140,20 +140,20 @@ impl Limiter {
   /// Drop buckets idle for longer than `idle_ms`. Call it on a timer; otherwise
   /// every prefix that ever sends a request stays in the map forever.
   pub fn sweep(&self, now: Millis, idle_ms: Millis) -> usize {
-    let mut buckets = self.buckets.lock().unwrap();
+    let mut buckets = self.buckets.lock();
     let before = buckets.len();
     buckets.retain(|_, b| now.saturating_sub(b.updated_at) < idle_ms);
     before - buckets.len()
   }
 
   pub fn tracked_keys(&self) -> usize {
-    self.buckets.lock().unwrap().len()
+    self.buckets.lock().len()
   }
 
   /// Refuse to grow past the ceiling rather than evicting: an attacker able to
   /// evict entries could push out a legitimate peer's bucket.
   pub fn at_capacity(&self) -> bool {
-    self.buckets.lock().unwrap().len() >= self.max_keys
+    self.buckets.lock().len() >= self.max_keys
   }
 }
 
