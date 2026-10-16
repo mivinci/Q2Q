@@ -6,6 +6,8 @@
 //!
 //! - `bencode` — deterministic encoding, the basis of `info_hash` and signatures
 //! - `merkle` — tree, proofs and verification (RFC 6962 shape)
+//! - `seed` — info dict, `info_hash`, magnet links
 
 pub mod bencode;
 pub mod merkle;
+pub mod seed;
