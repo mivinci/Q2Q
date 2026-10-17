@@ -10,3 +10,5 @@ pub mod auth;
 pub mod redis;
 pub mod state;
 pub mod wire;
+
+pub mod selection;

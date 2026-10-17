@@ -2,7 +2,7 @@
 
 pub use crate::reader::{OpenOptions, VerifiedFile};
 
-pub use crate::control::{ControlError, ControlSession};
+pub use crate::control::{ControlError, ControlSession, QueryOptions};
 pub use crate::peer::PeerSession;
 pub use crate::publication::{
   Publication, PublicationState, UploadConnectionProgress, UploadConnectionState, UploadProgress,
@@ -30,6 +30,7 @@ pub struct Builder {
   identity_file: Option<PathBuf>,
   storage_dir: Option<PathBuf>,
   max_download_peers: Option<usize>,
+  peer_query_limit: Option<usize>,
   max_upload_peers: Option<usize>,
   max_upload_reads: Option<usize>,
   upload_rate_limit: Option<u64>,
@@ -60,6 +61,14 @@ impl Builder {
   /// Maximum concurrent peer connections or CDN block requests, 1–16 (default 4).
   pub fn max_download_peers(mut self, count: usize) -> Self {
     self.max_download_peers = Some(count);
+    self
+  }
+
+  /// Candidates requested per discovery query, 1–50. Defaults to twice
+  /// max_download_peers (8 with default concurrency), independently of the
+  /// connection budget. Track may return fewer candidates.
+  pub fn peer_query_limit(mut self, count: usize) -> Self {
+    self.peer_query_limit = Some(count);
     self
   }
 
@@ -104,6 +113,10 @@ impl Builder {
     if !(1..=16).contains(&max_download_peers) {
       return Err(BuildError::InvalidDownloadPeers);
     }
+    let peer_query_limit = self.peer_query_limit.unwrap_or(max_download_peers * 2);
+    if !(1..=q2q_track::wire::MAX_QUERY_LIMIT).contains(&peer_query_limit) {
+      return Err(BuildError::InvalidPeerQueryLimit);
+    }
     let track_url = self.track_url.ok_or(BuildError::Missing("track_url"))?;
     let track_url = Url::parse(&track_url).map_err(BuildError::InvalidTrackUrl)?;
     if !matches!(track_url.scheme(), "http" | "https") || track_url.host_str().is_none() {
@@ -129,6 +142,7 @@ impl Builder {
       session: Arc::new(OnceCell::new()),
       upload_router: Arc::new(crate::upload_router::UploadRouter::default()),
       max_download_peers,
+      peer_query_limit,
       uploads: Arc::new(Semaphore::new(max_upload_peers)),
       upload_reads: Arc::new(Semaphore::new(max_upload_reads)),
       upload_rate: self
@@ -146,6 +160,7 @@ pub struct Client {
   session: Arc<OnceCell<Arc<ControlSession>>>,
   upload_router: Arc<crate::upload_router::UploadRouter>,
   max_download_peers: usize,
+  peer_query_limit: usize,
   uploads: Arc<Semaphore>,
   upload_reads: Arc<Semaphore>,
   upload_rate: Option<Arc<crate::upload_rate::UploadRate>>,
@@ -301,6 +316,10 @@ impl Client {
     .map_err(PrepareError::Task)?
   }
 
+  pub(crate) fn peer_query_limit(&self) -> usize {
+    self.peer_query_limit
+  }
+
   pub fn peer_id(&self) -> &PeerId {
     self.identity.peer_id()
   }
@@ -324,6 +343,7 @@ pub enum BuildError {
   InvalidTrackUrl(url::ParseError),
   UnsupportedTrackUrl,
   InvalidDownloadPeers,
+  InvalidPeerQueryLimit,
   InvalidUploadPeers,
   InvalidUploadReads,
   InvalidUploadRate,
@@ -340,6 +360,7 @@ impl fmt::Display for BuildError {
       Self::InvalidUploadRate => f.write_str("upload_rate_limit must be greater than zero"),
       Self::InvalidUploadReads => f.write_str("max_upload_reads must be between 1 and 16"),
       Self::InvalidUploadPeers => f.write_str("max_upload_peers must be between 1 and 16"),
+      Self::InvalidPeerQueryLimit => f.write_str("peer_query_limit must be between 1 and 50"),
       Self::InvalidDownloadPeers => f.write_str("max_download_peers must be between 1 and 16"),
       Self::UnsupportedTrackUrl => f.write_str("Track URL must be HTTP or HTTPS with a host"),
       Self::Storage(e) => write!(f, "could not prepare client storage: {e}"),

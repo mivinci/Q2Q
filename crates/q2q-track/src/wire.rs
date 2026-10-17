@@ -66,6 +66,7 @@ pub struct HeartbeatResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryParams {
   #[serde(default)]
+  /// Maximum requested candidates, not a promise to fill the response.
   pub limit: Option<usize>,
   #[serde(default)]
   pub cursor: Option<String>,
@@ -90,3 +91,7 @@ pub struct PeerWire {
   pub punch: PunchWire,
   pub complete: bool,
 }
+
+/// HTTP query limits shared by services and SDKs.
+pub const DEFAULT_QUERY_LIMIT: usize = 10;
+pub const MAX_QUERY_LIMIT: usize = 50;

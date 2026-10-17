@@ -283,3 +283,85 @@ async fn independent_close() {
   assert!(sharing.close().await.is_err());
   origin.close().await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires fresh local Track/Punch; set Q2Q_TEST_TRACK_URL"]
+async fn query_options_paginate_candidates_and_exclude_self() {
+  use q2q::client::{ControlError, QueryOptions};
+  let track = std::env::var("Q2Q_TEST_TRACK_URL").unwrap();
+  let dir = tempfile::tempdir().unwrap();
+  let a = client(dir.path(), "a", &track, false).await;
+  let b = client(dir.path(), "b", &track, false).await;
+  let c = client(dir.path(), "c", &track, false).await;
+  let path = dir.path().join("shared");
+  std::fs::write(&path, b"query candidates").unwrap();
+  let one = a.publish_file(&path).await.unwrap();
+  let two = b.publish_file(&path).await.unwrap();
+  let three = c.publish_file(&path).await.unwrap();
+  assert_eq!(one.info_hash(), two.info_hash());
+  let session = a.connect().await.unwrap();
+  let first = session
+    .query_with_options(
+      &one.info_hash(),
+      QueryOptions {
+        limit: Some(1),
+        cursor: None,
+      },
+    )
+    .await
+    .unwrap();
+  assert_eq!(first.peers.len(), 1);
+  assert_ne!(first.peers[0].peer_id, a.peer_id().as_str());
+  let second = session
+    .query_with_options(
+      &one.info_hash(),
+      QueryOptions {
+        limit: Some(1),
+        cursor: Some(first.next_cursor.unwrap()),
+      },
+    )
+    .await
+    .unwrap();
+  assert_eq!(second.peers.len(), 1);
+  assert_ne!(first.peers[0].peer_id, second.peers[0].peer_id);
+  assert!(second.next_cursor.is_none());
+  let all = session
+    .query_with_options(
+      &one.info_hash(),
+      QueryOptions {
+        limit: Some(50),
+        cursor: None,
+      },
+    )
+    .await
+    .unwrap();
+  assert_eq!(all.peers.len(), 2);
+  assert!(all.next_cursor.is_none());
+  assert!(matches!(
+    session
+      .query_with_options(
+        &one.info_hash(),
+        QueryOptions {
+          limit: Some(0),
+          cursor: None
+        }
+      )
+      .await,
+    Err(ControlError::Protocol(_))
+  ));
+  two.close().await.unwrap();
+  let remaining = session
+    .query_with_options(
+      &one.info_hash(),
+      QueryOptions {
+        limit: Some(8),
+        cursor: None,
+      },
+    )
+    .await
+    .unwrap();
+  assert_eq!(remaining.peers.len(), 1);
+  assert_eq!(remaining.peers[0].peer_id, c.peer_id().as_str());
+  three.close().await.unwrap();
+  one.close().await.unwrap();
+}

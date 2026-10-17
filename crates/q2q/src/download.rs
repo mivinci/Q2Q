@@ -79,7 +79,13 @@ pub(crate) async fn start_with_store(
   }
   // A failed control plane must not prevent CDN-only cold start. Bound the
   // complete discovery path, including Punch Binding setup, before fallback.
-  let discovery = discover(client.connect_owned(), client.peer_id().to_string(), seed).await;
+  let discovery = discover(
+    client.connect_owned(),
+    client.peer_id().to_string(),
+    seed,
+    client.peer_query_limit(),
+  )
+  .await;
   let discovery = match discovery {
     Err(error) if seed.cdn_list.is_empty() => return Err(error),
     Ok((_, targets)) if targets.is_empty() && !seed.cdn_list.is_empty() => {
@@ -87,6 +93,7 @@ pub(crate) async fn start_with_store(
     }
     result => result,
   };
+  let query_limit = client.peer_query_limit();
   let seed = seed.clone();
   let updates = progress.clone();
   let store = match initial_store {
@@ -104,6 +111,7 @@ pub(crate) async fn start_with_store(
           session: session.clone(),
           candidates: targets,
           concurrency,
+          query_limit,
         }
         .run(Arc::new(seed.clone()), store.clone(), queue, false);
         tokio::select! {
@@ -156,6 +164,7 @@ pub(crate) async fn open(
   let seed = Arc::new(seed);
   let dial = client.connect_owned();
   let peer_id = client.peer_id().to_string();
+  let query_limit = client.peer_query_limit();
   let task_queue = queue.clone();
   let destination = store.clone();
   let task_seed = seed.clone();
@@ -167,7 +176,7 @@ pub(crate) async fn open(
     let s = task_seed.clone();
     let disk = destination.clone();
     tasks.spawn(async move {
-      let outcome = peers(dial, peer_id, s, disk, q.clone(), concurrency).await;
+      let outcome = peers(dial, peer_id, s, disk, q.clone(), concurrency, query_limit).await;
       if let Err(error) = outcome {
         if error.peer_retryable() || matches!(error, TransferError::NoPeers) {
           q.peer_status(true, None);
@@ -208,10 +217,19 @@ async fn discover(
   connect: impl Future<Output = Result<Arc<ControlSession>, ControlError>>,
   peer_id: String,
   seed: &Seed,
+  query_limit: usize,
 ) -> Result<(Arc<ControlSession>, Vec<q2q_track::wire::PeerWire>), TransferError> {
   tokio::time::timeout(Duration::from_secs(15), async {
     let session = connect.await?;
-    let response = session.query(&seed.info_hash()).await?;
+    let response = session
+      .query_with_options(
+        &seed.info_hash(),
+        crate::control::QueryOptions {
+          limit: Some(query_limit),
+          cursor: None,
+        },
+      )
+      .await?;
     let mut seen = std::collections::HashSet::new();
     let targets: Vec<_> = response
       .peers
@@ -232,18 +250,20 @@ async fn peers(
   store: Destination,
   queue: Arc<WorkQueue>,
   concurrency: usize,
+  query_limit: usize,
 ) -> Result<(), TransferError> {
   if queue.complete() {
     return Ok(());
   }
   let (session, targets) = tokio::select! {
     _ = queue.finished() => return Ok(()),
-    result = discover(connect, peer_id, &seed) => result?,
+    result = discover(connect, peer_id, &seed, query_limit) => result?,
   };
   let peers = crate::discovery::Peers {
     session: session.clone(),
     candidates: targets,
     concurrency,
+    query_limit,
   };
   tokio::select! {
     result = peers.run(seed, store, queue, true) => result,
