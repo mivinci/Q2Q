@@ -139,3 +139,57 @@ async fn upload_rate_defaults_to_unlimited_and_rejects_zero() {
     );
   }
 }
+
+#[tokio::test]
+async fn source_read_limit_is_independent_and_validated() {
+  for count in [0, 17, usize::MAX] {
+    assert!(matches!(
+      builder().max_upload_reads(count).build().await,
+      Err(BuildError::InvalidUploadReads)
+    ));
+  }
+  let dir = tempfile::tempdir().unwrap();
+  let make = || {
+    builder()
+      .track_url("http://127.0.0.1:1")
+      .identity_file(dir.path().join("identity-reads"))
+      .storage_dir(dir.path().join("reads"))
+  };
+  assert_eq!(
+    make()
+      .build()
+      .await
+      .unwrap()
+      .upload_reads
+      .available_permits(),
+    4
+  );
+  for count in [1, 16] {
+    let client = make()
+      .max_upload_reads(count)
+      .max_upload_peers(2)
+      .max_download_peers(3)
+      .build()
+      .await
+      .unwrap();
+    assert_eq!(client.upload_reads.available_permits(), count);
+    assert_eq!(client.uploads.available_permits(), 2);
+    assert_eq!(client.max_download_peers, 3);
+  }
+  let client = make().max_upload_reads(1).build().await.unwrap();
+  let path = dir.path().join("source");
+  std::fs::write(&path, [7; 1024]).unwrap();
+  let first = client.prepare_file(&path).await.unwrap();
+  let second = client.prepare_file(&path).await.unwrap();
+  let held = first.read_permit().await;
+  assert!(
+    tokio::time::timeout(std::time::Duration::from_millis(10), second.read_permit())
+      .await
+      .is_err()
+  );
+  drop(held);
+  let held = second.read_permit().await;
+  assert_eq!(client.upload_reads.available_permits(), 0);
+  drop(held);
+  assert_eq!(client.upload_reads.available_permits(), 1);
+}

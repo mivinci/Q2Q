@@ -20,7 +20,7 @@ async fn slow_upload_exceeds_old_block_deadline_without_spurious_retries() {
   let (received, served) = tokio::time::timeout(Duration::from_secs(40), async {
     tokio::join!(
       download.download_file(seed, &path),
-      upload.serve_file_scoped(Arc::new(Mutex::new(prepared)), context)
+      upload.serve_file_scoped(Arc::new(prepared), context)
     )
   })
   .await
@@ -88,7 +88,7 @@ async fn paced_large_upload_drains_buffer_notifications() {
   let (received, served) = tokio::time::timeout(Duration::from_secs(10), async {
     tokio::join!(
       download.download_file(seed, &path),
-      upload.serve_file_scoped(Arc::new(Mutex::new(prepared)), context)
+      upload.serve_file_scoped(Arc::new(prepared), context)
     )
   })
   .await
@@ -121,4 +121,32 @@ async fn failed_data_channel_send_does_not_increment_upload_bytes() {
   );
   assert_eq!(progress.snapshot().sent_bytes, 0);
   assert_eq!(progress.snapshot().connections[0].sent_bytes, 0);
+}
+
+#[tokio::test]
+async fn queued_source_read_is_cancelable_without_spawning_or_reserving_capacity() {
+  let directory = tempfile::tempdir().unwrap();
+  let reads = Arc::new(tokio::sync::Semaphore::new(1));
+  let prepared = Arc::new(source(directory.path(), &[3; 1024]).with_read_limit(reads.clone()));
+  let held = reads.clone().acquire_owned().await.unwrap();
+  let context = UploadContext::unmanaged();
+  assert!(
+    tokio::time::timeout(
+      Duration::from_millis(10),
+      context.read_block(prepared.clone(), 0)
+    )
+    .await
+    .is_err()
+  );
+  tokio::time::timeout(Duration::from_secs(1), context.scope.idle())
+    .await
+    .unwrap();
+  assert_eq!(reads.available_permits(), 0);
+  drop(held);
+  let (bytes, _) = tokio::time::timeout(Duration::from_secs(1), context.read_block(prepared, 0))
+    .await
+    .unwrap()
+    .unwrap();
+  assert_eq!(bytes, vec![3; 1024]);
+  assert_eq!(reads.available_permits(), 1);
 }

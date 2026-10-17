@@ -3,15 +3,29 @@ use q2q_core::merkle::{self, Hash, Proof, ProofTree};
 use q2q_core::seed::{DEFAULT_BLOCK_SIZE, Info, Seed};
 use std::fmt;
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::SystemTime;
+#[cfg(not(any(unix, windows)))]
+use std::{
+  io::{Seek, SeekFrom},
+  sync::Mutex,
+};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// A locally prepared source. Use `Client::publish_file` to announce and serve it.
+/// Clones share the same opened file, immutable metadata, proof tree and read budget.
+#[derive(Clone)]
 pub struct PreparedFile {
   path: PathBuf,
-  file: File,
-  seed: Seed,
-  tree: ProofTree,
+  file: Arc<File>,
+  seed: Arc<Seed>,
+  tree: Arc<ProofTree>,
+  modified: Option<SystemTime>,
+  reads: Arc<Semaphore>,
+  #[cfg(not(any(unix, windows)))]
+  cursor: Arc<Mutex<()>>,
 }
 
 impl PreparedFile {
@@ -58,9 +72,13 @@ impl PreparedFile {
     seed.leaf_hashes = Some(leaves);
     Ok(Self {
       path,
-      file,
-      seed,
-      tree,
+      file: Arc::new(file),
+      seed: Arc::new(seed),
+      tree: Arc::new(tree),
+      modified: after.modified().ok(),
+      reads: Arc::new(Semaphore::new(4)),
+      #[cfg(not(any(unix, windows)))]
+      cursor: Arc::new(Mutex::new(())),
     })
   }
 
@@ -91,7 +109,9 @@ impl PreparedFile {
 
   /// Read a block from the same open file and compare it to its committed leaf.
   /// A changed file is never served as if it matched the original seed.
-  pub fn read_verified_block(&mut self, index: usize) -> Result<Vec<u8>, PrepareError> {
+  /// This synchronous API does not acquire the SDK async read budget; callers
+  /// creating their own threads must bound their own concurrency.
+  pub fn read_verified_block(&self, index: usize) -> Result<Vec<u8>, PrepareError> {
     let leaves = self
       .seed
       .leaf_hashes
@@ -103,16 +123,97 @@ impl PreparedFile {
     let start = index as u64 * DEFAULT_BLOCK_SIZE as u64;
     let bytes = (self.seed.info.length - start).min(DEFAULT_BLOCK_SIZE as u64) as usize;
     let mut data = vec![0u8; bytes];
-    self
-      .file
-      .seek(SeekFrom::Start(start))
-      .map_err(PrepareError::Io)?;
-    self.file.read_exact(&mut data).map_err(PrepareError::Io)?;
+    self.check_unchanged()?;
+    self.read_exact_at(&mut data, start).map_err(|error| {
+      if error.kind() == io::ErrorKind::UnexpectedEof {
+        PrepareError::SourceChanged
+      } else {
+        PrepareError::Io(error)
+      }
+    })?;
+    self.check_unchanged()?;
     if merkle::leaf_hash(&data) != *expected {
       return Err(PrepareError::SourceChanged);
     }
     Ok(data)
   }
+
+  pub(crate) fn with_read_limit(mut self, reads: Arc<Semaphore>) -> Self {
+    self.reads = reads;
+    self
+  }
+
+  pub(crate) async fn read_permit(&self) -> OwnedSemaphorePermit {
+    self
+      .reads
+      .clone()
+      .acquire_owned()
+      .await
+      .expect("source read gate is never closed")
+  }
+
+  fn check_unchanged(&self) -> Result<(), PrepareError> {
+    let metadata = self.file.metadata().map_err(PrepareError::Io)?;
+    if metadata.len() != self.seed.info.length
+      || matches!((self.modified, metadata.modified()), (Some(before), Ok(after)) if before != after)
+    {
+      return Err(PrepareError::SourceChanged);
+    }
+    Ok(())
+  }
+
+  #[cfg(any(unix, windows))]
+  fn read_exact_at(&self, data: &mut [u8], offset: u64) -> io::Result<()> {
+    // Every syscall gets its own absolute offset. Neither short reads nor
+    // interleaved callers can move the next read to another block.
+    read_exact_with(data, offset, |buffer, position| {
+      #[cfg(unix)]
+      {
+        std::os::unix::fs::FileExt::read_at(&*self.file, buffer, position)
+      }
+      #[cfg(windows)]
+      {
+        std::os::windows::fs::FileExt::seek_read(&*self.file, buffer, position)
+      }
+    })
+  }
+
+  #[cfg(not(any(unix, windows)))]
+  fn read_exact_at(&self, data: &mut [u8], offset: u64) -> io::Result<()> {
+    // Conservative portability fallback; Unix/Windows never take this lock.
+    let _cursor = self
+      .cursor
+      .lock()
+      .unwrap_or_else(|error| error.into_inner());
+    let mut file = &*self.file;
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_exact(data)
+  }
+}
+
+#[cfg(any(unix, windows))]
+fn read_exact_with(
+  mut data: &mut [u8],
+  mut offset: u64,
+  mut read: impl FnMut(&mut [u8], u64) -> io::Result<usize>,
+) -> io::Result<()> {
+  while !data.is_empty() {
+    match read(data, offset) {
+      Ok(0) => {
+        return Err(io::Error::new(
+          io::ErrorKind::UnexpectedEof,
+          "source block ended early",
+        ));
+      }
+      Ok(bytes) => {
+        offset += bytes as u64;
+        data = &mut data[bytes..];
+      }
+      Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+      Err(error) => return Err(error),
+    }
+  }
+  Ok(())
 }
 
 #[derive(Debug)]
@@ -149,3 +250,7 @@ impl std::error::Error for PrepareError {
     }
   }
 }
+
+#[cfg(test)]
+#[path = "../tests/source_file.rs"]
+mod tests;

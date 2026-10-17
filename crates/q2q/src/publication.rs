@@ -10,7 +10,7 @@ use crate::error::TransferError;
 use q2q_core::merkle::Hash;
 use q2q_core::seed::Seed;
 use std::sync::{
-  Arc, Mutex,
+  Arc,
   atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
@@ -58,7 +58,7 @@ impl Publication {
     let (ready, started) = oneshot::channel();
     let runner = PublicationTask {
       hash: seed.info_hash(),
-      source: Arc::new(Mutex::new(prepared)),
+      source: Arc::new(prepared),
       uploads: crate::upload::UploadPool::new(permits, rate, progress.clone()),
       session,
       status: progress.run_guard(),
@@ -127,7 +127,7 @@ impl Drop for Publication {
 /// The leases are declared in release order for cancellation/unwinding too.
 struct PublicationTask {
   hash: Hash,
-  source: Arc<Mutex<PreparedFile>>,
+  source: Arc<PreparedFile>,
   uploads: crate::upload::UploadPool,
   session: Arc<ControlSession>,
   status: crate::upload_progress::RunGuard,
