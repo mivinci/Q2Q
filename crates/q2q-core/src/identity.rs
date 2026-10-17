@@ -151,6 +151,11 @@ pub enum Audience {
 /// shape changes — an old ticket must stop verifying, not be quietly tolerated.
 pub const TICKET_VERSION: u32 = 1;
 
+/// How far into the future a ticket may expire. The issuer picks `exp` itself,
+/// so without a ceiling it could mint one that stays valid for years — and
+/// spec 211 says a credential's lifetime *is* the security boundary.
+pub const MAX_TICKET_LIFETIME: u64 = 600;
+
 /// Track and Punch parse tickets, so it lives here rather than in either.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TicketBody {
@@ -385,9 +390,14 @@ impl Ticket {
       .verify(&self.payload().encode(), &sig)
       .map_err(|_| TicketError::BadSignature)?;
 
-    // 3. still valid
+    // 3. still valid, and not valid for absurdly long.
+    // `exp` is the issuer's own choice; a ticket that outlives the deployment
+    // makes the "short lifetime" boundary meaningless, so cap it here.
     if now >= self.exp {
       return Err(TicketError::Expired);
+    }
+    if self.exp - now > MAX_TICKET_LIFETIME {
+      return Err(TicketError::LifetimeTooLong);
     }
     Ok(())
   }
@@ -407,6 +417,9 @@ pub enum TicketError {
   UnsupportedVersion(u32),
   /// `iat` 晚于 `exp`——有效期窗口自相矛盾，签出来就是废的
   BadValidityWindow,
+  /// `exp` 距现在超过 `MAX_TICKET_LIFETIME`：自签票据唯一的边界就是寿命，
+  /// 签发方不能自己把它拉长
+  LifetimeTooLong,
 }
 
 impl std::fmt::Display for TicketError {
@@ -424,6 +437,7 @@ impl std::fmt::Display for TicketError {
         return write!(f, "ticket version {v} is not {TICKET_VERSION}")
       }
       TicketError::BadValidityWindow => "ticket expires before it was issued",
+      TicketError::LifetimeTooLong => "ticket stays valid for too long",
     };
     f.write_str(s)
   }
@@ -535,6 +549,30 @@ mod tests {
       t.verify(&Audience::Track, None, 1_000),
       Err(TicketError::BadValidityWindow)
     );
+  }
+
+  #[test]
+  fn rejects_a_ticket_that_stays_valid_for_too_long() {
+    let sk = key_from(5);
+    let now = 1_000;
+    let mut t = ticket_from(&sk, now);
+    // 自签票据的 exp 由签发方自己填，服务端必须自己兜住上限
+    t.exp = now + MAX_TICKET_LIFETIME + 1;
+    t.sign(&sk);
+    assert_eq!(
+      t.verify(&Audience::Track, None, now),
+      Err(TicketError::LifetimeTooLong)
+    );
+  }
+
+  #[test]
+  fn a_ticket_exactly_at_the_lifetime_limit_passes() {
+    let sk = key_from(6);
+    let now = 1_000;
+    let mut t = ticket_from(&sk, now);
+    t.exp = now + MAX_TICKET_LIFETIME;
+    t.sign(&sk);
+    assert!(t.verify(&Audience::Track, None, now).is_ok());
   }
 
   #[test]

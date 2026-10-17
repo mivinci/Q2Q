@@ -150,6 +150,9 @@ pub enum StoreError {
     got: usize,
   },
   NotDownloadable(BlockState),
+  /// 校验没通过：证明无效或算出来的 root 与 `info.root` 不符（spec 4.2）。
+  /// 是一个 `Err` 而不是 `Ok(Partial)`——调用方要靠它对该 Peer 记一次失败
+  RootMismatch,
   MalformedProgress,
   ProgressMismatch,
   /// `open` 找到的文件长度与声明的不符：要么不是同一个文件，要么被别的程序改过
@@ -171,6 +174,7 @@ impl std::fmt::Display for StoreError {
         write!(f, "expected {expected} bytes, got {got}")
       }
       StoreError::NotDownloadable(s) => write!(f, "block is {s:?}, nothing to verify"),
+      StoreError::RootMismatch => f.write_str("proof or data does not match the root"),
       StoreError::MalformedProgress => f.write_str("progress file is malformed"),
       StoreError::ProgressMismatch => f.write_str("progress file belongs to a different file"),
       StoreError::LengthMismatch { expected, got } => {
@@ -310,7 +314,9 @@ impl FileStore {
   }
 
   /// Read a block back and check it against the tree root. On failure the block
-  /// goes back to `Partial` with its bitmap cleared.
+  /// goes back to `Partial` with its bitmap cleared and `RootMismatch` comes
+  /// back — spec 4.2 wants the caller to count a failure against whoever sent
+  /// the data, which it cannot do if failure looks like success.
   pub fn verify(
     &mut self,
     block: usize,
@@ -329,8 +335,9 @@ impl FileStore {
       self.blocks[block].mark_verified();
       Ok(BlockState::Verified)
     } else {
+      // 字节已经不可信，位图清掉重来
       self.blocks[block].reset();
-      Ok(BlockState::Partial)
+      Err(StoreError::RootMismatch)
     }
   }
 
@@ -551,10 +558,10 @@ mod tests {
     assert_eq!(store.state(0).unwrap(), BlockState::Downloaded);
 
     let proof = merkle::prove(&[leaf_hash(&good[0])], 0);
-    // wrong root on purpose
+    // wrong root on purpose：失败必须看得见，否则没法对该 Peer 记一次失败
     assert_eq!(
-      store.verify(0, &proof, &[0xff; 32]).unwrap(),
-      BlockState::Partial
+      store.verify(0, &proof, &[0xff; 32]),
+      Err(StoreError::RootMismatch)
     );
     assert_eq!(store.state(0).unwrap(), BlockState::Partial);
     // bitmap cleared: writing the pieces again is required
