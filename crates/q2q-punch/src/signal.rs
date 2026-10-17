@@ -7,73 +7,12 @@
 //! module exists.
 
 use crate::binding::UnixSeconds;
+pub use crate::message::{RejectReason, SignalRequest, SignalType};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use parking_lot::Mutex;
 use q2q_core::identity::{Audience, PeerId, TicketBody, TicketError};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SignalType {
-  Connect,
-  Accept,
-  Reject,
-  Offer,
-  Answer,
-  Candidate,
-  Cancel,
-}
-
-impl SignalType {
-  pub fn name(self) -> &'static str {
-    match self {
-      SignalType::Connect => "connect",
-      SignalType::Accept => "accept",
-      SignalType::Reject => "reject",
-      SignalType::Offer => "offer",
-      SignalType::Answer => "answer",
-      SignalType::Candidate => "candidate",
-      SignalType::Cancel => "cancel",
-    }
-  }
-}
-
-/// What the spec calls `reject.reason`. It decides whether A tries another peer,
-/// re-queries Track, or gives up — so it has to survive the trip verbatim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RejectReason {
-  Busy,
-  QuotaExceeded,
-  NotFound,
-  Denied,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SignalRequest {
-  #[serde(rename = "type")]
-  pub kind: SignalType,
-  pub connection_id: String,
-  /// Required on `connect` and `offer`. Everything else rides on the channel,
-  /// which is itself the credential.
-  #[serde(default)]
-  pub connect_token: Option<String>,
-  /// Opaque to the server: it must never parse SDP.
-  #[serde(default)]
-  pub sdp: Option<String>,
-  #[serde(default)]
-  pub candidate: Option<String>,
-  #[serde(default)]
-  pub reason: Option<RejectReason>,
-  /// B's own ticket, so A can verify the accept without trusting the server.
-  #[serde(default)]
-  pub accept_token: Option<String>,
-  /// Carried when A reconnects onto a live connection.
-  #[serde(default)]
-  pub signal_key: Option<String>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
