@@ -17,6 +17,12 @@ sweep_interval = 60
 # in without a restart.
 reload_interval = 5
 
+# Single-node deployments use the in-memory state backend by default.
+# For several Track instances, give each the same Redis URL:
+# [state]
+# backend = "redis"
+# url = "redis://redis.example.internal:6379/"
+
 [[punch]]
 punch_id = "punch-1"
 # Where clients reach this Punch Server. It is a URL, not a socket — the

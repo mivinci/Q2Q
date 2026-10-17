@@ -1,7 +1,7 @@
 # Single-node deployment: Track, one Punch Server, and coturn for the cases
 # where a direct connection cannot be made.
 #
-# See the bootstrap order in todos/deployment.md — the Punch public key has to
+# See the bootstrap order in docs/guide/deploy.md — the Punch public key has to
 # be generated before Track can be told about it, so this is not a one-shot
 # `up`.
 
