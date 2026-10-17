@@ -13,6 +13,7 @@ use std::path::Path;
 const MAGIC: &[u8; 8] = b"Q2Q-ID1\n";
 const FILE_LEN: usize = MAGIC.len() + 32;
 
+#[derive(Clone)]
 pub(super) struct Identity {
   key: SigningKey,
   peer_id: PeerId,
@@ -90,6 +91,30 @@ impl Identity {
       tgt: None,
       ih: None,
       cid,
+      sig: [0; 64],
+    };
+    ticket.sign(&self.key);
+    ticket.to_body()
+  }
+
+  pub(super) fn connection_ticket(
+    &self,
+    punch_id: &str,
+    target: &PeerId,
+    info_hash: [u8; 32],
+    connection_id: &str,
+    now: u64,
+  ) -> TicketBody {
+    let mut ticket = Ticket {
+      v: TICKET_VERSION,
+      iss: self.peer_id.clone(),
+      public_key: self.public_key(),
+      iat: now,
+      exp: now + 60,
+      aud: Audience::Punch(punch_id.to_owned()).to_wire(),
+      tgt: Some(target.clone()),
+      ih: Some(info_hash),
+      cid: Some(connection_id.to_owned()),
       sig: [0; 64],
     };
     ticket.sign(&self.key);

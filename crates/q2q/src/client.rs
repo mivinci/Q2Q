@@ -1,6 +1,7 @@
 //! Client construction and identity lifecycle.
 
 pub use crate::control::{ControlError, ControlSession};
+pub use crate::peer::PeerSession;
 
 use crate::identity::Identity;
 use crate::publication::{PrepareError, PreparedFile};

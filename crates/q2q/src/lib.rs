@@ -5,8 +5,8 @@
 
 mod control;
 mod identity;
+mod peer;
 mod punch_transport;
-#[allow(dead_code, reason = "used by the upcoming peer session orchestration")]
 mod webrtc_transport;
 
 pub mod client;

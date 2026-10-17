@@ -1,18 +1,19 @@
 //! The authenticated Track and Punch control-plane session.
 
 use crate::identity::Identity;
+use crate::peer::{self, PeerSession};
 use crate::punch_transport::PunchBinding;
-use crate::webrtc_transport::RtcConnection;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use q2q_core::identity::{Audience, PeerId};
-use q2q_punch::message::{SignalRequest, SignalResponse};
 use q2q_track::auth::mac_bytes;
 use q2q_track::wire::{
   AnnounceRequest, AnnounceResponse, ErrorBody, HeartbeatRequest, HeartbeatResponse, QueryResponse,
 };
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tokio::sync::Mutex;
 use url::Url;
 
 const SESSION_TTL: u64 = 300;
@@ -21,13 +22,13 @@ const SESSION_TTL: u64 = 300;
 /// will be attached to this session in the next step.
 pub struct ControlSession {
   http: reqwest::Client,
+  identity: Identity,
   track_url: Url,
   peer_id: PeerId,
   session_key: [u8; 32],
-  track_seq: u64,
-  track_expires_at: u64,
+  track_seq: Mutex<u64>,
+  track_expires_at: AtomicU64,
   heartbeat_interval: u32,
-  #[allow(dead_code, reason = "used when peer sessions are connected")]
   turn: q2q_track::wire::TurnWire,
   punch: PunchBinding,
 }
@@ -60,11 +61,12 @@ impl ControlSession {
     let punch = PunchBinding::connect(identity, &announced.punch).await?;
     Ok(Self {
       http,
+      identity: identity.clone(),
       track_url: track_url.clone(),
       peer_id,
       session_key,
-      track_seq: 0,
-      track_expires_at: announced.expires_at,
+      track_seq: Mutex::new(0),
+      track_expires_at: AtomicU64::new(announced.expires_at),
       heartbeat_interval: announced.heartbeat_interval,
       turn: announced.turn,
       punch,
@@ -84,38 +86,29 @@ impl ControlSession {
   }
 
   pub fn track_expires_at(&self) -> u64 {
-    self.track_expires_at
+    self.track_expires_at.load(Ordering::Acquire)
   }
 
-  #[allow(dead_code, reason = "used by the upcoming peer session orchestration")]
-  pub(crate) async fn rtc_connection(&self) -> Result<RtcConnection, ControlError> {
-    let turn = (self.turn.expires_at > q2q_track::state::now()).then_some((
-      self.turn.url.as_str(),
-      self.turn.username.as_str(),
-      self.turn.credential.as_str(),
-    ));
-    RtcConnection::new(turn)
-      .await
-      .map_err(ControlError::Transport)
-  }
-
-  #[allow(dead_code, reason = "used by the upcoming peer session orchestration")]
-  pub(crate) async fn signal(
+  /// Connect to a queried peer through that peer's assigned Punch.
+  /// Application data stays unavailable until the identity and block layer is added.
+  pub async fn dial_peer(
     &self,
-    request: &SignalRequest,
-  ) -> Result<SignalResponse, ControlError> {
-    self.punch.signal(request).await
+    target: &q2q_track::wire::PeerWire,
+    info_hash: [u8; 32],
+  ) -> Result<PeerSession, ControlError> {
+    peer::dial(&self.identity, target, info_hash, &self.turn).await
   }
 
-  #[allow(dead_code, reason = "used by the upcoming peer session orchestration")]
-  pub(crate) async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
-    self.punch.recv_signal().await
+  /// Accept the next request for a specific content hash on this Punch Binding.
+  pub async fn accept_peer(&self, info_hash: [u8; 32]) -> Result<PeerSession, ControlError> {
+    peer::accept(&self.identity, &self.punch, info_hash, &self.turn).await
   }
 
   /// Refresh both sessions. Sequence numbers are consumed before I/O so a
   /// reply lost after server acceptance cannot cause a replay on retry.
-  pub async fn heartbeat(&mut self) -> Result<(), ControlError> {
-    let seq = next_seq(&mut self.track_seq)?;
+  pub async fn heartbeat(&self) -> Result<(), ControlError> {
+    let mut track_seq = self.track_seq.lock().await;
+    let seq = next_seq(&mut track_seq)?;
     let now = q2q_track::state::now();
     let request = HeartbeatRequest {
       seq,
@@ -135,14 +128,18 @@ impl ControlSession {
       .map_err(ControlError::Http)?;
     let response = expect_success(response, "Track").await?;
     let heartbeat: HeartbeatResponse = response.json().await.map_err(ControlError::Http)?;
-    self.track_expires_at = heartbeat.expires_at;
+    self
+      .track_expires_at
+      .store(heartbeat.expires_at, Ordering::Release);
+    drop(track_seq);
     self.punch.heartbeat().await
   }
 
   /// Query the current Track index. The hash must be the 32 raw bytes of an
   /// info hash, not a caller-chosen filename.
-  pub async fn query(&mut self, info_hash: &[u8; 32]) -> Result<QueryResponse, ControlError> {
-    let seq = next_seq(&mut self.track_seq)?;
+  pub async fn query(&self, info_hash: &[u8; 32]) -> Result<QueryResponse, ControlError> {
+    let mut track_seq = self.track_seq.lock().await;
+    let seq = next_seq(&mut track_seq)?;
     let now = q2q_track::state::now();
     let hash = format!("sha256:{}", hex(info_hash));
     let mut url = endpoint(&self.track_url, &["files", &hash, "peers"])?;

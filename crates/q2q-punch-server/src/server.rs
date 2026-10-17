@@ -317,9 +317,7 @@ async fn handle_connection(conn: Connection, state: Arc<State>) {
 
   while let Ok((mut send, mut recv)) = conn.accept_bi().await {
     let st = state.clone();
-    let caller = Caller {
-      peer: authed.lock().clone(),
-    };
+    let bound_peer = authed.lock().clone();
     let joined = authed.clone();
     let opened = ephemeral.clone();
     let mine = conn.clone();
@@ -328,7 +326,20 @@ async fn handle_connection(conn: Connection, state: Arc<State>) {
         return;
       };
       let outcome = match parse_request(&bytes) {
-        Ok(req) => handle_guarded(&st, req, &caller, ip),
+        Ok(req) => {
+          let ephemeral_peer = serde_json::from_value::<SignalRequest>(req.params.clone())
+            .ok()
+            .filter(|sig| {
+              opened.lock().contains(&sig.connection_id)
+                && st.sinks.ephemeral_is_current(&sig.connection_id, &mine)
+            })
+            .and_then(|sig| st.connections.get(&sig.connection_id))
+            .map(|connection| connection.a);
+          let caller = Caller {
+            peer: bound_peer.or(ephemeral_peer),
+          };
+          handle_guarded(&st, req, &caller, ip)
+        }
         Err(e) => Outcome {
           response: Response::err("unknown", &e.code, e.detail),
           forwards: Vec::new(),
@@ -356,10 +367,10 @@ async fn handle_connection(conn: Connection, state: Arc<State>) {
 
   // a closed standing channel means an unreachable peer, so drop it here
   if let Some(peer) = authed.lock().as_ref() {
-    state.sinks.drop_standing(peer);
+    state.sinks.drop_standing_if_current(peer, &conn);
   }
   for cid in ephemeral.lock().iter() {
-    state.sinks.drop_ephemeral(cid);
+    state.sinks.drop_ephemeral_if_current(cid, &conn);
   }
   tracing::debug!(%remote, "connection closed");
 }

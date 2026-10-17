@@ -15,6 +15,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use url::Url;
 
 const RPC_VERSION: u32 = 1;
@@ -26,7 +27,7 @@ pub(super) struct PunchBinding {
   connection: quinn::Connection,
   binding_id: String,
   key: [u8; 32],
-  seq: u64,
+  seq: Mutex<u64>,
 }
 
 impl PunchBinding {
@@ -34,33 +35,7 @@ impl PunchBinding {
     identity: &Identity,
     assignment: &PunchWire,
   ) -> Result<Self, ControlError> {
-    let public_key = decode_key(&assignment.public_key, "Punch public_key")?;
-    let url = Url::parse(&assignment.url)
-      .map_err(|e| ControlError::Protocol(format!("invalid Punch URL: {e}")))?;
-    if url.scheme() != "quic" {
-      return Err(ControlError::Protocol("Punch URL must use quic://".into()));
-    }
-    let host = url
-      .host_str()
-      .ok_or_else(|| ControlError::Protocol("Punch URL has no host".into()))?;
-    let port = url
-      .port()
-      .ok_or_else(|| ControlError::Protocol("Punch URL has no port".into()))?;
-    let addr = tokio::net::lookup_host((host, port))
-      .await
-      .map_err(|e| ControlError::Transport(e.to_string()))?
-      .next()
-      .ok_or_else(|| ControlError::Transport("Punch host resolved to no addresses".into()))?;
-    let endpoint = endpoint(addr, public_key)?;
-    let connection = tokio::time::timeout(
-      Duration::from_secs(10),
-      endpoint
-        .connect(addr, &assignment.punch_id)
-        .map_err(|e| ControlError::Transport(e.to_string()))?,
-    )
-    .await
-    .map_err(|_| ControlError::Transport("Punch handshake timed out".into()))?
-    .map_err(|e| ControlError::Transport(e.to_string()))?;
+    let (endpoint, connection) = connect_quic(assignment).await?;
 
     let now = q2q_punch::binding::now();
     let mut nonce = [0u8; 16];
@@ -87,7 +62,7 @@ impl PunchBinding {
       connection,
       binding_id: joined.binding_id,
       key,
-      seq: 0,
+      seq: Mutex::new(0),
     })
   }
 
@@ -96,41 +71,21 @@ impl PunchBinding {
   }
 
   /// Send one signalling message over the authenticated standing channel.
-  #[allow(dead_code, reason = "used by the upcoming peer session orchestration")]
   pub(crate) async fn signal(
     &self,
     request: &SignalRequest,
   ) -> Result<SignalResponse, ControlError> {
-    let mut nonce = [0u8; 16];
-    getrandom::fill(&mut nonce).map_err(ControlError::Random)?;
-    let value = tokio::time::timeout(
-      Duration::from_secs(10),
-      rpc(&self.connection, &hex(&nonce), "punch.signal", request),
-    )
-    .await
-    .map_err(|_| ControlError::Transport("Punch signal timed out".into()))??;
-    serde_json::from_value(value)
-      .map_err(|e| ControlError::Protocol(format!("bad Punch signal response: {e}")))
+    send_signal(&self.connection, request).await
   }
 
   /// Receive a forwarded signal pushed by Punch on a QUIC unidirectional stream.
-  #[allow(dead_code, reason = "used by the upcoming peer session orchestration")]
   pub(crate) async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
-    let mut stream = self
-      .connection
-      .accept_uni()
-      .await
-      .map_err(|e| ControlError::Transport(e.to_string()))?;
-    let bytes = stream
-      .read_to_end(MAX_RESPONSE_BYTES)
-      .await
-      .map_err(|e| ControlError::Transport(e.to_string()))?;
-    serde_json::from_slice(&bytes)
-      .map_err(|e| ControlError::Protocol(format!("bad forwarded Punch signal: {e}")))
+    read_signal(&self.connection).await
   }
 
-  pub(super) async fn heartbeat(&mut self) -> Result<(), ControlError> {
-    let seq = next_seq(&mut self.seq)?;
+  pub(super) async fn heartbeat(&self) -> Result<(), ControlError> {
+    let mut last_seq = self.seq.lock().await;
+    let seq = next_seq(&mut last_seq)?;
     let now = q2q_punch::binding::now();
     let request = HeartbeatRequest {
       binding_id: self.binding_id.clone(),
@@ -172,7 +127,7 @@ impl PunchBinding {
   }
 
   pub(super) async fn close(&mut self) -> Result<(), ControlError> {
-    let seq = next_seq(&mut self.seq)?;
+    let seq = next_seq(self.seq.get_mut())?;
     let now = q2q_punch::binding::now();
     let request = ExitRequest {
       binding_id: self.binding_id.clone(),
@@ -193,6 +148,103 @@ impl Drop for PunchBinding {
     self.connection.close(0u32.into(), b"client dropped");
     self.endpoint.close(0u32.into(), b"client dropped");
   }
+}
+
+/// The initiator talks directly to the target peer's Punch. Its connect ticket
+/// authenticates this short-lived channel; it does not create a standing Binding.
+pub(crate) struct PunchEphemeral {
+  endpoint: quinn::Endpoint,
+  connection: quinn::Connection,
+}
+
+impl PunchEphemeral {
+  pub(crate) async fn connect(assignment: &PunchWire) -> Result<Self, ControlError> {
+    let (endpoint, connection) = connect_quic(assignment).await?;
+    Ok(Self {
+      endpoint,
+      connection,
+    })
+  }
+
+  pub(crate) async fn signal(
+    &self,
+    request: &SignalRequest,
+  ) -> Result<SignalResponse, ControlError> {
+    send_signal(&self.connection, request).await
+  }
+
+  pub(crate) async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
+    read_signal(&self.connection).await
+  }
+}
+
+impl Drop for PunchEphemeral {
+  fn drop(&mut self) {
+    self.connection.close(0u32.into(), b"client dropped");
+    self.endpoint.close(0u32.into(), b"client dropped");
+  }
+}
+
+async fn connect_quic(
+  assignment: &PunchWire,
+) -> Result<(quinn::Endpoint, quinn::Connection), ControlError> {
+  let public_key = decode_key(&assignment.public_key, "Punch public_key")?;
+  let url = Url::parse(&assignment.url)
+    .map_err(|e| ControlError::Protocol(format!("invalid Punch URL: {e}")))?;
+  if url.scheme() != "quic" {
+    return Err(ControlError::Protocol("Punch URL must use quic://".into()));
+  }
+  let host = url
+    .host_str()
+    .ok_or_else(|| ControlError::Protocol("Punch URL has no host".into()))?;
+  let port = url
+    .port()
+    .ok_or_else(|| ControlError::Protocol("Punch URL has no port".into()))?;
+  let addr = tokio::net::lookup_host((host, port))
+    .await
+    .map_err(|e| ControlError::Transport(e.to_string()))?
+    .next()
+    .ok_or_else(|| ControlError::Transport("Punch host resolved to no addresses".into()))?;
+  let endpoint = endpoint(addr, public_key)?;
+  let connection = tokio::time::timeout(
+    Duration::from_secs(10),
+    endpoint
+      .connect(addr, &assignment.punch_id)
+      .map_err(|e| ControlError::Transport(e.to_string()))?,
+  )
+  .await
+  .map_err(|_| ControlError::Transport("Punch handshake timed out".into()))?
+  .map_err(|e| ControlError::Transport(e.to_string()))?;
+  Ok((endpoint, connection))
+}
+
+async fn send_signal(
+  connection: &quinn::Connection,
+  request: &SignalRequest,
+) -> Result<SignalResponse, ControlError> {
+  let mut nonce = [0u8; 16];
+  getrandom::fill(&mut nonce).map_err(ControlError::Random)?;
+  let value = tokio::time::timeout(
+    Duration::from_secs(10),
+    rpc(connection, &hex(&nonce), "punch.signal", request),
+  )
+  .await
+  .map_err(|_| ControlError::Transport("Punch signal timed out".into()))??;
+  serde_json::from_value(value)
+    .map_err(|e| ControlError::Protocol(format!("bad Punch signal response: {e}")))
+}
+
+async fn read_signal(connection: &quinn::Connection) -> Result<SignalRequest, ControlError> {
+  let mut stream = connection
+    .accept_uni()
+    .await
+    .map_err(|e| ControlError::Transport(e.to_string()))?;
+  let bytes = stream
+    .read_to_end(MAX_RESPONSE_BYTES)
+    .await
+    .map_err(|e| ControlError::Transport(e.to_string()))?;
+  serde_json::from_slice(&bytes)
+    .map_err(|e| ControlError::Protocol(format!("bad forwarded Punch signal: {e}")))
 }
 
 fn endpoint(addr: SocketAddr, public_key: [u8; 32]) -> Result<quinn::Endpoint, ControlError> {

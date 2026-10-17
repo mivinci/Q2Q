@@ -31,8 +31,14 @@ impl Sinks {
     self.standing.lock().insert(peer.as_str().to_string(), conn);
   }
 
-  pub fn drop_standing(&self, peer: &PeerId) {
-    self.standing.lock().remove(peer.as_str());
+  pub fn drop_standing_if_current(&self, peer: &PeerId, conn: &Connection) {
+    let mut standing = self.standing.lock();
+    if standing
+      .get(peer.as_str())
+      .is_some_and(|current| current.stable_id() == conn.stable_id())
+    {
+      standing.remove(peer.as_str());
+    }
   }
 
   /// Being here is what makes a peer reachable; `connect` asks exactly this.
@@ -49,6 +55,24 @@ impl Sinks {
 
   pub fn drop_ephemeral(&self, connection_id: &str) {
     self.ephemeral.lock().remove(connection_id);
+  }
+
+  pub fn ephemeral_is_current(&self, connection_id: &str, conn: &Connection) -> bool {
+    self
+      .ephemeral
+      .lock()
+      .get(connection_id)
+      .is_some_and(|current| current.stable_id() == conn.stable_id())
+  }
+
+  pub fn drop_ephemeral_if_current(&self, connection_id: &str, conn: &Connection) {
+    let mut ephemeral = self.ephemeral.lock();
+    if ephemeral
+      .get(connection_id)
+      .is_some_and(|current| current.stable_id() == conn.stable_id())
+    {
+      ephemeral.remove(connection_id);
+    }
   }
 
   pub fn has_ephemeral(&self, connection_id: &str) -> bool {
