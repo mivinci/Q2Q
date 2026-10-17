@@ -6,7 +6,7 @@
 //! sparse file as far as the filesystem is concerned.
 
 use crate::bencode::{self, BValue, Dict};
-use crate::merkle::{self, Hash, Proof};
+use crate::merkle::{self, Hash, LeafCache, Proof};
 // block 大小的合法范围由 seed 定义（spec 5.2），store 不再自己另立一套
 use crate::seed::{MAX_BLOCK_SIZE, MIN_BLOCK_SIZE};
 use std::fs::File as FsFile;
@@ -150,6 +150,8 @@ pub enum StoreError {
     got: usize,
   },
   NotDownloadable(BlockState),
+  /// 这块没缓存过叶子，又没有给证明——无从校验
+  ProofMissing,
   /// 校验没通过：证明无效或算出来的 root 与 `info.root` 不符（spec 4.2）。
   /// 是一个 `Err` 而不是 `Ok(Partial)`——调用方要靠它对该 Peer 记一次失败
   RootMismatch,
@@ -174,6 +176,7 @@ impl std::fmt::Display for StoreError {
         write!(f, "expected {expected} bytes, got {got}")
       }
       StoreError::NotDownloadable(s) => write!(f, "block is {s:?}, nothing to verify"),
+      StoreError::ProofMissing => f.write_str("block is not cached and no proof was given"),
       StoreError::RootMismatch => f.write_str("proof or data does not match the root"),
       StoreError::MalformedProgress => f.write_str("progress file is malformed"),
       StoreError::ProgressMismatch => f.write_str("progress file belongs to a different file"),
@@ -200,6 +203,10 @@ pub struct FileStore {
   length: u64,
   block_size: u32,
   blocks: Vec<Block>,
+  /// Leaves already checked against the root. Owned here rather than by the
+  /// caller so that "verify without going through the cache" is not something
+  /// a caller can accidentally do.
+  cache: LeafCache,
 }
 
 /// spec 5.2 的 block 大小规则，store 与 seed 用同一套，免得两边判出来的不一样。
@@ -231,11 +238,13 @@ impl FileStore {
     if length > 0 {
       f.set_len(length)?;
     }
+    let blocks = blocks_of(length, block_size);
     Ok(FileStore {
       path,
       length,
       block_size,
-      blocks: blocks_of(length, block_size),
+      cache: LeafCache::new(blocks.len()),
+      blocks,
     })
   }
 
@@ -251,12 +260,19 @@ impl FileStore {
         got,
       });
     }
+    let blocks = blocks_of(length, block_size);
     Ok(FileStore {
       path,
       length,
       block_size,
-      blocks: blocks_of(length, block_size),
+      cache: LeafCache::new(blocks.len()),
+      blocks,
     })
+  }
+
+  /// 已通过 root 验证的叶子，供调用方上报或持久化。
+  pub fn cache(&self) -> &LeafCache {
+    &self.cache
   }
 
   pub fn block_count(&self) -> usize {
@@ -320,7 +336,7 @@ impl FileStore {
   pub fn verify(
     &mut self,
     block: usize,
-    proof: &Proof,
+    proof: Option<&Proof>,
     root: &Hash,
   ) -> Result<BlockState, StoreError> {
     match self.state(block)? {
@@ -330,8 +346,27 @@ impl FileStore {
     }
 
     let data = self.read_block(block)?;
+
+    // 叶子已经验过就不必再要证明：一次哈希比对，不用重放路径
+    if let Some(ok) = self.cache.verify(block, &data) {
+      if ok {
+        self.blocks[block].mark_verified();
+        return Ok(BlockState::Verified);
+      }
+      self.blocks[block].reset();
+      return Err(StoreError::RootMismatch);
+    }
+
+    let proof = proof.ok_or(StoreError::ProofMissing)?;
     let slice = [data.as_slice()];
-    if merkle::verify_range(&slice, block, self.block_count(), proof, root) {
+    if merkle::verify_range_into_cache(
+      &slice,
+      block,
+      self.block_count(),
+      proof,
+      root,
+      &mut self.cache,
+    ) {
       self.blocks[block].mark_verified();
       Ok(BlockState::Verified)
     } else {
@@ -510,7 +545,7 @@ mod tests {
 
     let proof = merkle::prove(&leaves, 0);
     assert_eq!(
-      store.verify(0, &proof, &root).unwrap(),
+      store.verify(0, Some(&proof), &root).unwrap(),
       BlockState::Verified
     );
     assert_eq!(store.state(0).unwrap(), BlockState::Verified);
@@ -560,7 +595,7 @@ mod tests {
     let proof = merkle::prove(&[leaf_hash(&good[0])], 0);
     // wrong root on purpose：失败必须看得见，否则没法对该 Peer 记一次失败
     assert_eq!(
-      store.verify(0, &proof, &[0xff; 32]),
+      store.verify(0, Some(&proof), &[0xff; 32]),
       Err(StoreError::RootMismatch)
     );
     assert_eq!(store.state(0).unwrap(), BlockState::Partial);
@@ -591,7 +626,7 @@ mod tests {
       store.write_piece(1, p, &chunk).unwrap();
     }
     let proof1 = merkle::prove(&leaves, 1);
-    store.verify(1, &proof1, &root).unwrap();
+    store.verify(1, Some(&proof1), &root).unwrap();
 
     let bf = store.verified_bitfield();
     assert_eq!(bf.len(), 1);
@@ -716,7 +751,7 @@ mod tests {
     let proof = merkle::prove(&[leaf], 0);
     let root = merkle::root(&[leaf]);
     assert_eq!(
-      store.verify(0, &proof, &root).unwrap(),
+      store.verify(0, Some(&proof), &root).unwrap(),
       BlockState::Verified
     );
 
@@ -727,6 +762,72 @@ mod tests {
     );
     assert_eq!(store.state(0).unwrap(), BlockState::Downloaded);
     assert!(store.verified_bitfield().iter().all(|b| *b == 0));
+  }
+
+  #[test]
+  fn a_cached_block_verifies_again_without_a_proof() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("f");
+    let block_size = 256 * 1024u32;
+    let mut store = FileStore::create(&path, 2 * PIECE_SIZE as u64, block_size).unwrap();
+    let data = vec![5u8; 2 * PIECE_SIZE];
+    for p in 0..2 {
+      let start = p * PIECE_SIZE;
+      store
+        .write_piece(0, p, &data[start..start + PIECE_SIZE])
+        .unwrap();
+    }
+    let leaf = leaf_hash(&data);
+    let proof = merkle::prove(&[leaf], 0);
+    let root = merkle::root(&[leaf]);
+
+    assert_eq!(
+      store.verify(0, Some(&proof), &root).unwrap(),
+      BlockState::Verified
+    );
+    assert_eq!(store.cache().known_count(), 1);
+    // 叶子已经验过：一次哈希比对就够，不必再带证明
+    assert_eq!(store.verify(0, None, &root).unwrap(), BlockState::Verified);
+  }
+
+  #[test]
+  fn verifying_with_neither_a_proof_nor_a_cached_leaf_is_an_error() {
+    let dir = TempDir::new().unwrap();
+    let mut store =
+      FileStore::create(dir.path().join("f"), 2 * PIECE_SIZE as u64, 256 * 1024).unwrap();
+    let data = vec![5u8; 2 * PIECE_SIZE];
+    for p in 0..2 {
+      let start = p * PIECE_SIZE;
+      store
+        .write_piece(0, p, &data[start..start + PIECE_SIZE])
+        .unwrap();
+    }
+    let root = merkle::root(&[leaf_hash(&data)]);
+    assert_eq!(store.verify(0, None, &root), Err(StoreError::ProofMissing));
+  }
+
+  #[test]
+  fn tampering_after_a_block_was_cached_is_still_caught() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("f");
+    let block_size = 256 * 1024u32;
+    let mut store = FileStore::create(&path, 2 * PIECE_SIZE as u64, block_size).unwrap();
+    let data = vec![5u8; 2 * PIECE_SIZE];
+    for p in 0..2 {
+      let start = p * PIECE_SIZE;
+      store
+        .write_piece(0, p, &data[start..start + PIECE_SIZE])
+        .unwrap();
+    }
+    let leaf = leaf_hash(&data);
+    let proof = merkle::prove(&[leaf], 0);
+    let root = merkle::root(&[leaf]);
+    store.verify(0, Some(&proof), &root).unwrap();
+
+    // 校验通过之后又改了字节：状态落回 Downloaded，缓存当场发现对不上
+    store.write_piece(0, 0, &[6u8; PIECE_SIZE]).unwrap();
+    assert_eq!(store.state(0).unwrap(), BlockState::Downloaded);
+    assert_eq!(store.verify(0, None, &root), Err(StoreError::RootMismatch));
   }
 
   #[test]
