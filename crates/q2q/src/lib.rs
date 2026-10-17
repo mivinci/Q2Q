@@ -1,11 +1,12 @@
 //! Client SDK for publishing and downloading content on a Q2Q network.
 //!
-//! The SDK prepares a persistent identity and local files for seeding.
-//! Discovery, signalling and peer transfer are added in later stages.
+//! The SDK prepares a persistent identity, local files and authenticated WebRTC
+//! peer sessions. Block transfer is added in the next stage.
 
 mod control;
 mod identity;
 mod peer;
+mod peer_identity;
 mod punch_transport;
 mod webrtc_transport;
 

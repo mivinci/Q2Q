@@ -90,7 +90,7 @@ impl ControlSession {
   }
 
   /// Connect to a queried peer through that peer's assigned Punch.
-  /// Application data stays unavailable until the identity and block layer is added.
+  /// Returns after mutual identity confirmation on the WebRTC channel.
   pub async fn dial_peer(
     &self,
     target: &q2q_track::wire::PeerWire,
@@ -226,6 +226,7 @@ pub enum ControlError {
     detail: Option<String>,
   },
   Transport(String),
+  Authentication(String),
   Protocol(String),
   Random(getrandom::Error),
 }
@@ -250,6 +251,7 @@ impl fmt::Display for ControlError {
         Ok(())
       }
       Self::Transport(e) => write!(f, "Punch transport failed: {e}"),
+      Self::Authentication(e) => write!(f, "peer identity confirmation failed: {e}"),
       Self::Protocol(e) => write!(f, "Q2Q protocol error: {e}"),
       Self::Random(e) => write!(f, "could not generate a request id: {e}"),
     }

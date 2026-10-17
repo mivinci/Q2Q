@@ -20,4 +20,5 @@ pub mod file;
 pub mod identity;
 pub mod mac;
 pub mod merkle;
+pub mod peer_auth;
 pub mod seed;

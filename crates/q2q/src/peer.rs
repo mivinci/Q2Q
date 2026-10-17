@@ -2,11 +2,13 @@
 
 use crate::control::ControlError;
 use crate::identity::Identity;
+use crate::peer_identity::PeerIdentity;
 use crate::punch_transport::{PunchBinding, PunchEphemeral};
 use crate::webrtc_transport::{RtcConnection, RtcEvent};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use q2q_core::identity::{Audience, PeerId, TicketBody};
+use q2q_core::peer_auth::Role;
 use q2q_punch::message::{RejectReason, SignalRequest, SignalType};
 use q2q_track::wire::{PeerWire, TurnWire};
 use std::sync::Arc;
@@ -20,8 +22,8 @@ const ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
 const OFFER_TIMEOUT: Duration = Duration::from_secs(10);
 const ICE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// A connected WebRTC peer. Application data remains private until the SDK's
-/// identity handshake and block protocol are attached in the next stage.
+/// A connected WebRTC peer whose identity was verified on this DTLS channel.
+/// Application data remains private until the block protocol is attached.
 pub struct PeerSession {
   peer_id: PeerId,
   info_hash: [u8; 32],
@@ -153,6 +155,15 @@ pub(crate) async fn dial(
     Some(data_channel.clone()),
   )
   .await?;
+  PeerIdentity {
+    local: identity,
+    remote_key: target_key,
+    role: Role::Initiator,
+    info_hash,
+    connection_id: &connection_id,
+  }
+  .authenticate(&rtc, data_channel.as_ref())
+  .await?;
   Ok(PeerSession {
     peer_id: target_id,
     info_hash,
@@ -196,6 +207,7 @@ pub(crate) async fn accept(
       punch.signal(&reject).await?;
       continue;
     }
+    let initiator_key = ticket.public_key;
     let initiator = ticket.iss;
     let now = q2q_punch::binding::now();
     let acceptance = identity.connection_ticket(
@@ -246,6 +258,15 @@ pub(crate) async fn accept(
     );
     punch.signal(&answer_message).await?;
     let data_channel = negotiate(&mut rtc, punch, &connect.connection_id, None).await?;
+    PeerIdentity {
+      local: identity,
+      remote_key: initiator_key,
+      role: Role::Responder,
+      info_hash,
+      connection_id: &connect.connection_id,
+    }
+    .authenticate(&rtc, data_channel.as_ref())
+    .await?;
     return Ok(PeerSession {
       peer_id: initiator,
       info_hash,
@@ -413,7 +434,12 @@ async fn negotiate(
               .map_err(|e| ControlError::Protocol(format!("ICE candidate: {e}")))?);
             signal.signal(&outbound).await?;
           }
-          Some(RtcEvent::Channel(inbound)) => channel = Some(inbound),
+          Some(RtcEvent::Channel(inbound)) => {
+            if channel.is_some() {
+              return Err(ControlError::Protocol("unexpected additional data channel".into()));
+            }
+            channel = Some(inbound);
+          }
           Some(RtcEvent::State(RTCPeerConnectionState::Connected)) => connected = true,
           Some(RtcEvent::State(RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed)) => {
             return Err(ControlError::Transport("WebRTC connection failed".into()));
@@ -426,8 +452,9 @@ async fn negotiate(
             Some(channel) => channel.poll().await,
             None => std::future::pending().await,
           }
-        } => match event {
+        }, if !open => match event {
           Some(DataChannelEvent::OnOpen) => open = true,
+          Some(DataChannelEvent::OnMessage(_)) => return Err(ControlError::Authentication("received data before channel open".into())),
           Some(DataChannelEvent::OnClose) | None => return Err(ControlError::Transport("WebRTC data channel closed".into())),
           _ => {}
         },

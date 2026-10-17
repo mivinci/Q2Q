@@ -148,4 +148,87 @@ impl RtcConnection {
   pub(crate) async fn close(&self) -> Result<(), String> {
     self.peer.close().await.map_err(|e| e.to_string())
   }
+
+  pub(crate) async fn fingerprints(&self) -> Result<([u8; 32], [u8; 32]), String> {
+    let local = self
+      .peer
+      .local_description()
+      .await
+      .ok_or("missing local SDP")?;
+    let remote = self
+      .peer
+      .remote_description()
+      .await
+      .ok_or("missing remote SDP")?;
+    Ok((fingerprint(&local.sdp)?, fingerprint(&remote.sdp)?))
+  }
+}
+
+impl Drop for RtcConnection {
+  fn drop(&mut self) {
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+      let peer = self.peer.clone();
+      runtime.spawn(async move {
+        let _ = peer.close().await;
+      });
+    }
+  }
+}
+
+fn fingerprint(sdp: &str) -> Result<[u8; 32], String> {
+  let mut found = None;
+  for line in sdp.lines() {
+    let Some(value) = line.strip_prefix("a=fingerprint:") else {
+      continue;
+    };
+    let mut fields = value.split_whitespace();
+    let algorithm = fields.next().ok_or("missing fingerprint algorithm")?;
+    let value = fields.next().ok_or("missing fingerprint value")?;
+    if !algorithm.eq_ignore_ascii_case("sha-256") || fields.next().is_some() {
+      return Err("identity confirmation requires a SHA-256 DTLS fingerprint".into());
+    }
+    let mut hash = [0u8; 32];
+    let mut octets = value.split(':');
+    for byte in &mut hash {
+      let octet = octets.next().ok_or("short DTLS fingerprint")?;
+      if octet.len() != 2 {
+        return Err("invalid DTLS fingerprint octet".into());
+      }
+      *byte = u8::from_str_radix(octet, 16).map_err(|_| "invalid DTLS fingerprint hex")?;
+    }
+    if octets.next().is_some() {
+      return Err("long DTLS fingerprint".into());
+    }
+    if found.is_some_and(|previous| previous != hash) {
+      return Err("conflicting DTLS fingerprints".into());
+    }
+    found = Some(hash);
+  }
+  found.ok_or_else(|| "missing DTLS fingerprint".into())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn dtls_binding_accepts_identical_fingerprints_and_rejects_ambiguity() {
+    let hex = ["AB"; 32].join(":");
+    let line = format!("a=fingerprint:sha-256 {hex}\r\n");
+    assert_eq!(
+      fingerprint(&format!("v=0\r\n{line}m=application\r\n{line}")),
+      Ok([0xab; 32])
+    );
+    assert_eq!(fingerprint(&line.to_lowercase()), Ok([0xab; 32]));
+    for invalid in [
+      "v=0\r\n".to_owned(),
+      line.replace("sha-256", "sha-1"),
+      line.replace(&hex, &["AB"; 31].join(":")),
+      line.replace(&hex, &["AB"; 33].join(":")),
+      line.replace("AB", "GG"),
+      format!("{line}{}", line.replace("AB", "CD")),
+    ] {
+      assert!(fingerprint(&invalid).is_err());
+    }
+  }
 }
