@@ -7,7 +7,12 @@ mod api;
 
 use axum::Router;
 use clap::Parser;
-use q2q_track::state::{MemoryState, PunchAssignment, TrackState, UnixSeconds};
+use q2q_core::identity::PeerId;
+use q2q_track::redis::RedisState;
+use q2q_track::state::{
+  Candidate, InfoHash, MemoryState, OnlineRecord, PunchAssignment, StateError, TrackState,
+  UnixSeconds,
+};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -48,6 +53,90 @@ struct Config {
   /// How often to check whether the Punch list file changed.
   #[serde(default = "default_reload")]
   reload_interval: u64,
+  #[serde(default)]
+  state: StateConfig,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(tag = "backend", rename_all = "lowercase")]
+enum StateConfig {
+  #[default]
+  Memory,
+  Redis {
+    url: String,
+  },
+}
+
+enum StateBackend {
+  Memory(MemoryState),
+  Redis(RedisState),
+}
+
+impl TrackState for StateBackend {
+  async fn announce(
+    &self,
+    record: OnlineRecord,
+    add: &[InfoHash],
+    del: &[InfoHash],
+    complete: &[InfoHash],
+    ttl: UnixSeconds,
+  ) -> Result<(), StateError> {
+    match self {
+      Self::Memory(s) => s.announce(record, add, del, complete, ttl).await,
+      Self::Redis(s) => s.announce(record, add, del, complete, ttl).await,
+    }
+  }
+
+  async fn online(
+    &self,
+    peer_id: &PeerId,
+    now: UnixSeconds,
+  ) -> Result<Option<OnlineRecord>, StateError> {
+    match self {
+      Self::Memory(s) => s.online(peer_id, now).await,
+      Self::Redis(s) => s.online(peer_id, now).await,
+    }
+  }
+
+  async fn advance_session(
+    &self,
+    peer_id: &PeerId,
+    session_key: &[u8; 32],
+    seq: u64,
+    renew_until: Option<UnixSeconds>,
+    now: UnixSeconds,
+  ) -> Result<(), StateError> {
+    match self {
+      Self::Memory(s) => {
+        s.advance_session(peer_id, session_key, seq, renew_until, now)
+          .await
+      }
+      Self::Redis(s) => {
+        s.advance_session(peer_id, session_key, seq, renew_until, now)
+          .await
+      }
+    }
+  }
+
+  async fn query(
+    &self,
+    info_hash: &InfoHash,
+    limit: usize,
+    after: Option<&PeerId>,
+    now: UnixSeconds,
+  ) -> Result<Vec<Candidate>, StateError> {
+    match self {
+      Self::Memory(s) => s.query(info_hash, limit, after, now).await,
+      Self::Redis(s) => s.query(info_hash, limit, after, now).await,
+    }
+  }
+
+  async fn sweep(&self, now: UnixSeconds) -> Result<usize, StateError> {
+    match self {
+      Self::Memory(s) => s.sweep(now).await,
+      Self::Redis(s) => s.sweep(now).await,
+    }
+  }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -143,7 +232,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let config = Config::load(&args.config)?;
   tracing::info!(?config.bind, "config loaded from {}", args.config.display());
 
-  let state = Arc::new(MemoryState::new());
+  let state = Arc::new(match &config.state {
+    StateConfig::Memory => StateBackend::Memory(MemoryState::new()),
+    StateConfig::Redis { url } => StateBackend::Redis(RedisState::connect(url).await?),
+  });
   let punch_list = api::PunchList::new(config.punch_servers()?);
   let track_config = Arc::new(api::TrackConfig {
     turn_url: config.turn_url.clone(),
@@ -159,9 +251,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   tokio::spawn(async move {
     loop {
       tokio::time::sleep(Duration::from_secs(sweep_interval)).await;
-      let removed = sweep_state.sweep(q2q_track::state::now());
-      if removed > 0 {
-        tracing::info!(removed, "sweep dropped expired online records");
+      match sweep_state.sweep(q2q_track::state::now()).await {
+        Ok(removed) if removed > 0 => {
+          tracing::info!(removed, "sweep dropped expired Track records");
+        }
+        Err(e) => tracing::error!(?e, "could not sweep Track state"),
+        _ => {}
       }
     }
   });

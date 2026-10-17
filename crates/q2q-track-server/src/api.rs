@@ -14,7 +14,7 @@ use parking_lot::RwLock;
 use q2q_core::identity::PeerId;
 use q2q_ratelimit::{Limiter, RateLimitLayer, Rule};
 use q2q_track::auth::{self, AuthError, TicketBody};
-use q2q_track::state::{InfoHash, PunchAssignment, TrackState, UnixSeconds};
+use q2q_track::state::{InfoHash, PunchAssignment, StateError, TrackState, UnixSeconds};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -156,13 +156,16 @@ fn fail(code: &'static str, detail: Option<String>) -> (StatusCode, Json<ErrorBo
     "bad_signature" | "key_not_issuer" | "expired" | "wrong_audience" | "bad_mac"
     | "stale_timestamp" => StatusCode::UNAUTHORIZED,
     "unknown_session" => StatusCode::UNAUTHORIZED,
+    "storage_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
     _ => StatusCode::INTERNAL_SERVER_ERROR,
   };
 
   // one place decides how loud a rejection is: a malformed request from a
   // client is routine, a failed signature is someone probing, a 5xx is ours
   match status {
-    StatusCode::INTERNAL_SERVER_ERROR => tracing::error!(code, "request failed"),
+    StatusCode::INTERNAL_SERVER_ERROR | StatusCode::SERVICE_UNAVAILABLE => {
+      tracing::error!(code, "request failed")
+    }
     StatusCode::UNAUTHORIZED => tracing::warn!(code, "request rejected"),
     _ => tracing::debug!(code, ?detail, "request rejected"),
   }
@@ -176,6 +179,17 @@ fn auth_failure(e: AuthError) -> (StatusCode, Json<ErrorBody>) {
   };
   // fail() logs it; auth rejections are the interesting kind
   fail(e.code(), detail)
+}
+
+fn state_failure(e: StateError) -> (StatusCode, Json<ErrorBody>) {
+  match e {
+    StateError::UnknownSession => fail("unknown_session", None),
+    StateError::Replayed(_) => fail("bad_mac", None),
+    StateError::Unavailable(detail) => {
+      tracing::error!(%detail, "Track state unavailable");
+      fail("storage_unavailable", None)
+    }
+  }
 }
 
 // ------------------------------------------------------------------ announce
@@ -288,17 +302,24 @@ async fn announce<S: TrackState>(
       ));
     }
   };
-  app.state.put_online(q2q_track::state::OnlineRecord {
-    peer_id: ticket.iss.clone(),
-    public_key: ticket.public_key,
-    session_key,
-    last_seq: 0,
-    punch: punch.clone(),
-    expires_at,
-  });
   app
     .state
-    .update_files(&ticket.iss, &add, &del, &complete, ttl);
+    .announce(
+      q2q_track::state::OnlineRecord {
+        peer_id: ticket.iss.clone(),
+        public_key: ticket.public_key,
+        session_key,
+        last_seq: 0,
+        punch: punch.clone(),
+        expires_at,
+      },
+      &add,
+      &del,
+      &complete,
+      ttl,
+    )
+    .await
+    .map_err(state_failure)?;
 
   let turn_expires_at = now + app.config.turn_ttl;
   tracing::info!(
@@ -363,7 +384,9 @@ async fn heartbeat<S: TrackState>(
 
   let record = app
     .state
-    .online(&peer)
+    .online(&peer, now)
+    .await
+    .map_err(state_failure)?
     .ok_or_else(|| fail("unknown_session", None))?;
 
   auth::verify_session_request(
@@ -377,21 +400,13 @@ async fn heartbeat<S: TrackState>(
   )
   .map_err(auth_failure)?;
 
-  // the strict replay check: auth only absorbs reordering
-  app
-    .state
-    .touch_sequence(&peer, req.seq)
-    .map_err(|_| fail("bad_mac", None))?;
-
   let ttl = app.config.max_ttl.min(3600);
   let expires_at = now + ttl;
-  app.state.put_online(q2q_track::state::OnlineRecord {
-    expires_at,
-    // `record` 是在 touch_sequence 之前克隆的，带着旧的 last_seq。原样写回
-    // 会把刚通过的递增校验撤销掉，同一个 seq + mac 就能在窗口内一直重放。
-    last_seq: req.seq,
-    ..record
-  });
+  app
+    .state
+    .advance_session(&peer, &record.session_key, req.seq, Some(expires_at), now)
+    .await
+    .map_err(state_failure)?;
 
   Ok(Json(HeartbeatResponse { expires_at }))
 }
@@ -461,7 +476,9 @@ async fn query<S: TrackState>(
   let peer = PeerId::unchecked(pid.to_string());
   let record = app
     .state
-    .online(&peer)
+    .online(&peer, now)
+    .await
+    .map_err(state_failure)?
     .ok_or_else(|| fail("unknown_session", None))?;
   auth::verify_session_request(
     &record.session_key,
@@ -475,8 +492,9 @@ async fn query<S: TrackState>(
   .map_err(auth_failure)?;
   app
     .state
-    .touch_sequence(&peer, seq)
-    .map_err(|_| fail("bad_mac", None))?;
+    .advance_session(&peer, &record.session_key, seq, None, now)
+    .await
+    .map_err(state_failure)?;
 
   let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
   let after = params.cursor.as_ref().map(|c| PeerId::unchecked(c.clone()));
@@ -487,7 +505,12 @@ async fn query<S: TrackState>(
 
   let mut peers: Vec<PeerWire> = Vec::new();
   let mut has_more = false;
-  for c in app.state.query(&hash, limit + 1, after.as_ref(), now) {
+  for c in app
+    .state
+    .query(&hash, limit + 1, after.as_ref(), now)
+    .await
+    .map_err(state_failure)?
+  {
     // a peer whose Punch Server is no longer listed cannot be reached, so it
     // is dropped rather than handed out with an address nobody serves
     let Some(punch) = punch_list.get(&c.punch_id) else {
@@ -1047,5 +1070,84 @@ mod tests {
     // base64 of HMAC-SHA1 under the shared secret
     let expected = q2q_core::mac::sha1(b"test-secret", &[wire.username.as_bytes()]);
     assert_eq!(wire.credential, B64.encode(expected));
+  }
+
+  #[tokio::test]
+  #[ignore = "requires Q2Q_REDIS_TEST_HOST and Q2Q_REDIS_TEST_PASSWORD"]
+  async fn redis_routes_share_sessions_across_track_instances() {
+    let host = std::env::var("Q2Q_REDIS_TEST_HOST").expect("Redis test host");
+    let password = std::env::var("Q2Q_REDIS_TEST_PASSWORD").expect("Redis test password");
+    let encoded: String = password
+      .as_bytes()
+      .iter()
+      .map(|byte| format!("%{byte:02X}"))
+      .collect();
+    let url = format!("redis://:{encoded}@{host}/");
+    let prefix = format!(
+      "q2q:route-probe:{}:{}:",
+      std::process::id(),
+      std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+    );
+    let first = Arc::new(
+      q2q_track::redis::RedisState::connect_with_prefix(&url, &prefix)
+        .await
+        .unwrap(),
+    );
+    let second = Arc::new(
+      q2q_track::redis::RedisState::connect_with_prefix(&url, &prefix)
+        .await
+        .unwrap(),
+    );
+    let app_a = router_with(first, config(), punch_list(), limiter());
+    let app_b = router_with(second, config(), punch_list(), limiter());
+    let hash = "ab".repeat(32);
+    let (peer, key) = session_with(&app_a, 19, &[format!("sha256:{hash}")], &[]).await;
+
+    let req = Request::builder()
+      .method("GET")
+      .uri(authed_query(&hash, &peer, &key, 1))
+      .body(Body::empty())
+      .unwrap();
+    let resp = app_b.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["peers"][0]["peer_id"], peer);
+
+    let ts = q2q_track::state::now();
+    let mac = B64.encode(q2q_track::auth::mac_bytes(
+      &key,
+      &PeerId::unchecked(peer.clone()),
+      2,
+      ts,
+    ));
+    let req = Request::builder()
+      .method("POST")
+      .uri(format!("/peers/{peer}/heartbeat"))
+      .header("content-type", "application/json")
+      .body(Body::from(
+        serde_json::to_vec(&serde_json::json!({"seq": 2, "timestamp": ts, "mac": mac})).unwrap(),
+      ))
+      .unwrap();
+    assert_eq!(app_b.oneshot(req).await.unwrap().status(), StatusCode::OK);
+
+    let req = Request::builder()
+      .method("GET")
+      .uri(authed_query(&hash, &peer, &key, 3))
+      .body(Body::empty())
+      .unwrap();
+    assert_eq!(app_a.oneshot(req).await.unwrap().status(), StatusCode::OK);
+
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut conn = client.get_connection_manager().await.unwrap();
+    let _: u64 = redis::cmd("DEL")
+      .arg(format!("{prefix}online:{peer}"))
+      .arg(format!("{prefix}file:{hash}:members"))
+      .arg(format!("{prefix}file:{hash}:meta"))
+      .arg(format!("{prefix}holding-expiry"))
+      .query_async(&mut conn)
+      .await
+      .unwrap();
   }
 }

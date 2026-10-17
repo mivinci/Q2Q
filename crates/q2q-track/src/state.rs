@@ -9,6 +9,7 @@
 use parking_lot::Mutex;
 use q2q_core::identity::PeerId;
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type InfoHash = [u8; 32];
@@ -63,20 +64,33 @@ struct Holding {
 }
 
 pub trait TrackState: Send + Sync {
-  fn put_online(&self, record: OnlineRecord);
-  fn online(&self, peer_id: &PeerId) -> Option<OnlineRecord>;
-  fn touch_sequence(&self, peer_id: &PeerId, seq: u64) -> Result<(), SequenceError>;
-
-  /// Register holdings. `del` is applied before `add`, so the two can be sent
-  /// together without a same-hash entry being dropped by ordering.
-  fn update_files(
+  /// Establish a new session and update holdings as one operation. `del` is
+  /// applied before `add`, including when a hash appears in both lists.
+  fn announce(
     &self,
-    peer_id: &PeerId,
+    record: OnlineRecord,
     add: &[InfoHash],
     del: &[InfoHash],
     complete: &[InfoHash],
     ttl: UnixSeconds,
-  );
+  ) -> impl Future<Output = Result<(), StateError>> + Send;
+
+  fn online(
+    &self,
+    peer_id: &PeerId,
+    now: UnixSeconds,
+  ) -> impl Future<Output = Result<Option<OnlineRecord>, StateError>> + Send;
+
+  /// Compare the session observed by the caller, advance its sequence and
+  /// optionally renew its expiry under one lock / storage transaction.
+  fn advance_session(
+    &self,
+    peer_id: &PeerId,
+    session_key: &[u8; 32],
+    seq: u64,
+    renew_until: Option<UnixSeconds>,
+    now: UnixSeconds,
+  ) -> impl Future<Output = Result<(), StateError>> + Send;
 
   fn query(
     &self,
@@ -84,32 +98,40 @@ pub trait TrackState: Send + Sync {
     limit: usize,
     after: Option<&PeerId>,
     now: UnixSeconds,
-  ) -> Vec<Candidate>;
+  ) -> impl Future<Output = Result<Vec<Candidate>, StateError>> + Send;
 
   /// Drop everything that has outlived its TTL. Returns how many went.
-  fn sweep(&self, now: UnixSeconds) -> usize;
+  fn sweep(&self, now: UnixSeconds) -> impl Future<Output = Result<usize, StateError>> + Send;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SequenceError {
+pub enum StateError {
   /// Session not established; the client must announce again.
   UnknownSession,
   Replayed(u64),
+  /// A shared backend could not complete the operation.
+  Unavailable(String),
 }
 
-/// In-process state. Fine for one instance; a shared store belongs in a
-/// separate crate implementing the same trait.
+/// In-process state for a single Track instance. The optional Redis backend
+/// implements the same trait when multiple instances share state.
 pub struct MemoryState {
-  online: Mutex<HashMap<String, OnlineRecord>>,
+  data: Mutex<MemoryData>,
+}
+
+struct MemoryData {
+  online: HashMap<String, OnlineRecord>,
   /// info_hash hex -> holdings keyed by peer_id string for stable ordering.
-  files: Mutex<BTreeMap<String, BTreeMap<String, Holding>>>,
+  files: BTreeMap<String, BTreeMap<String, Holding>>,
 }
 
 impl MemoryState {
   pub fn new() -> Self {
     MemoryState {
-      online: Mutex::new(HashMap::new()),
-      files: Mutex::new(BTreeMap::new()),
+      data: Mutex::new(MemoryData {
+        online: HashMap::new(),
+        files: BTreeMap::new(),
+      }),
     }
   }
 }
@@ -125,51 +147,31 @@ fn key(h: &InfoHash) -> String {
 }
 
 impl TrackState for MemoryState {
-  fn put_online(&self, record: OnlineRecord) {
-    let mut online = self.online.lock();
-    online.insert(record.peer_id.as_str().to_string(), record);
-  }
-
-  fn online(&self, peer_id: &PeerId) -> Option<OnlineRecord> {
-    let online = self.online.lock();
-    online.get(peer_id.as_str()).cloned()
-  }
-
-  fn touch_sequence(&self, peer_id: &PeerId, seq: u64) -> Result<(), SequenceError> {
-    let mut online = self.online.lock();
-    let record = online
-      .get_mut(peer_id.as_str())
-      .ok_or(SequenceError::UnknownSession)?;
-    if seq <= record.last_seq {
-      return Err(SequenceError::Replayed(seq));
-    }
-    record.last_seq = seq;
-    Ok(())
-  }
-
-  fn update_files(
+  async fn announce(
     &self,
-    peer_id: &PeerId,
+    record: OnlineRecord,
     add: &[InfoHash],
     del: &[InfoHash],
     complete: &[InfoHash],
-    ttl: UnixSeconds,
-  ) {
-    let mut files = self.files.lock();
-    let expires_at = now() + ttl;
+    _ttl: UnixSeconds,
+  ) -> Result<(), StateError> {
+    let mut data = self.data.lock();
+    let peer_id = record.peer_id.clone();
+    let expires_at = record.expires_at;
+    data.online.insert(peer_id.as_str().to_string(), record);
 
     for h in del {
-      if let Some(holders) = files.get_mut(&key(h)) {
+      if let Some(holders) = data.files.get_mut(&key(h)) {
         holders.remove(peer_id.as_str());
         if holders.is_empty() {
-          files.remove(&key(h));
+          data.files.remove(&key(h));
         }
       }
     }
 
     for h in add {
       let is_complete = complete.contains(h);
-      files.entry(key(h)).or_default().insert(
+      data.files.entry(key(h)).or_default().insert(
         peer_id.as_str().to_string(),
         Holding {
           peer_id: peer_id.clone(),
@@ -178,67 +180,112 @@ impl TrackState for MemoryState {
         },
       );
     }
+    Ok(())
   }
 
-  fn query(
+  async fn online(
+    &self,
+    peer_id: &PeerId,
+    now: UnixSeconds,
+  ) -> Result<Option<OnlineRecord>, StateError> {
+    Ok(
+      self
+        .data
+        .lock()
+        .online
+        .get(peer_id.as_str())
+        .filter(|r| r.expires_at > now)
+        .cloned(),
+    )
+  }
+
+  async fn advance_session(
+    &self,
+    peer_id: &PeerId,
+    session_key: &[u8; 32],
+    seq: u64,
+    renew_until: Option<UnixSeconds>,
+    now: UnixSeconds,
+  ) -> Result<(), StateError> {
+    let mut data = self.data.lock();
+    let record = data
+      .online
+      .get_mut(peer_id.as_str())
+      .ok_or(StateError::UnknownSession)?;
+    if record.expires_at <= now || &record.session_key != session_key {
+      return Err(StateError::UnknownSession);
+    }
+    if seq <= record.last_seq {
+      return Err(StateError::Replayed(seq));
+    }
+    record.last_seq = seq;
+    if let Some(expires_at) = renew_until {
+      record.expires_at = expires_at;
+    }
+    Ok(())
+  }
+
+  async fn query(
     &self,
     info_hash: &InfoHash,
     limit: usize,
     after: Option<&PeerId>,
     now: UnixSeconds,
-  ) -> Vec<Candidate> {
-    let files = self.files.lock();
-    let online = self.online.lock();
+  ) -> Result<Vec<Candidate>, StateError> {
+    let data = self.data.lock();
     let empty = BTreeMap::new();
-    let holders = files.get(&key(info_hash)).unwrap_or(&empty);
+    let holders = data.files.get(&key(info_hash)).unwrap_or(&empty);
 
-    holders
-      .values()
-      .filter(|h| h.expires_at > now)
-      .filter(|h| {
-        // cursor: only peers strictly after the last one handed out
-        match after {
-          Some(p) => h.peer_id.as_str() > p.as_str(),
-          None => true,
-        }
-      })
-      .filter_map(|h| {
-        let record = online.get(h.peer_id.as_str())?;
-        Some(Candidate {
-          peer_id: h.peer_id.clone(),
-          public_key: record.public_key,
-          punch_id: record.punch.punch_id.clone(),
-          complete: h.complete,
+    Ok(
+      holders
+        .values()
+        .filter(|h| h.expires_at > now)
+        .filter(|h| {
+          // cursor: only peers strictly after the last one handed out
+          match after {
+            Some(p) => h.peer_id.as_str() > p.as_str(),
+            None => true,
+          }
         })
-      })
-      .take(limit)
-      .collect()
+        .filter_map(|h| {
+          let record = data
+            .online
+            .get(h.peer_id.as_str())
+            .filter(|r| r.expires_at > now)?;
+          Some(Candidate {
+            peer_id: h.peer_id.clone(),
+            public_key: record.public_key,
+            punch_id: record.punch.punch_id.clone(),
+            complete: h.complete,
+          })
+        })
+        .take(limit)
+        .collect(),
+    )
   }
 
-  fn sweep(&self, now: UnixSeconds) -> usize {
+  async fn sweep(&self, now: UnixSeconds) -> Result<usize, StateError> {
     let mut removed = 0;
-    let mut online = self.online.lock();
-    online.retain(|_, r| {
+    let mut data = self.data.lock();
+    data.online.retain(|_, r| {
       let keep = r.expires_at > now;
       if !keep {
         removed += 1;
       }
       keep
     });
-    drop(online);
 
-    let mut files = self.files.lock();
     let mut dead = Vec::new();
-    for (hash, holders) in files.iter_mut() {
+    for (hash, holders) in data.files.iter_mut() {
       holders.retain(|_, h| h.expires_at > now);
       if holders.is_empty() {
         dead.push(hash.clone());
       }
     }
     for h in dead {
-      files.remove(&h);
+      data.files.remove(&h);
     }
-    removed
+    Ok(removed)
   }
 }
 
@@ -270,126 +317,166 @@ mod tests {
     }
   }
 
-  #[test]
-  fn query_returns_holders_with_their_punch() {
+  #[tokio::test]
+  async fn query_returns_holders_with_their_punch() {
     let s = MemoryState::new();
     let hash = [1u8; 32];
-    s.put_online(online_record(1, 1000));
-    s.update_files(&peer(1), &[hash], &[], &[hash], 600);
+    s.announce(online_record(1, 1000), &[hash], &[], &[hash], 600)
+      .await
+      .unwrap();
 
-    let got = s.query(&hash, 10, None, 500);
+    let got = s.query(&hash, 10, None, 500).await.unwrap();
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].peer_id, peer(1));
     assert_eq!(got[0].punch_id, "punch-1");
     assert!(got[0].complete);
   }
 
-  #[test]
-  fn del_is_applied_before_add() {
+  #[tokio::test]
+  async fn del_is_applied_before_add() {
     let s = MemoryState::new();
     let hash = [2u8; 32];
-    s.put_online(online_record(2, 1000));
-    s.update_files(&peer(2), &[hash], &[], &[], 600);
-    assert_eq!(s.query(&hash, 10, None, 500).len(), 1);
+    s.announce(online_record(2, 1000), &[hash], &[], &[], 600)
+      .await
+      .unwrap();
+    assert_eq!(s.query(&hash, 10, None, 500).await.unwrap().len(), 1);
 
     // same request carries both: the entry must survive, not be deleted after
-    s.update_files(&peer(2), &[hash], &[hash], &[], 600);
-    assert_eq!(s.query(&hash, 10, None, 500).len(), 1);
+    s.announce(online_record(2, 1000), &[hash], &[hash], &[], 600)
+      .await
+      .unwrap();
+    assert_eq!(s.query(&hash, 10, None, 500).await.unwrap().len(), 1);
   }
 
-  #[test]
-  fn expired_holders_are_not_returned() {
+  #[tokio::test]
+  async fn expired_holders_are_not_returned() {
     let s = MemoryState::new();
     let hash = [3u8; 32];
-    s.put_online(online_record(3, 1000));
-    s.update_files(&peer(3), &[hash], &[], &[], 100);
+    s.announce(online_record(3, now() + 100), &[hash], &[], &[], 100)
+      .await
+      .unwrap();
     // ttl was 100 from "now", so at now+500 it is gone
-    assert_eq!(s.query(&hash, 10, None, now() + 500).len(), 0);
-    assert_eq!(s.query(&hash, 10, None, now()).len(), 1);
+    assert_eq!(
+      s.query(&hash, 10, None, now() + 500).await.unwrap().len(),
+      0
+    );
+    assert_eq!(s.query(&hash, 10, None, now()).await.unwrap().len(), 1);
   }
 
-  #[test]
-  fn cursor_pages_through_holders() {
+  #[tokio::test]
+  async fn cursor_pages_through_holders() {
     let s = MemoryState::new();
     let hash = [4u8; 32];
     for n in 1..=5u8 {
-      s.put_online(online_record(n, 1000));
-      s.update_files(&peer(n), &[hash], &[], &[], 600);
+      s.announce(online_record(n, 1000), &[hash], &[], &[], 600)
+        .await
+        .unwrap();
     }
-    let page1 = s.query(&hash, 2, None, 500);
+    let page1 = s.query(&hash, 2, None, 500).await.unwrap();
     assert_eq!(page1.len(), 2);
-    let page2 = s.query(&hash, 2, Some(&page1[1].peer_id), 500);
+    let page2 = s
+      .query(&hash, 2, Some(&page1[1].peer_id), 500)
+      .await
+      .unwrap();
     assert_eq!(page2.len(), 2);
     // no overlap between pages
     assert_ne!(page1[0].peer_id, page2[0].peer_id);
     assert_ne!(page1[1].peer_id, page2[0].peer_id);
   }
 
-  #[test]
-  fn limit_is_respected() {
+  #[tokio::test]
+  async fn limit_is_respected() {
     let s = MemoryState::new();
     let hash = [5u8; 32];
     for n in 1..=5u8 {
-      s.put_online(online_record(n, 1000));
-      s.update_files(&peer(n), &[hash], &[], &[], 600);
+      s.announce(online_record(n, 1000), &[hash], &[], &[], 600)
+        .await
+        .unwrap();
     }
-    assert_eq!(s.query(&hash, 3, None, 500).len(), 3);
+    assert_eq!(s.query(&hash, 3, None, 500).await.unwrap().len(), 3);
   }
 
-  #[test]
-  fn complete_flag_only_marks_the_add_subset() {
+  #[tokio::test]
+  async fn complete_flag_only_marks_the_add_subset() {
     let s = MemoryState::new();
     let whole = [6u8; 32];
     let partial = [7u8; 32];
-    s.put_online(online_record(6, 1000));
-    s.update_files(&peer(6), &[whole, partial], &[], &[whole], 600);
+    s.announce(
+      online_record(6, 1000),
+      &[whole, partial],
+      &[],
+      &[whole],
+      600,
+    )
+    .await
+    .unwrap();
 
-    assert!(s.query(&whole, 10, None, 500)[0].complete);
-    assert!(!s.query(&partial, 10, None, 500)[0].complete);
+    assert!(s.query(&whole, 10, None, 500).await.unwrap()[0].complete);
+    assert!(!s.query(&partial, 10, None, 500).await.unwrap()[0].complete);
   }
 
-  #[test]
-  fn sequence_must_increase() {
+  #[tokio::test]
+  async fn sequence_must_increase() {
     let s = MemoryState::new();
-    s.put_online(online_record(8, 1000));
-    assert_eq!(s.touch_sequence(&peer(8), 1), Ok(()));
-    assert_eq!(s.touch_sequence(&peer(8), 2), Ok(()));
+    s.announce(online_record(8, 1000), &[], &[], &[], 600)
+      .await
+      .unwrap();
+    let key = [8 ^ 0xff; 32];
     assert_eq!(
-      s.touch_sequence(&peer(8), 2),
-      Err(SequenceError::Replayed(2))
+      s.advance_session(&peer(8), &key, 1, None, 500).await,
+      Ok(())
     );
     assert_eq!(
-      s.touch_sequence(&peer(8), 1),
-      Err(SequenceError::Replayed(1))
+      s.advance_session(&peer(8), &key, 2, None, 500).await,
+      Ok(())
+    );
+    assert_eq!(
+      s.advance_session(&peer(8), &key, 2, None, 500).await,
+      Err(StateError::Replayed(2))
+    );
+    assert_eq!(
+      s.advance_session(&peer(8), &key, 1, None, 500).await,
+      Err(StateError::Replayed(1))
     );
   }
 
-  #[test]
-  fn unknown_session_is_reported() {
+  #[tokio::test]
+  async fn unknown_session_is_reported() {
     let s = MemoryState::new();
     assert_eq!(
-      s.touch_sequence(&peer(9), 1),
-      Err(SequenceError::UnknownSession)
+      s.advance_session(&peer(9), &[0; 32], 1, None, 500).await,
+      Err(StateError::UnknownSession)
     );
   }
 
-  #[test]
-  fn sweep_drops_expired_online_records() {
+  #[tokio::test]
+  async fn sweep_drops_expired_online_records() {
     let s = MemoryState::new();
-    s.put_online(online_record(10, 100));
-    s.put_online(online_record(11, now() + 10_000));
-    let removed = s.sweep(now() + 500);
+    s.announce(online_record(10, 100), &[], &[], &[], 600)
+      .await
+      .unwrap();
+    s.announce(online_record(11, now() + 10_000), &[], &[], &[], 600)
+      .await
+      .unwrap();
+    let removed = s.sweep(now() + 500).await.unwrap();
     assert_eq!(removed, 1);
-    assert!(s.online(&peer(10)).is_none());
-    assert!(s.online(&peer(11)).is_some());
+    assert!(s.online(&peer(10), now() + 500).await.unwrap().is_none());
+    assert!(s.online(&peer(11), now() + 500).await.unwrap().is_some());
   }
 
-  #[test]
-  fn query_skips_peers_without_an_online_record() {
+  #[tokio::test]
+  async fn query_skips_peers_without_an_online_record() {
     let s = MemoryState::new();
     let hash = [12u8; 32];
     // holding registered, but the peer never announced
-    s.update_files(&peer(12), &[hash], &[], &[], 600);
-    assert_eq!(s.query(&hash, 10, None, 500).len(), 0);
+    s.data.lock().files.entry(key(&hash)).or_default().insert(
+      peer(12).as_str().to_string(),
+      Holding {
+        peer_id: peer(12),
+        complete: false,
+        expires_at: 1000,
+      },
+    );
+    assert_eq!(s.query(&hash, 10, None, 500).await.unwrap().len(), 0);
   }
 }

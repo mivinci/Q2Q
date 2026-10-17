@@ -11,7 +11,7 @@ getrandom = "0.4.3"
 parking_lot = "0.12.5"
 q2q-core = { version = "0.1.0", path = "../q2q-core" }
 q2q-ratelimit = { version = "0.1.0", path = "../q2q-ratelimit" }
-q2q-track = { version = "0.1.0", path = "../q2q-track" }
+q2q-track = { version = "0.1.0", path = "../q2q-track", features = ["redis"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tokio = { version = "1.53.3", features = ["full"] }
@@ -20,4 +20,5 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
+redis = { version = "1.7.1", features = ["tokio-comp", "connection-manager"] }
 tower = "0.5.3"

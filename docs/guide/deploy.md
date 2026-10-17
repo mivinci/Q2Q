@@ -115,11 +115,26 @@ its index, a peer's next heartbeat fails with an unknown session and it simply
 announces again — a fresh ticket, no negotiation. If a Punch restarts, its
 peers re-join the same way.
 
-### Not built yet
+For multiple Track instances, configure each with the same Redis primary:
 
-- A shared-storage backend for Track's state (the trait exists; only an
-  in-memory one is implemented)
-- A registration interface, so Punch nodes can announce themselves instead of
-  being listed in a config file
-- Cluster-wide rate limiting (each instance currently enforces `1/N` of the quota
-  via `cluster_size`)
+```toml
+[state]
+backend = "redis"
+url = "redis://redis.example.internal:6379/"
+```
+
+The default is `memory`, suitable for a single Track process. The Redis backend
+stores sessions and the file index, including sequence checks and TTLs. It uses
+multi-key atomic updates on one primary; Redis Cluster is not supported.
+
+### Open work
+
+- Punch registration is not implemented. Track currently reloads the Punch list
+  from its TOML file; an authenticated registration interface would remove that
+  manual step.
+- Track rate limits are still per instance. Punch divides its configured quota
+  by `cluster_size`, but Track needs shared rate-limit state to enforce one
+  cluster-wide quota.
+- The shared Redis state has been checked with separate connections and Track
+  routers. A deployment with two separate Track processes behind a load
+  balancer still needs an end-to-end check.
