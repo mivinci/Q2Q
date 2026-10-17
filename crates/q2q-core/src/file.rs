@@ -8,7 +8,8 @@
 
 use crate::bencode::{self, BValue, Dict};
 use crate::block::{Block, BlockState, PIECE_SIZE};
-use crate::merkle::{self, Hash, LeafCache, Proof};
+use crate::cache::{self, LeafCache};
+use crate::merkle::{Hash, Proof};
 // block 大小的合法范围由 seed 定义（spec 5.2），store 不再自己另立一套
 use crate::seed::{MAX_BLOCK_SIZE, MIN_BLOCK_SIZE};
 use std::fs::File as FsFile;
@@ -237,7 +238,7 @@ impl FileStore {
 
     let proof = proof.ok_or(StoreError::ProofMissing)?;
     let slice = [data.as_slice()];
-    if merkle::verify_range_into_cache(
+    if cache::verify_range_into_cache(
       &slice,
       block,
       self.block_count(),
@@ -452,6 +453,7 @@ impl FileStore {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::merkle;
   use crate::merkle::leaf_hash;
   use tempfile::TempDir;
 

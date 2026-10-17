@@ -15,6 +15,7 @@
 pub mod bencode;
 pub mod bencode_serde;
 pub mod block;
+pub mod cache;
 pub mod file;
 pub mod identity;
 pub mod mac;
