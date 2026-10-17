@@ -3,7 +3,7 @@
 2026-10-17 对 `q2q-core` 一轮 review 的四项结论，附 spec 依据。每条都先写依据再写结论，
 方便以后有人质疑时直接对着 spec 看，而不是对着聊天记录看。
 
-状态：四项均已在 PR #41 落地。第 1 项的持久化、第 3 项的 C 方案仍未做，见各节末尾。
+状态：四项均已落地（PR #41 主体、PR #42 缓存持久化、PR #43 `aud` 前缀）。
 
 ## 1. 叶子哈希缓存：入口必须"先验证后 absorb"
 
@@ -84,8 +84,13 @@ pub const MAX_TICKET_LIFETIME: u64 = 600;  // 10 分钟，覆盖 spec 的"分钟
 `track` 的 Punch 上也能过——因票据带一次性 `cid` 且用途不同，实际风险低，但这也是
 C 才是根治的原因。
 
-**状态**：已实现（PR #41），采用 A。`Audience::from_wire` 已删除（留下一个"会猜错类型"的
-公开函数本身就是隐患）。C 待 spec 修订时连同 `TICKET_VERSION` 一起做。
+**状态**：已实现，最终采用 **C**（PR #43）。`TICKET_VERSION` 提到 2，`Audience::to_wire()`
+产出 `punch:<id>`，另配 `parse_wire()` 反向解析——有前缀之后这个解析不再需要猜，三种非法输入
+（`punch:`、裸 `punch`、任意其它串）都返回 `None`。方案 A 曾作为过渡落地（PR #41），它的固有
+代价——`aud="track"` 的票在名叫 `track` 的 Punch 上也能过——由 C 消除，测试
+`a_punch_named_track_is_not_confused_with_track` 同时断言了两侧。
+
+spec 已同步：3.1.2 代码块、两张票据用途表、178 行的说明、226 / 260 / 739 行，以及顶部变更摘要。
 
 ## 4. `verify` 的失败必须能被看见
 

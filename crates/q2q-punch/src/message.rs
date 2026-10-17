@@ -346,7 +346,7 @@ pub fn parse_request(bytes: &[u8]) -> Result<Request, RpcError> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use q2q_core::identity::{Ticket, keypair_from_seed, peer_id_of, sign_message};
+  use q2q_core::identity::{TICKET_VERSION, Ticket, keypair_from_seed, peer_id_of, sign_message};
 
   /// Build a join request the way a client would.
   fn join(seed: u8, aud: &str, now: UnixSeconds) -> JoinRequest {
@@ -354,12 +354,12 @@ mod tests {
     let pk = sk.verifying_key().to_bytes();
 
     let mut ticket = Ticket {
-      v: 1,
+      v: TICKET_VERSION,
       iss: peer_id_of(&sk),
       public_key: pk,
       iat: now,
       exp: now + 600,
-      aud: aud.to_string(),
+      aud: Audience::Punch(aud.to_string()).to_wire(),
       tgt: None,
       ih: None,
       cid: None,
@@ -373,7 +373,7 @@ mod tests {
       public_key: B64.encode(ticket.public_key),
       iat: ticket.iat,
       exp: ticket.exp,
-      aud: aud.to_string(),
+      aud: Audience::Punch(aud.to_string()).to_wire(),
       tgt: None,
       ih: None,
       cid: None,
@@ -395,7 +395,7 @@ mod tests {
     let now = 1_000_000;
     let req = join(1, "punch-1", now);
     let body = verify_join(&req, "punch-1", now).unwrap();
-    assert_eq!(body.aud, "punch-1");
+    assert_eq!(body.aud, "punch:punch-1");
   }
 
   #[test]

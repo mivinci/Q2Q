@@ -149,7 +149,10 @@ pub enum Audience {
 /// this is the shared answer: a JSON object with binary fields in base64. Both
 /// The only ticket version this builds or accepts. Bump it when the payload
 /// shape changes — an old ticket must stop verifying, not be quietly tolerated.
-pub const TICKET_VERSION: u32 = 1;
+///
+/// 2: `aud` gained a `punch:` prefix on Punch ids, so that an id which happens
+/// to be the literal `track` can no longer be mistaken for Track.
+pub const TICKET_VERSION: u32 = 2;
 
 /// How far into the future a ticket may expire. The issuer picks `exp` itself,
 /// so without a ceiling it could mint one that stays valid for years — and
@@ -232,13 +235,25 @@ impl TicketBody {
 }
 
 /// What a verifier expects `aud` to say. It is built from the verifier's own
-/// identity — never parsed out of the wire string, which carries two meanings
-/// in one field and cannot be classified without guessing.
+/// identity and compared as a string, so nothing has to be classified.
 impl Audience {
-  pub fn as_str(&self) -> &str {
+  /// The wire form. Punch ids carry a `punch:` prefix — without it, an id that
+  /// happens to be the literal `track` would be indistinguishable from Track.
+  pub fn to_wire(&self) -> String {
     match self {
-      Audience::Track => "track",
-      Audience::Punch(id) => id.as_str(),
+      Audience::Track => "track".to_string(),
+      Audience::Punch(id) => format!("punch:{id}"),
+    }
+  }
+
+  /// The other direction. Returns `None` for anything that is neither `track`
+  /// nor a `punch:` id — the prefix is what makes this answer unambiguous.
+  pub fn parse_wire(s: &str) -> Option<Self> {
+    match s.strip_prefix("punch:") {
+      Some(id) if !id.is_empty() => Some(Audience::Punch(id.to_string())),
+      Some(_) => None,
+      None if s == "track" => Some(Audience::Track),
+      None => None,
     }
   }
 }
@@ -336,7 +351,7 @@ impl Ticket {
     self.check_identity(now)?;
 
     // 4. this ticket was meant for us
-    if self.aud != expected_audience.as_str() {
+    if self.aud != expected_audience.to_wire() {
       return Err(TicketError::WrongAudience);
     }
     if let Some(tgt) = &self.tgt {
@@ -354,7 +369,7 @@ impl Ticket {
   /// checked there instead. A connect that names no target is refused outright.
   pub fn verify_as_relay(&self, expected_audience: &Audience, now: u64) -> Result<(), TicketError> {
     self.check_identity(now)?;
-    if self.aud != expected_audience.as_str() {
+    if self.aud != expected_audience.to_wire() {
       return Err(TicketError::WrongAudience);
     }
     if self.tgt.is_none() {
@@ -510,7 +525,7 @@ mod tests {
 
   fn ticket_from(sk: &SigningKey, now: u64) -> Ticket {
     let mut t = Ticket {
-      v: 1,
+      v: TICKET_VERSION,
       iss: peer_id_of(sk),
       public_key: public_key_of(sk),
       iat: now,
@@ -551,20 +566,39 @@ mod tests {
   }
 
   #[test]
-  fn a_punch_named_track_can_verify_its_own_ticket() {
-    // 这台 Punch 的 id 就叫 "track"。wire 字符串保留原样、比较用验证方的期望值，
-    // 于是"字面量 track"与"名叫 track 的 Punch"不再互相吞掉
+  fn a_punch_named_track_is_not_confused_with_track() {
+    // 这台 Punch 的 id 就叫 "track"。wire 上它是 "punch:track"，跟字面量
+    // "track" 是两个不同的字符串——前缀把这一层歧义消掉了
     let sk = key_from(7);
     let now = 1_000;
     let mut t = ticket_from(&sk, now);
-    t.aud = "track".to_string();
+    t.aud = Audience::Punch("track".to_string()).to_wire();
     t.sign(&sk);
+
     assert!(t
       .verify(&Audience::Punch("track".to_string()), None, now)
       .is_ok());
-    // 已知代价：同一张票在 Track 上也能过——一个字符串两种语义，靠期望值
-    // 比较是消不掉这一层的。加类型前缀（方案 C）才是根治，见 todos/core-design.md
-    assert_eq!(t.verify(&Audience::Track, None, now), Ok(()));
+    // 而 Track 一定认不出这张票（方案 A 时它是认得出的）
+    assert_eq!(
+      t.verify(&Audience::Track, None, now),
+      Err(TicketError::WrongAudience)
+    );
+  }
+
+  #[test]
+  fn audience_wire_forms() {
+    assert_eq!(Audience::Track.to_wire(), "track");
+    assert_eq!(Audience::Punch("p-1".to_string()).to_wire(), "punch:p-1");
+
+    assert_eq!(Audience::parse_wire("track"), Some(Audience::Track));
+    assert_eq!(
+      Audience::parse_wire("punch:p-1"),
+      Some(Audience::Punch("p-1".to_string()))
+    );
+    // 前缀让解析不再需要猜：这几个都该被拒
+    assert_eq!(Audience::parse_wire("punch:"), None);
+    assert_eq!(Audience::parse_wire("punch"), None);
+    assert_eq!(Audience::parse_wire("whatever"), None);
   }
 
   #[test]
@@ -666,7 +700,7 @@ mod tests {
   fn punch_audience_is_the_concrete_server() {
     let sk = key_from(9);
     let mut t = ticket_from(&sk, 1000);
-    t.aud = "punch-42".to_string();
+    t.aud = Audience::Punch("punch-42".to_string()).to_wire();
     t.sign(&sk);
     assert_eq!(
       t.verify(&Audience::Punch("punch-42".into()), None, 1000),

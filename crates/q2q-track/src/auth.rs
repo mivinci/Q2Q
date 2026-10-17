@@ -119,14 +119,14 @@ pub fn verify_session_request(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use q2q_core::identity::{keypair_from_seed, peer_id_from_public_key};
+  use q2q_core::identity::{TICKET_VERSION, keypair_from_seed, peer_id_from_public_key};
 
   /// Helper the tests use to build a wire ticket from a real key.
   fn announce(seed: u8, aud: &str, exp: u64, now: u64) -> TicketBody {
     let (sk, peer_id) = keypair_from_seed(&[seed; 32]);
     let pk = sk.verifying_key().to_bytes();
     let mut t = Ticket {
-      v: 1,
+      v: TICKET_VERSION,
       iss: peer_id,
       public_key: pk,
       iat: now,

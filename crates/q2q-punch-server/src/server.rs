@@ -395,7 +395,9 @@ fn random_hex(n_bytes: usize) -> Result<String, RandomError> {
 mod tests {
   use super::*;
   use base64::engine::general_purpose::STANDARD as B64;
-  use q2q_core::identity::{Ticket, keypair_from_seed, peer_id_of, sign_message};
+  use q2q_core::identity::{
+    Audience, TICKET_VERSION, Ticket, keypair_from_seed, peer_id_of, sign_message,
+  };
   use q2q_punch::message::{
     HeartbeatRequest, JoinRequest, SignalResponse, binding_mac, join_signing_bytes,
   };
@@ -427,7 +429,7 @@ mod tests {
     let (sk, _) = keypair_from_seed(&[seed; 32]);
     let pk = sk.verifying_key().to_bytes();
     let mut ticket = Ticket {
-      v: 1,
+      v: TICKET_VERSION,
       iss: peer_id_of(&sk),
       public_key: pk,
       iat: now,
@@ -448,10 +450,10 @@ mod tests {
     }
   }
 
-  /// `aud` travels as the wire string, so there is nothing to construct here
-  /// beyond keeping the callers short.
+  /// Punch ids carry a `punch:` prefix on the wire, so build the whole thing
+  /// here rather than at each caller.
   fn audience(aud: &str) -> String {
-    aud.to_string()
+    Audience::Punch(aud.to_string()).to_wire()
   }
 
   fn call_with(state: &State, method: &str, params: serde_json::Value, caller: Caller) -> Outcome {
@@ -755,7 +757,7 @@ mod tests {
     let (sk, _) = keypair_from_seed(&[6; 32]);
     let pk = sk.verifying_key().to_bytes();
     let mut ticket = Ticket {
-      v: 1,
+      v: TICKET_VERSION,
       iss: peer_id_of(&sk),
       public_key: pk,
       iat: now,
@@ -798,7 +800,7 @@ mod tests {
   fn connect_token(seed: u8, aud: &str, tgt: &PeerId, cid: &str, now: u64) -> String {
     let (sk, _) = keypair_from_seed(&[seed; 32]);
     let mut t = Ticket {
-      v: 1,
+      v: TICKET_VERSION,
       iss: peer_id_of(&sk),
       public_key: sk.verifying_key().to_bytes(),
       iat: now,

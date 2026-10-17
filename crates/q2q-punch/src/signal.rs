@@ -441,17 +441,17 @@ fn random_key() -> Result<[u8; 32], SignalError> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use q2q_core::identity::{Ticket, keypair_from_seed, peer_id_of};
+  use q2q_core::identity::{TICKET_VERSION, Ticket, keypair_from_seed, peer_id_of};
 
   fn ticket(seed: u8, aud: &str, tgt: Option<&PeerId>, cid: &str, now: u64) -> TicketBody {
     let (sk, _) = keypair_from_seed(&[seed; 32]);
     let mut t = Ticket {
-      v: 1,
+      v: TICKET_VERSION,
       iss: peer_id_of(&sk),
       public_key: sk.verifying_key().to_bytes(),
       iat: now,
       exp: now + 60,
-      aud: aud.to_string(),
+      aud: Audience::Punch(aud.to_string()).to_wire(),
       tgt: tgt.cloned(),
       ih: Some([7u8; 32]),
       cid: Some(cid.into()),
