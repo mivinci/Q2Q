@@ -52,7 +52,7 @@ Claim block lease
 
 CDN workers use the same commit boundary without peer acknowledgements. Source failure releases the unfinished lease. An empty pending queue with blocks still in flight makes workers wait for notifications; it does not mean the file is complete.
 
-Disk or receipt failure stops the transfer and prevents later queued writes. Blocking commits already started retain their lease, destination lock and task count after network cancellation. A full-file transfer waits for those operations before starting its CDN phase.
+Disk-write or receipt-write failure stops the transfer and prevents later queued writes. Blocking commits already started retain their lease, destination lock and task count after network cancellation. A full-file transfer waits for those operations before starting its CDN phase.
 
 ## Full-file and VOD modes
 
@@ -86,7 +86,7 @@ let n = file.read(&mut buffer).await?;
 
 Prefetch defaults to 8 blocks, range 0–64; 0 requests only the current block. At block 20 with prefetch 2, demand is `20 → 21 → 22`. Seeking to block 100 changes it to `100 → 101 → 102`. Old queued requests are withdrawn; old in-flight blocks may still finish and remain cached. Failed leases outside the new window are not requeued.
 
-Seeking to or beyond EOF creates no prefetch work. EOF returns 0; negative positions or u64 overflow return InvalidInput. Cancelling a pending read leaves the cursor unchanged; seeking discards its previous read wait. Each missing-block wait is bounded by read_timeout and returns TimedOut on expiry, while downloads already started can still finish.
+Seeking to or beyond EOF creates no prefetch work. EOF returns 0; negative positions or u64 overflow return InvalidInput. Cancelling a single read while it waits for a missing block does not advance the cursor further. Composed operations such as read_exact/read_to_end may already have consumed earlier blocks. Seeking discards the previous read wait. Each missing-block wait is bounded by read_timeout and returns TimedOut on expiry, while downloads already started can still finish.
 
 The current read block gives P2P `min(2 seconds, read_timeout / 2)`. After that budget, a validated CDN leaf table permits interruption of the peer holding that urgent block. The lease must be released before CDN claims it; other peers continue. See [CDN fallback](./cdn#vod-urgent-block-handoff) for the sequence.
 
@@ -94,4 +94,4 @@ The current read block gives P2P `min(2 seconds, read_timeout / 2)`. After that 
 
 `progress()` and `subscribe_progress()` count durable verified blocks, with verified bytes/blocks, active peers, active CDN requests and lifecycle state. Watch notifications coalesce; slow consumers do not backpressure downloads.
 
-Cancellation stops network tasks. Counters may still update during blocking disk cleanup. A VOD source error may affect only one read; disk failures publish Failed. Finishing a partial read window does not complete the whole file, and dropping an incomplete reader publishes Cancelled.
+Cancellation stops network tasks. Counters may still update during blocking disk cleanup. A VOD source error may affect only one read; disk-write failures publish Failed. A disk recheck detecting external modification returns InvalidData; reopening revalidates and can repair the destination. Finishing a partial read window does not complete the whole file, and dropping an incomplete reader publishes Cancelled.
