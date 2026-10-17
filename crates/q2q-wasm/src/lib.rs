@@ -7,8 +7,10 @@ use wasm_bindgen::prelude::*;
 pub fn seed_with_source(bytes: &[u8], source: String) -> Result<Vec<u8>, JsError> {
   let mut seed = q2q_core::seed::Seed::parse(bytes)?;
   seed.validate()?;
-  if seed.leaf_hashes.is_none() || source.len() > 4096
-    || !(source.starts_with("https://") || source.starts_with("http://")) {
+  if seed.leaf_hashes.is_none()
+    || source.len() > 4096
+    || !(source.starts_with("https://") || source.starts_with("http://"))
+  {
     return Err(JsError::new("inline seed and HTTP source required"));
   }
   seed.cdn_list = vec![source];
@@ -21,7 +23,9 @@ pub fn seed_with_source(bytes: &[u8], source: String) -> Result<Vec<u8>, JsError
 pub fn publication_proof(bytes: &[u8]) -> Result<Vec<u8>, JsError> {
   let seed = q2q_core::seed::Seed::parse(bytes)?;
   seed.validate()?;
-  let leaves = seed.leaf_hashes.ok_or_else(|| JsError::new("inline proof required"))?;
+  let leaves = seed
+    .leaf_hashes
+    .ok_or_else(|| JsError::new("inline proof required"))?;
   Ok(leaves.into_iter().flatten().collect())
 }
 

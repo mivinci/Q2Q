@@ -3,8 +3,8 @@
   import lightLogo from '../../../../../docs/public/logo-light.svg';
   import darkLogo from '../../../../../docs/public/logo-dark.svg';
 
-  let { compact = false, large = false, class: className = '' }: {
-    compact?: boolean; large?: boolean; class?: string;
+  let { compact = false, collapsed = false, large = false, class: className = '' }: {
+    compact?: boolean; collapsed?: boolean; large?: boolean; class?: string;
   } = $props();
 </script>
 
@@ -13,7 +13,7 @@
     <img src={lightLogo} alt={compact ? 'Q2Q' : ''} class="size-full dark:hidden" />
     <img src={darkLogo} alt={compact ? 'Q2Q' : ''} class="hidden size-full dark:block" />
   </span>
-  {#if !compact}<span class={`brand-name font-semibold tracking-tight ${large ? 'text-3xl' : 'text-xl'}`}>Q2Q</span>{/if}
+  {#if !compact}<span aria-hidden={collapsed} class={`brand-name font-semibold tracking-tight transition-opacity duration-200 motion-reduce:transition-none ${collapsed ? 'opacity-0' : ''} ${large ? 'text-3xl' : 'text-xl'}`}>Q2Q</span>{/if}
 </span>
 
 <style>

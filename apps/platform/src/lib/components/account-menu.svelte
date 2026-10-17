@@ -27,12 +27,12 @@
   }
 </script>
 
-<div class="border-t px-2 py-3">
+<div class="border-t px-3 py-3">
   <div class="flex min-w-0 items-center gap-1">
     <DropdownMenu.Root>
       <DropdownMenu.Trigger
         aria-label={`${text.accountMenu}: ${user.name}`}
-        class={`flex min-w-0 flex-1 items-center gap-2 rounded-lg p-1.5 text-left outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-sidebar-accent ${compact ? 'justify-center' : ''}`}
+        class="flex min-w-0 flex-1 items-center gap-2 rounded-lg p-1.5 text-left outline-none transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-sidebar-accent"
       >
         <span class="relative shrink-0">
           <Avatar.Root>

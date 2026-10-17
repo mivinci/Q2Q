@@ -10,7 +10,7 @@
   import { Button } from '#lib/components/ui/button/index.js';
   import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
   import type { Project } from '#lib/server/projects.js';
-  let { projects, currentProject }: { projects: Project[]; currentProject: Project } = $props();
+  let { projects, currentProject, compact = false }: { projects: Project[]; currentProject: Project; compact?: boolean } = $props();
   const id = $props.id();
   const text = $derived(messages[page.data.locale]);
   const projectName = (project: Project) => project.personalUserId ? text.personalProject : project.name;
@@ -36,13 +36,15 @@
   }
 </script>
 
-<div class="px-3">
+<div>
   <DropdownMenu.Root>
     <DropdownMenu.Trigger disabled={busy} aria-label={text.switchProject}
-      class="flex min-h-11 w-full items-center gap-2 rounded-lg px-2 text-left text-sm outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring data-open:bg-sidebar-accent disabled:opacity-50">
+      title={compact ? projectName(currentProject) : undefined}
+      style={`width: ${compact ? '48px' : '100%'};`}
+      class="flex min-h-11 items-center gap-3 rounded-lg px-4 text-left text-sm outline-none transition-[width] duration-200 motion-reduce:transition-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring data-open:bg-sidebar-accent disabled:opacity-50">
       <Layers class="size-4 shrink-0 text-muted-foreground" />
-      <span class="min-w-0 flex-1 truncate font-medium">{projectName(currentProject)}</span>
-      <ChevronsUpDown class="size-3.5 shrink-0 text-muted-foreground" />
+      <span class={`min-w-0 flex-1 truncate font-medium transition-opacity duration-200 motion-reduce:transition-none ${compact ? 'opacity-0' : 'opacity-100'}`}>{projectName(currentProject)}</span>
+      <ChevronsUpDown class={`size-3.5 shrink-0 text-muted-foreground transition-opacity duration-200 motion-reduce:transition-none ${compact ? 'opacity-0' : 'opacity-100'}`} />
     </DropdownMenu.Trigger>
     <DropdownMenu.Content align="start" sideOffset={6} class="min-w-56 max-w-[calc(100vw-2rem)]" onCloseAutoFocus={(event) => { if (creating) event.preventDefault(); }}>
       <DropdownMenu.Label>{text.switchProject}</DropdownMenu.Label>

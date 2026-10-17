@@ -22,6 +22,7 @@ export function resolveLocale(preference: string | undefined, acceptLanguage: st
 }
 
 const zh = {
+  expandSidebar: '展开侧栏', collapseSidebar: '收起侧栏',
   exportDownloadSeed: '导出下载种子', downloadGrantWarning: '持有此种子的人可下载此版本，直到授权被撤销或版本被撤回。已签发的链接最多仍有效 5 分钟。', revokeDownloadGrant: '撤销授权', downloadGrantRevoked: '已撤销',
   publicationCleanup: '等待产物清理', publicationRetryCleanup: '重试清理',
   publications: '发布版本', publishVersion: '发布新版本', withdrawVersion: '撤回', publicationCreating: '正在准备发布产物…', publicationPublished: '已发布', publicationFailed: '发布失败，请重新创建版本。', publicationWithdrawn: '已撤回', publicationDescription: '固定当前内容和种子。下载授权将在后续单独配置。', publicationWithdrawConfirm: '撤回此版本？撤回后需要创建新版本才能再次发布。', publicationRedispatch: '重新提交任务',
@@ -79,6 +80,7 @@ const zh = {
 
 type Messages = { [Key in keyof typeof zh]: (typeof zh)[Key] };
 const en: Messages = {
+  expandSidebar: 'Expand sidebar', collapseSidebar: 'Collapse sidebar',
   exportDownloadSeed: 'Export download seed', downloadGrantWarning: 'Anyone with this seed can download this version until its grant is revoked or the version is withdrawn. Issued links may remain valid for up to 5 minutes.', revokeDownloadGrant: 'Revoke access', downloadGrantRevoked: 'Revoked',
   publicationCleanup: 'Waiting for artifact cleanup', publicationRetryCleanup: 'Retry cleanup',
   publications: 'Publications', publishVersion: 'Publish a version', withdrawVersion: 'Withdraw', publicationCreating: 'Preparing publication artifacts…', publicationPublished: 'Published', publicationFailed: 'Publication failed. Create a new version to retry.', publicationWithdrawn: 'Withdrawn', publicationDescription: 'Freeze the current content and seed. Download grants will be configured separately.', publicationWithdrawConfirm: 'Withdraw this version? Publishing again requires a new version.', publicationRedispatch: 'Resubmit task',
