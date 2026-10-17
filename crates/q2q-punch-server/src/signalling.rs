@@ -245,10 +245,26 @@ fn reject(
   let Some(from) = caller.peer.as_ref() else {
     return Outcome::err(req, SignalError::NotAParticipant);
   };
+  let message = match serde_json::to_string(sig) {
+    Ok(message) => message,
+    Err(_) => return Outcome::err(req, SignalError::MissingTicket),
+  };
   if let Err(e) = state.connections.reject(&sig.connection_id, from) {
     return Outcome::err(req, e);
   }
-  forward_to_other(state, req, sig, from, "reject")
+  // Reject removes the connection, so route the terminal signal directly.
+  Outcome::ok(
+    req,
+    SignalResponse {
+      ok: true,
+      signal_key: None,
+      pending: Vec::new(),
+    },
+    vec![Forward {
+      to: Recipient::Initiator(sig.connection_id.clone()),
+      message,
+    }],
+  )
 }
 
 fn offer(

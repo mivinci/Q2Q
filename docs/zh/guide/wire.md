@@ -32,6 +32,7 @@
 | `request` | `block_index`, `count` | 请求单块，当前 count 必须为 1 |
 | `request_proof` | `block_index`, `count` | 重请求当前块的 Merkle 证明 |
 | `proof` | `block_index`, `count`, `proof` | 单块证明，走可靠通道 |
+| `upload_wait` | `block_index`, `retry_after` | 上传端等待限速预算，暂缓重试 1–30,000 毫秒 |
 | `piece_nack` | `block_index`, `piece_offset`, `length` | 成对的缺失字节区间数组 |
 | `block_done` | `block_index` | 接收者已完成，上传者可以释放该块重传缓冲 |
 | `cancel` | `block_index`, `count` | 当前 SDK 以两字段均为 0 表示结束当前文件会话 |
@@ -57,8 +58,10 @@ piece_offset 是块内字节偏移，必须按 1024 对齐，不是 piece 序号
 
 ## 补片与结束
 
-块接收有 20 秒总截止时间。500 毫秒无新有效 piece 时触发检查，最多三轮重试；证明缺失时发送 request_proof，数据缺失时发送 piece_nack。每条 nack 最多 64 个区间，两个数组长度相同，区间需按序、不重叠、对齐且不越界。可靠 proof 与不可靠 piece 的到达顺序可能不同。
+块接收有 20 秒进展截止时间，只有新有效 piece 或当前块的 `upload_wait` 能刷新。500 毫秒无新有效 piece 时触发检查，两次新 piece 之间最多三轮重试，新有效 piece 会重置重试次数；证明缺失时发送 request_proof，数据缺失时发送 piece_nack。每条 nack 最多 64 个区间，两个数组长度相同，区间需按序、不重叠、对齐且不越界。可靠 proof 与不可靠 piece 的到达顺序可能不同。
 
 上传端只保留一个在途块，收到 BlockDone 才释放重传缓冲。接收端所有所需块完成后发送 `cancel { block_index: 0, count: 0 }`，上传端回显，接收端收到确认再关闭连接；上传端等待连接关闭。结束握手也用于只补齐部分块的会话。
 
 这里的 cancel 是当前 SDK 的会话结束约定，不代表已经实现任意块区间的暂停/恢复协议。文件传输的控制消息等待使用 30 秒 idle 限制；应用取消和 VOD 紧急块回退也可能提前关闭连接。
+
+`upload_wait` 只在上传端等待共享限速预算时发送，SDK 每秒刷新一次 2000 毫秒的提示。接收端暂缓缺片检查，并把进展截止时间刷新到至少 20 秒后（提示时长更长则使用该时长）；之后到达的 piece 不会缩短已提示的重试窗口。非法时长或无关块索引使连接失败；已完成块的迟到提示被忽略，包括会话结束期间。持续发送有效提示的节点可以延长传输，应用可取消，VOD 读取仍受配置超时限制。控制 envelope 版本仍为 1，旧 SDK 会拒绝新增消息，限速上传需要两端都支持此扩展。

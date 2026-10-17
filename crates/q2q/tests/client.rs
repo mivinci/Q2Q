@@ -83,3 +83,59 @@ async fn corrupt_identity_is_rejected_without_replacement() {
   ));
   assert_eq!(std::fs::read(&identity_file).unwrap(), b"broken");
 }
+
+#[tokio::test]
+async fn upload_concurrency_is_independent_and_bounded() {
+  for count in [0, 17, usize::MAX] {
+    assert!(matches!(
+      builder().max_upload_peers(count).build().await,
+      Err(BuildError::InvalidUploadPeers)
+    ));
+  }
+  let dir = tempfile::tempdir().unwrap();
+  let make = || {
+    builder()
+      .track_url("http://127.0.0.1:1")
+      .identity_file(dir.path().join("upload-identity"))
+      .storage_dir(dir.path().join("upload-storage"))
+  };
+  let default = make().build().await.unwrap();
+  assert_eq!(default.uploads.available_permits(), 4);
+  for count in [1, 16] {
+    let client = make()
+      .max_upload_peers(count)
+      .max_download_peers(2)
+      .build()
+      .await
+      .unwrap();
+    assert_eq!(client.uploads.available_permits(), count);
+    assert_eq!(client.max_download_peers, 2);
+  }
+}
+
+#[tokio::test]
+async fn upload_rate_defaults_to_unlimited_and_rejects_zero() {
+  assert!(matches!(
+    builder().upload_rate_limit(0).build().await,
+    Err(BuildError::InvalidUploadRate)
+  ));
+  let dir = tempfile::tempdir().unwrap();
+  let make = || {
+    builder()
+      .track_url("http://127.0.0.1:1")
+      .identity_file(dir.path().join("rate-identity"))
+      .storage_dir(dir.path().join("rate-storage"))
+  };
+  assert!(make().build().await.unwrap().upload_rate.is_none());
+  for rate in [1, 10 * 1024 * 1024, u64::MAX] {
+    assert!(
+      make()
+        .upload_rate_limit(rate)
+        .build()
+        .await
+        .unwrap()
+        .upload_rate
+        .is_some()
+    );
+  }
+}

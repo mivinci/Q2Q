@@ -2,6 +2,7 @@
 
 use crate::control::{ControlError, decode_key, hex, next_seq};
 use crate::identity::Identity;
+use crate::signal_router::{IncomingSignal, SignalRouter};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use q2q_core::identity::Audience;
@@ -25,7 +26,7 @@ pub(super) struct PunchBinding {
   punch_id: String,
   endpoint: quinn::Endpoint,
   connection: quinn::Connection,
-  signals: SignalReceiver,
+  signals: SignalRouter,
   binding_id: String,
   key: [u8; 32],
   seq: Mutex<u64>,
@@ -57,10 +58,34 @@ impl PunchBinding {
     let joined: JoinResponse = serde_json::from_value(response)
       .map_err(|e| ControlError::Protocol(format!("bad Punch join response: {e}")))?;
     let key = decode_key(&joined.binding_key, "Punch binding_key")?;
+    let receiver = Arc::new(SignalReceiver::new(connection.clone()));
+    let sending = connection.clone();
+    let signals = SignalRouter::new(
+      move || {
+        let receiver = receiver.clone();
+        async move { receiver.recv().await }
+      },
+      move |id| {
+        let connection = sending.clone();
+        async move {
+          let reject = SignalRequest {
+            kind: q2q_punch::message::SignalType::Reject,
+            connection_id: id,
+            connect_token: None,
+            sdp: None,
+            candidate: None,
+            reason: Some(q2q_punch::message::RejectReason::Busy),
+            accept_token: None,
+            signal_key: None,
+          };
+          let _ = send_signal(&connection, &reject).await;
+        }
+      },
+    );
     Ok(Self {
       punch_id: assignment.punch_id.clone(),
       endpoint,
-      signals: SignalReceiver::new(connection.clone()),
+      signals,
       connection,
       binding_id: joined.binding_id,
       key,
@@ -80,9 +105,12 @@ impl PunchBinding {
     send_signal(&self.connection, request).await
   }
 
-  /// Receive a forwarded signal pushed by Punch on a QUIC unidirectional stream.
-  pub(crate) async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
-    self.signals.recv().await
+  pub(crate) async fn set_accepting(&self, enabled: bool) {
+    self.signals.set_accepting(enabled).await;
+  }
+
+  pub(crate) async fn incoming(&self) -> Result<IncomingSignal, ControlError> {
+    self.signals.next().await
   }
 
   pub(super) async fn heartbeat(&self) -> Result<(), ControlError> {

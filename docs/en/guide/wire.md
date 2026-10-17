@@ -32,6 +32,7 @@ Version is currently 1. Unsupported versions/types and unknown fields in the con
 | `request` | `block_index`, `count` | Request one block; count must be 1 |
 | `request_proof` | `block_index`, `count` | Request the current block's proof again |
 | `proof` | `block_index`, `count`, `proof` | Single-block proof over the reliable channel |
+| `upload_wait` | `block_index`, `retry_after` | Uploader is waiting for rate budget; defer retries for 1–30,000 ms |
 | `piece_nack` | `block_index`, `piece_offset`, `length` | Paired arrays of missing byte ranges |
 | `block_done` | `block_index` | Receiver completed the block; uploader may release its retry buffer |
 | `cancel` | `block_index`, `count` | Both fields 0 end the current SDK file session |
@@ -57,8 +58,10 @@ piece_offset is a byte offset within the block, aligned to 1024, not a piece ord
 
 ## Retries and session completion
 
-Block reception has a 20-second total deadline. After 500 milliseconds without a new valid piece, the receiver checks for missing data, up to three retry rounds. It sends request_proof for a missing proof and piece_nack for missing data. Each nack has at most 64 paired ranges with equal array lengths; ranges must be ordered, non-overlapping, aligned and within the block. Reliable proofs and unreliable pieces may arrive in either order.
+Block reception has a 20-second progress deadline, reset only by a new valid piece or an `upload_wait` hint for the current block. After 500 milliseconds without a new valid piece, the receiver checks for missing data, up to three retry rounds between pieces. A valid new piece resets the retry count. It sends request_proof for a missing proof and piece_nack for missing data. Each nack has at most 64 paired ranges with equal array lengths; ranges must be ordered, non-overlapping, aligned and within the block. Reliable proofs and unreliable pieces may arrive in either order.
 
 The uploader buffers one block until BlockDone. After completing all required blocks, the receiver sends `cancel { block_index: 0, count: 0 }`. The uploader echoes it, the receiver waits for the echo before closing, and the uploader waits for closure. This also ends sessions serving only a subset of missing blocks.
 
 This cancel exchange is the SDK's session-completion convention, not a general range pause/resume protocol. File control waits have a 30-second idle limit. Application cancellation or urgent VOD fallback may close a connection earlier.
+
+`upload_wait` is emitted only while an uploader waits for shared rate budget. The SDK refreshes a 2000 ms hint every second while blocked. A hint defers retry checks and resets the progress deadline to at least 20 seconds (or its duration, if longer); later pieces do not shorten the hinted retry window. Invalid durations and unrelated block indices fail the connection. Late hints for completed blocks are ignored, including during session completion. A peer that keeps sending valid hints can prolong a transfer; applications can cancel it, and VOD reads retain their configured timeout. Control envelope version remains 1; older SDKs reject the new message, so both endpoints need this extension for rate-limited uploads.

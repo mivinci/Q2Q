@@ -13,7 +13,12 @@ flowchart TB
     Handles --> Download["下载编排<br/>download.rs"]
     Download --> Workers["Peer 连接池 / CDN workers<br/>scheduler.rs / cdn.rs"]
     Workers --> Peer["Peer 文件协议与连接<br/>peer_transfer.rs / peer.rs<br/>webrtc_transport.rs"]
-    Pub --> Peer
+    Pub --> Upload["上传接入与 worker<br/>upload.rs"]
+    Upload --> Session["单连接上传协议<br/>upload_session.rs"]
+    Session --> Peer
+    Session --> Rate["共享速率预算<br/>upload_rate.rs"]
+    Upload --> Stats["上传进度<br/>upload_progress.rs"]
+    Session --> Stats
     Workers --> Dest["校验与提交<br/>destination.rs"]
     Handles -->|"已验证读取"| Dest
     Dest --> Store["磁盘与检查点<br/>download_store.rs"]
@@ -57,4 +62,65 @@ flowchart TB
 
 Drop 下载或读取句柄会取消网络任务。已经开始的阻塞磁盘操作可以完成，目标锁在操作结束前继续持有。每块证明保存在 `.q2q.resume`，恢复时重新读取并验证磁盘内容，完整文件可离线恢复。
 
-当前支持固定文件的下载和单游标 VOD。每个 Client 只能发布一个文件，每个发布句柄一次服务一个下载 Peer；候选来自当前 Track 页，暂不分页或刷新发现。最多 65,536 个 block，默认块大小对应 16 GiB。直播索引、部分文件做种和浏览器适配尚未实现。
+当前支持固定文件的下载和单游标 VOD。每个 Client 只能发布一个文件，每个发布句柄可同时服务多个下载 Peer（`max_upload_peers` 默认 4，范围 1–16）；候选来自当前 Track 页，暂不分页或刷新发现。最多 65,536 个 block，默认块大小对应 16 GiB。直播索引、部分文件做种和浏览器适配尚未实现。
+
+## 并发上传
+
+`client::builder().max_upload_peers(4)` 设置每个 Client 的上传连接额度，独立于 `max_download_peers`。握手前预留额度，握手、传输和 VOD 空闲连接均占用一个名额；连接结束后释放。容量满时通过 Punch 返回 Busy，低层建连接口返回 `ControlError::Busy`。当前不会等待上传队列或自动重试 Busy，下载调度可尝试其他候选或配置的 CDN。
+
+Punch 常驻信道只有一个读取者。Connect 进入有界接入队列，其余信令按 `connection_id` 分发到独立有界邮箱；每个上传任务自行完成握手与传输。远端断开、超时或协议错误只结束对应任务；源文件读取失败或内容变化会终止整个发布并撤销宣告。
+
+所有上传任务共享已准备的源文件和 Merkle 树，锁只覆盖读取与校验，网络发送不持锁。`Publication::close()` 停止接入并等待全部上传任务和在途阻塞读取，再撤销宣告；Drop 触发相同的异步清理。发布关闭期间的新请求被拒绝，待接入队列不会留给下一次发布。
+
+低层 `ControlSession::accept_peer` / `PeerSession::serve_file` 调用者自行管理上传任务和并发额度。连接额度不是总上传速率限制。
+
+### 总上传速率
+
+```rust
+let client = q2q::client::builder()
+    // ... Track、身份文件和存储目录配置 ...
+    .max_upload_peers(4)
+    .upload_rate_limit(10 * 1024 * 1024) // 此 Client 总计的字节/秒
+    .build()
+    .await?;
+```
+
+不设置 `upload_rate_limit` 表示不限速，0 为无效配置。所有托管上传共用 Client 持有的一个令牌桶，重新发布也复用同一预算。每个 piece 发送前按编码后的实际长度扣费，包含 17 字节头、末尾短片和重传；控制消息及 WebRTC/SCTP/DTLS/UDP 开销不计入，因此它不是网卡流量总上限。低层 `PeerSession::serve_file` 仍由调用者管理，默认不限速。
+
+突发额度为配置速率的 100 毫秒，至少允许一个完整 piece（1041 字节）；空闲不能积累更多突发额度。等待预算时不持有源文件锁，也不预占未来额度，取消可以立即结束等待。启用限速时，等待预算的连接按 FIFO 轮流领取一个 piece 的额度。每个连接最多有一个待领取请求，发送后再次排到队尾；重传同样参与轮转。标准 piece 等长，因此持续就绪的连接获得近似相等的字节份额，末尾短片仍按实际长度计费。空闲 VOD 或正在等待网络/磁盘的连接不排队，其他连接可使用空出的带宽。这里保证就绪请求的轮次，不保证实际网络吞吐相等，也不提供连接权重或优先级；不限速模式不启用此调度。
+
+上传期间持续消费控制与数据通道事件，避免缓冲通知阻塞 RTC 驱动；接收的控制消息队列有界。上传端等待预算时通过控制通道发送 `upload_wait` 提示，接收端暂缓缺片重试并延长进展截止时间。实际 DataChannel 发送仍有 20 秒超时，限速等待不计入；VOD 的 `read_timeout` 继续限制应用读取。限速上传要求接收端支持这个新增控制消息，旧接收端会拒绝未知消息类型；不限速上传不发送该提示。
+
+### 上传进度与订阅
+
+```rust
+let publication = client.publish_file("video.mp4").await?;
+let snapshot = publication.progress();
+let mut updates = publication.subscribe_progress();
+
+// 通常在独立 UI/监控任务中读取；另一个任务负责关闭发布。
+loop {
+    let snapshot = updates.borrow_and_update().clone();
+    // 使用 snapshot 更新 UI；不要跨 await 持有 watch 借用。
+    if matches!(snapshot.state,
+        q2q::publication::PublicationState::Closed
+        | q2q::publication::PublicationState::Failed) {
+        break;
+    }
+    if updates.changed().await.is_err() { break; }
+}
+```
+
+`UploadProgress` 提供累计 `sent_bytes`、其中的 `retransmitted_bytes`，以及握手、活跃、空闲连接数和完成、失败、取消连接数。`connections` 只保留当前已获上传额度的连接，包含 connection ID、Peer ID、状态及发送/重传字节；记录数不超过上传连接额度。容量拒绝和校验前失败不计入已接入连接的统计；结束后删除明细，保留累计汇总。重新发布从零开始，低层自行管理的上传不计入。
+
+连接状态为 `Handshaking`、`Idle`、`Sending`。Peer ID 在握手期间来自已验证的票据，握手后完成对端认证；`Sending` 覆盖读取源文件、等待速率预算、发送及等待 BlockDone，因此活跃连接数不等于正在占用网络的连接数。收到有效 BlockDone 后变为空闲。正常结束本次文件会话增加完成数，即使它只补了部分块；远端断开、超时、协议或源错误增加失败数；本地关闭或取消 worker 增加取消数。远端单连接失败不会把整个发布标成失败。
+
+发送字节的口径与限速一致：编码后的 piece（含 17 字节头、末尾短片和重传），只在 DataChannel 接受发送后计入；失败的发送不增加计数。它不是接收确认、唯一文件字节或已持久化字节，控制消息和传输层开销不在其中。`retransmitted_bytes` 是 `sent_bytes` 的子集。速度由应用按本地时间和计数增量计算，SDK 不保存速率历史。
+
+`progress()` 直接取得最新计数；普通订阅通知每 100 毫秒合并一次，新建订阅时也会同步最新值。关闭中及终态立即通知，清理期间最终计数可能继续变化。发布状态为 `Publishing → Closing → Closed`，出错则进入 `Failed`；最终清理后连接明细为空。调用 close 前保留订阅，可在 close 消费句柄后继续读取最终快照；Drop 同样触发异步清理。watch 通知允许合并，未消费通知不会阻塞上传；请及时克隆借用值，避免跨 await 持有 watch 借用锁。
+
+### 接入所有权与模块边界
+
+`admission.rs` 为共享控制会话管理接入租约：一个托管发布独占接入，多个低层 `accept_peer` 可共存，但两种模式不能同时运行。冲突返回 `ControlError::AdmissionConflict`，低层调用不会重新打开托管发布的接入开关；低层租约在接入/握手完成或取消时释放，托管租约在上传任务、阻塞读取和撤销宣告完成后释放。暂停通过独立通知唤醒正在等待请求或队列锁的读取者，返回 `AdmissionPaused`，然后清空待接入请求。
+
+`upload.rs` 只组织额度、握手 worker 和错误隔离；`upload_session.rs` 拥有单连接上下文、事件消费与文件上传协议。下载协议和共用控制消息辅助函数保留在 `peer_transfer.rs`。`publication.rs` 的私有运行器统一处理初始化、续租、停止及撤销，所有退出路径都先停止接入、等待任务与阻塞读取，再撤销宣告并释放租约、发布终态。源码和测试均保持扁平目录。

@@ -31,6 +31,10 @@ pub enum Control {
     count: u32,
     proof: Proof,
   },
+  UploadWait {
+    block_index: u64,
+    retry_after: u32,
+  },
   PieceNack {
     block_index: u64,
     piece_offset: Vec<u32>,
@@ -96,6 +100,9 @@ impl Control {
       return Err(WireError("unsupported peer protocol version"));
     }
     match &envelope.message {
+      Self::UploadWait { retry_after, .. } if *retry_after == 0 || *retry_after > 30_000 => {
+        return Err(WireError("invalid upload wait duration"));
+      }
       Self::Proof { proof, count, .. }
         if *count != 1 || proof.nodes.len() > 64 || proof.leaf_hashes.len() > 1 =>
       {
@@ -166,6 +173,30 @@ impl<'a> Piece<'a> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn upload_wait_has_a_bounded_duration() {
+    for ms in [0, 30_001, u32::MAX] {
+      let raw = Control::UploadWait {
+        block_index: 7,
+        retry_after: ms,
+      }
+      .encode()
+      .unwrap();
+      assert!(Control::decode(raw.as_bytes()).is_err());
+    }
+    for ms in [1, 2000, 30_000] {
+      let raw = Control::UploadWait {
+        block_index: 7,
+        retry_after: ms,
+      }
+      .encode()
+      .unwrap();
+      assert!(
+        matches!(Control::decode(raw.as_bytes()).unwrap(), Control::UploadWait { block_index: 7, retry_after } if retry_after == ms)
+      );
+    }
+  }
 
   #[test]
   fn malformed_piece_headers_cannot_escape_message_bounds() {

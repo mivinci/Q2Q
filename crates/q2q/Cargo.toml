@@ -29,8 +29,12 @@ x509-parser = "0.18.1"
 [dev-dependencies]
 rcgen = "0.14.10"
 tempfile = "3.27.0"
-tokio = { version = "1.53.3", features = ["macros", "rt"] }
+tokio = { version = "1.53.3", features = ["macros", "rt", "test-util"] }
 
 [[test]]
 name = "sdk"
 path = "tests/sdk.rs"
+
+[[test]]
+name = "local_upload"
+path = "tests/local_upload.rs"
