@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 424" width="680" height="424" role="img" aria-labelledby="archTitle archDesc">
+  <title id="archTitle">Q2Q architecture: control plane and data plane</title>
+  <desc id="archDesc">Track, Punch and STUN/TURN form the control plane, which helps peers find each other but never carries file data. Two clients exchange blocks and pieces over a WebRTC data channel in the data plane. Both planes are built on the network-free q2q-core.</desc>
+
+  <style>
+    .band { fill: #232328; stroke: #43434c; stroke-width: .5 }
+    .box  { fill: #1b1b1f; stroke: #43434c; stroke-width: .5 }
+    .h    { fill: #ececf1 }
+    .s    { fill: #a0a0a9 }
+    .n    { fill: #7c7c86 }
+    .arr  { fill: none; stroke: #a0a0a9; stroke-width: 1.5 }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif }
+    .h { font-size: 14px; font-weight: 500 }
+    .s, .n { font-size: 12px }
+  </style>
+
+  <defs>
+    <marker id="archArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path class="arr" d="M2 1L8 5L2 9" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <!-- control plane -->
+  <rect class="band" x="40" y="40" width="600" height="112" rx="14"/>
+  <circle cx="61" cy="63" r="4.5" fill="#60a5fa"/>
+  <text class="h" x="76" y="63" dominant-baseline="central">Control plane</text>
+  <text class="s" x="178" y="63" dominant-baseline="central">discovery and permission</text>
+  <text class="n" x="612" y="63" text-anchor="end" dominant-baseline="central">never carries file data</text>
+  <rect class="box" x="60" y="82" width="176" height="52" rx="8"/>
+  <text class="h" x="148" y="100" text-anchor="middle" dominant-baseline="central">Track</text>
+  <text class="s" x="148" y="118" text-anchor="middle" dominant-baseline="central">REST · online + file index</text>
+  <rect class="box" x="252" y="82" width="176" height="52" rx="8"/>
+  <text class="h" x="340" y="100" text-anchor="middle" dominant-baseline="central">Punch</text>
+  <text class="s" x="340" y="118" text-anchor="middle" dominant-baseline="central">QUIC · bindings + signal</text>
+  <rect class="box" x="444" y="82" width="176" height="52" rx="8"/>
+  <text class="h" x="532" y="100" text-anchor="middle" dominant-baseline="central">STUN / TURN</text>
+  <text class="s" x="532" y="118" text-anchor="middle" dominant-baseline="central">coturn · external</text>
+
+  <!-- data plane -->
+  <rect class="band" x="40" y="176" width="600" height="112" rx="14"/>
+  <circle cx="61" cy="199" r="4.5" fill="#2dd4bf"/>
+  <text class="h" x="76" y="199" dominant-baseline="central">Data plane</text>
+  <text class="s" x="158" y="199" dominant-baseline="central">block transfer between two peers</text>
+  <rect class="box" x="80" y="218" width="190" height="52" rx="8"/>
+  <text class="h" x="175" y="244" text-anchor="middle" dominant-baseline="central">Peer A</text>
+  <rect class="box" x="410" y="218" width="190" height="52" rx="8"/>
+  <text class="h" x="505" y="244" text-anchor="middle" dominant-baseline="central">Peer B</text>
+  <path class="arr" d="M292 244H388" marker-start="url(#archArrow)" marker-end="url(#archArrow)"/>
+  <text class="s" x="340" y="229" text-anchor="middle" dominant-baseline="central">WebRTC · block / piece</text>
+
+  <!-- core -->
+  <rect class="band" x="40" y="312" width="600" height="92" rx="14"/>
+  <circle cx="61" cy="335" r="4.5" fill="#8f8f88"/>
+  <text class="h" x="76" y="335" dominant-baseline="central">q2q-core</text>
+  <text class="s" x="156" y="335" dominant-baseline="central">network-free, shared by both planes</text>
+  <rect class="box" x="80" y="354" width="120" height="38" rx="8"/>
+  <text x="140" y="373" text-anchor="middle" dominant-baseline="central" class="h">identity</text>
+  <rect class="box" x="212" y="354" width="120" height="38" rx="8"/>
+  <text x="272" y="373" text-anchor="middle" dominant-baseline="central" class="h">seed</text>
+  <rect class="box" x="344" y="354" width="120" height="38" rx="8"/>
+  <text x="404" y="373" text-anchor="middle" dominant-baseline="central" class="h">merkle</text>
+  <rect class="box" x="476" y="354" width="120" height="38" rx="8"/>
+  <text x="536" y="373" text-anchor="middle" dominant-baseline="central" class="h">store / cache</text>
+</svg>

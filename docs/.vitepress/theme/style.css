@@ -88,3 +88,22 @@ html.ready .VPNavBar {
     #a78bfa 90%
   );
 }
+
+/* 架构图是两张独立的 SVG 文件（明暗各一）。用 <img> 引入的 SVG 拿不到页面
+   的 CSS 变量，所以配色只能写死在文件里，切换交给这两条规则；
+   跟主题 logo 用的是同一个 .dark 类，自动 / 明 / 暗三种模式都能跟上。 */
+.only-light,
+.only-dark {
+  border-radius: var(--border-radius-lg, 12px);
+  max-width: 100%;
+  height: auto;
+  margin: 24px 0;
+}
+
+html:not(.dark) .only-dark {
+  display: none;
+}
+
+html.dark .only-light {
+  display: none;
+}

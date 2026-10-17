@@ -13,7 +13,7 @@ hero:
   actions:
     - theme: brand
       text: Guide
-      link: /guide/
+      link: /guide/what-is-q2q
 
 features:
   - icon: 🔑
