@@ -27,7 +27,7 @@ reload_interval = 5
 punch_id = "punch-1"
 # Where clients reach this Punch Server. It is a URL, not a socket — the
 # transport is QUIC over UDP.
-url = "https://punch.example.com:4433"
+url = "quic://punch.example.com:4433"
 # Filled in during bootstrap: start Punch first, read its public key from the
 # log, paste it here. Leaving it wrong means clients reject the server.
 public_key = "PASTE_PUNCH_PUBLIC_KEY_HERE"

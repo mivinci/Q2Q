@@ -13,9 +13,12 @@ use base64::engine::general_purpose::STANDARD as B64;
 use parking_lot::RwLock;
 use q2q_core::identity::PeerId;
 use q2q_ratelimit::{Limiter, RateLimitLayer, Rule};
-use q2q_track::auth::{self, AuthError, TicketBody};
+use q2q_track::auth::{self, AuthError};
 use q2q_track::state::{InfoHash, PunchAssignment, StateError, TrackState, UnixSeconds};
-use serde::{Deserialize, Serialize};
+use q2q_track::wire::{
+  AnnounceRequest, AnnounceResponse, ErrorBody, HeartbeatRequest, HeartbeatResponse, PeerWire,
+  PunchWire, QueryParams, QueryResponse, TurnWire,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -142,14 +145,6 @@ pub fn router_with<S: TrackState + 'static>(
     .with_state(app)
 }
 
-/// A uniform error body: a code the client can branch on, plus a request id.
-#[derive(Debug, Clone, Serialize)]
-pub struct ErrorBody {
-  pub code: &'static str,
-  #[serde(skip_serializing_if = "Option::is_none")]
-  pub detail: Option<String>,
-}
-
 fn fail(code: &'static str, detail: Option<String>) -> (StatusCode, Json<ErrorBody>) {
   let status = match code {
     "malformed_ticket" | "bad_request" => StatusCode::BAD_REQUEST,
@@ -169,7 +164,13 @@ fn fail(code: &'static str, detail: Option<String>) -> (StatusCode, Json<ErrorBo
     StatusCode::UNAUTHORIZED => tracing::warn!(code, "request rejected"),
     _ => tracing::debug!(code, ?detail, "request rejected"),
   }
-  (status, Json(ErrorBody { code, detail }))
+  (
+    status,
+    Json(ErrorBody {
+      code: code.into(),
+      detail,
+    }),
+  )
 }
 
 fn auth_failure(e: AuthError) -> (StatusCode, Json<ErrorBody>) {
@@ -193,42 +194,6 @@ fn state_failure(e: StateError) -> (StatusCode, Json<ErrorBody>) {
 }
 
 // ------------------------------------------------------------------ announce
-
-#[derive(Debug, Deserialize)]
-pub struct AnnounceRequest {
-  pub token: TicketBody,
-  #[serde(default)]
-  pub add: Vec<String>,
-  #[serde(default)]
-  pub del: Vec<String>,
-  #[serde(default)]
-  pub complete: Vec<String>,
-  pub ttl: UnixSeconds,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AnnounceResponse {
-  pub session_key: String,
-  pub punch: PunchWire,
-  pub turn: TurnWire,
-  pub heartbeat_interval: u32,
-  pub expires_at: UnixSeconds,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PunchWire {
-  pub punch_id: String,
-  pub url: String,
-  pub public_key: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TurnWire {
-  pub url: String,
-  pub username: String,
-  pub credential: String,
-  pub expires_at: UnixSeconds,
-}
 
 /// Parse `sha256:<hex>` into the raw 32 bytes.
 fn parse_info_hash(s: &str) -> Option<InfoHash> {
@@ -362,18 +327,6 @@ fn random_32() -> Result<[u8; 32], getrandom::Error> {
 
 // ----------------------------------------------------------------- heartbeat
 
-#[derive(Debug, Deserialize)]
-pub struct HeartbeatRequest {
-  pub seq: u64,
-  pub timestamp: UnixSeconds,
-  pub mac: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct HeartbeatResponse {
-  pub expires_at: UnixSeconds,
-}
-
 async fn heartbeat<S: TrackState>(
   State(app): State<AppState<S>>,
   Path(peer_id): Path<String>,
@@ -412,36 +365,6 @@ async fn heartbeat<S: TrackState>(
 }
 
 // --------------------------------------------------------------------- query
-
-#[derive(Debug, Deserialize)]
-pub struct QueryParams {
-  #[serde(default)]
-  pub limit: Option<usize>,
-  #[serde(default)]
-  pub cursor: Option<String>,
-  /// Session auth: query carries no body, so these travel as parameters.
-  pub peer_id: Option<String>,
-  pub seq: Option<u64>,
-  pub timestamp: Option<UnixSeconds>,
-  pub mac: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct QueryResponse {
-  pub peers: Vec<PeerWire>,
-  pub next_cursor: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PeerWire {
-  pub peer_id: String,
-  pub public_key: String,
-  /// Resolved from the live Punch list at query time. Clients must not cache
-  /// any of this: an address is deployment state, and only the public key is a
-  /// long-lived identity (spec 7.1).
-  pub punch: PunchWire,
-  pub complete: bool,
-}
 
 async fn query<S: TrackState>(
   State(app): State<AppState<S>>,
@@ -546,7 +469,7 @@ mod tests {
   use super::*;
   use axum::body::Body;
   use axum::http::{Request, StatusCode};
-  use q2q_core::identity::{TICKET_VERSION, Ticket, keypair_from_seed, peer_id_of};
+  use q2q_core::identity::{TICKET_VERSION, Ticket, TicketBody, keypair_from_seed, peer_id_of};
   use q2q_ratelimit::PeerAddr;
   use q2q_track::state::MemoryState;
   use tower::ServiceExt;

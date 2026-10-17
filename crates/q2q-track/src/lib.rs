@@ -9,3 +9,4 @@ pub mod auth;
 #[cfg(feature = "redis")]
 pub mod redis;
 pub mod state;
+pub mod wire;

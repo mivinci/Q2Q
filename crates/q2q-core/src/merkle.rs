@@ -33,14 +33,14 @@ fn node_hash(left: &Hash, right: &Hash) -> Hash {
 }
 
 /// A node the verifier needs but does not have. `level` counts from the leaves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Node {
   pub level: u32,
   pub index: u64,
   pub hash: Hash,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Proof {
   /// Leaf hashes of the covered blocks. Carrying them lets the receiver cache
   /// the range and degrade later blocks in it to a table lookup.
@@ -101,6 +101,53 @@ pub fn root(leaves: &[Hash]) -> Hash {
       .last()
       .and_then(|top| top.first().copied())
       .unwrap_or(EMPTY_ROOT),
+  }
+}
+
+/// Cached tree layers for producing many single-block proofs in O(log n) each.
+/// Callers must compare `root()` with their trusted content root before use.
+#[derive(Debug)]
+pub struct ProofTree {
+  layers: Vec<Vec<Hash>>,
+}
+impl ProofTree {
+  pub fn new(leaves: &[Hash]) -> Self {
+    Self {
+      layers: build_layers(leaves),
+    }
+  }
+
+  pub fn root(&self) -> Hash {
+    self
+      .layers
+      .last()
+      .and_then(|layer| layer.first())
+      .copied()
+      .unwrap_or(EMPTY_ROOT)
+  }
+
+  pub fn proof(&self, index: usize) -> Option<Proof> {
+    let hash = *self.layers.first()?.get(index)?;
+    let mut nodes = Vec::new();
+    for (level, layer) in self.layers.iter().enumerate() {
+      let position = index >> level;
+      let sibling = if position.is_multiple_of(2) {
+        position + 1
+      } else {
+        position - 1
+      };
+      if let Some(hash) = layer.get(sibling) {
+        nodes.push(Node {
+          level: level as u32,
+          index: sibling as u64,
+          hash: *hash,
+        });
+      }
+    }
+    Some(Proof {
+      leaf_hashes: vec![hash],
+      nodes,
+    })
   }
 }
 
@@ -442,6 +489,26 @@ mod tests {
       let proof = prove_range(&leaves, start, count);
       let slice: Vec<&[u8]> = blocks[start..start + count].iter().map(|b| b.as_slice()).collect();
       prop_assert!(verify_range(&slice, start, n, &proof, &root_hash));
+    }
+  }
+}
+
+#[cfg(test)]
+mod proof_tree_tests {
+  use super::*;
+  #[test]
+  fn cached_single_block_proofs_match_range_proofs_for_odd_and_even_trees() {
+    for count in 0..66 {
+      let blocks: Vec<_> = (0..count).map(|i| vec![i as u8; 17]).collect();
+      let leaves: Vec<_> = blocks.iter().map(|b| leaf_hash(b)).collect();
+      let tree = ProofTree::new(&leaves);
+      assert_eq!(tree.root(), root(&leaves));
+      assert!(tree.proof(count).is_none());
+      for (index, bytes) in blocks.iter().enumerate() {
+        let proof = tree.proof(index).unwrap();
+        assert_eq!(proof, prove(&leaves, index));
+        assert!(verify(bytes, index, count, &proof, &tree.root()));
+      }
     }
   }
 }

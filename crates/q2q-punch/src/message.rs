@@ -241,6 +241,60 @@ pub struct SignalResponse {
   pub pending: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignalType {
+  Connect,
+  Accept,
+  Reject,
+  Offer,
+  Answer,
+  Candidate,
+  Cancel,
+}
+
+impl SignalType {
+  pub fn name(self) -> &'static str {
+    match self {
+      Self::Connect => "connect",
+      Self::Accept => "accept",
+      Self::Reject => "reject",
+      Self::Offer => "offer",
+      Self::Answer => "answer",
+      Self::Candidate => "candidate",
+      Self::Cancel => "cancel",
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RejectReason {
+  Busy,
+  QuotaExceeded,
+  NotFound,
+  Denied,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalRequest {
+  #[serde(rename = "type")]
+  pub kind: SignalType,
+  pub connection_id: String,
+  #[serde(default)]
+  pub connect_token: Option<String>,
+  #[serde(default)]
+  pub sdp: Option<String>,
+  #[serde(default)]
+  pub candidate: Option<String>,
+  #[serde(default)]
+  pub reason: Option<RejectReason>,
+  #[serde(default)]
+  pub accept_token: Option<String>,
+  #[serde(default)]
+  pub signal_key: Option<String>,
+}
+
 // ------------------------------------------------------------------ envelope
 
 pub const PROTOCOL_VERSION: u32 = 1;
