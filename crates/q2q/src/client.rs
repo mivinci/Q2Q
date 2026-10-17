@@ -4,7 +4,9 @@ pub use crate::reader::{OpenOptions, VerifiedFile};
 
 pub use crate::control::{ControlError, ControlSession};
 pub use crate::peer::PeerSession;
-pub use crate::publication::Publication;
+pub use crate::publication::{
+  Publication, PublicationState, UploadConnectionProgress, UploadConnectionState, UploadProgress,
+};
 pub use crate::transfer::{Transfer, TransferError, TransferProgress, TransferState};
 
 use crate::identity::Identity;
@@ -14,7 +16,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, atomic::AtomicBool};
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, Semaphore};
 use url::Url;
 
 /// Start configuring a client. The builder performs no network requests.
@@ -28,6 +30,8 @@ pub struct Builder {
   identity_file: Option<PathBuf>,
   storage_dir: Option<PathBuf>,
   max_download_peers: Option<usize>,
+  max_upload_peers: Option<usize>,
+  upload_rate_limit: Option<u64>,
 }
 
 impl Builder {
@@ -58,9 +62,31 @@ impl Builder {
     self
   }
 
+  /// Maximum managed upload connections, including handshakes and idle VOD
+  /// sessions, 1–16 (default 4). Independent of download concurrency.
+  pub fn max_upload_peers(mut self, count: usize) -> Self {
+    self.max_upload_peers = Some(count);
+    self
+  }
+
+  /// Total encoded piece bytes per second across managed uploads. Unset means
+  /// unlimited; zero is invalid. Includes retransmits and the piece header,
+  /// excludes control messages and WebRTC/transport overhead.
+  pub fn upload_rate_limit(mut self, bytes_per_second: u64) -> Self {
+    self.upload_rate_limit = Some(bytes_per_second);
+    self
+  }
+
   /// Validate the configuration and load or create the persistent identity.
   /// No connection to Track or Punch is opened yet.
   pub async fn build(self) -> Result<Client, BuildError> {
+    if self.upload_rate_limit == Some(0) {
+      return Err(BuildError::InvalidUploadRate);
+    }
+    let max_upload_peers = self.max_upload_peers.unwrap_or(4);
+    if !(1..=16).contains(&max_upload_peers) {
+      return Err(BuildError::InvalidUploadPeers);
+    }
     let max_download_peers = self.max_download_peers.unwrap_or(4);
     if !(1..=16).contains(&max_download_peers) {
       return Err(BuildError::InvalidDownloadPeers);
@@ -90,6 +116,10 @@ impl Builder {
       session: Arc::new(OnceCell::new()),
       publishing: Arc::new(AtomicBool::new(false)),
       max_download_peers,
+      uploads: Arc::new(Semaphore::new(max_upload_peers)),
+      upload_rate: self
+        .upload_rate_limit
+        .map(|rate| Arc::new(crate::upload_rate::UploadRate::new(rate))),
     })
   }
 }
@@ -102,6 +132,8 @@ pub struct Client {
   session: Arc<OnceCell<Arc<ControlSession>>>,
   publishing: Arc<AtomicBool>,
   max_download_peers: usize,
+  uploads: Arc<Semaphore>,
+  upload_rate: Option<Arc<crate::upload_rate::UploadRate>>,
 }
 
 impl Client {
@@ -137,14 +169,21 @@ impl Client {
   }
 
   /// Publish one local file and maintain its announcement until the handle is
-  /// closed or dropped. This first transfer stage permits one active source
+  /// closed or dropped. Each client permits one active source
   /// per client; the same client can download while publishing.
   pub async fn publish_file(&self, path: impl Into<PathBuf>) -> Result<Publication, TransferError> {
     let active = crate::publication::ActivePublication::acquire(self.publishing.clone())?;
     let prepared = self.prepare_file(path).await?;
     crate::destination::check_seed(prepared.seed())?;
     let session = self.connect().await?;
-    Publication::start(prepared, session, active).await
+    Publication::start(
+      prepared,
+      session,
+      active,
+      self.uploads.clone(),
+      self.upload_rate.clone(),
+    )
+    .await
   }
 
   /// Download from complete peers concurrently, reassigning failed blocks.
@@ -211,6 +250,8 @@ pub enum BuildError {
   InvalidTrackUrl(url::ParseError),
   UnsupportedTrackUrl,
   InvalidDownloadPeers,
+  InvalidUploadPeers,
+  InvalidUploadRate,
   Storage(io::Error),
   Identity(crate::identity::IdentityError),
   IdentityTask(tokio::task::JoinError),
@@ -221,6 +262,8 @@ impl fmt::Display for BuildError {
     match self {
       Self::Missing(field) => write!(f, "missing client setting: {field}"),
       Self::InvalidTrackUrl(e) => write!(f, "invalid Track URL: {e}"),
+      Self::InvalidUploadRate => f.write_str("upload_rate_limit must be greater than zero"),
+      Self::InvalidUploadPeers => f.write_str("max_upload_peers must be between 1 and 16"),
       Self::InvalidDownloadPeers => f.write_str("max_download_peers must be between 1 and 16"),
       Self::UnsupportedTrackUrl => f.write_str("Track URL must be HTTP or HTTPS with a host"),
       Self::Storage(e) => write!(f, "could not prepare client storage: {e}"),

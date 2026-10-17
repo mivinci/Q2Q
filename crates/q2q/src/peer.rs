@@ -102,6 +102,9 @@ pub(crate) async fn dial(
       info_hash,
       &target.punch.punch_id,
     )?,
+    SignalType::Reject if matches!(accepted.reason, Some(RejectReason::Busy)) => {
+      return Err(ControlError::Busy);
+    }
     SignalType::Reject => {
       return Err(ControlError::Protocol(format!(
         "peer rejected connection: {:?}",
@@ -169,17 +172,50 @@ pub(crate) async fn dial(
   })
 }
 
-pub(crate) async fn accept(
-  identity: &Identity,
-  punch: &PunchBinding,
+pub(crate) struct PendingPeer {
+  identity: Identity,
+  initiator: PeerId,
+  initiator_key: [u8; 32],
   info_hash: [u8; 32],
-  turn: &TurnWire,
-) -> Result<PeerSession, ControlError> {
+  connect: SignalRequest,
+  channel: RoutedPunch,
+  turn: TurnWire,
+}
+struct RoutedPunch {
+  punch: Arc<PunchBinding>,
+  route: crate::signal_router::SignalRoute,
+}
+
+pub(crate) async fn incoming(
+  identity: &Identity,
+  punch: Arc<PunchBinding>,
+  info_hash: [u8; 32],
+  turn: TurnWire,
+) -> Result<PendingPeer, ControlError> {
   loop {
-    let connect = punch.recv_signal().await?;
-    if connect.kind != SignalType::Connect {
-      continue;
+    let request = punch.incoming().await?;
+    if let Some(peer) =
+      PendingPeer::validate(identity, punch.clone(), info_hash, turn.clone(), request).await?
+    {
+      return Ok(peer);
     }
+  }
+}
+impl PendingPeer {
+  pub(crate) fn connection_id(&self) -> &str {
+    &self.connect.connection_id
+  }
+  pub(crate) fn peer_id(&self) -> &PeerId {
+    &self.initiator
+  }
+  async fn validate(
+    identity: &Identity,
+    punch: Arc<PunchBinding>,
+    info_hash: [u8; 32],
+    turn: TurnWire,
+    request: crate::signal_router::IncomingSignal,
+  ) -> Result<Option<Self>, ControlError> {
+    let connect = request.connect;
     let token = connect
       .connect_token
       .as_deref()
@@ -201,14 +237,33 @@ pub(crate) async fn accept(
       let mut reject = message(SignalType::Reject, &connect.connection_id);
       reject.reason = Some(RejectReason::NotFound);
       punch.signal(&reject).await?;
-      continue;
+      return Ok(None);
     }
-    let initiator_key = ticket.public_key;
-    let initiator = ticket.iss;
+    Ok(Some(Self {
+      identity: identity.clone(),
+      initiator: ticket.iss,
+      initiator_key: ticket.public_key,
+      info_hash,
+      connect,
+      channel: RoutedPunch {
+        punch,
+        route: request.route,
+      },
+      turn,
+    }))
+  }
+  pub(crate) async fn reject(self, reason: RejectReason) -> Result<(), ControlError> {
+    let mut reject = message(SignalType::Reject, &self.connect.connection_id);
+    reject.reason = Some(reason);
+    self.channel.signal(&reject).await.map(|_| ())
+  }
+  pub(crate) async fn accept(self) -> Result<PeerSession, ControlError> {
+    let connect = &self.connect;
+    let info_hash = self.info_hash;
     let now = q2q_punch::binding::now();
-    let acceptance = identity.connection_ticket(
-      punch.punch_id(),
-      &initiator,
+    let acceptance = self.identity.connection_ticket(
+      self.channel.punch.punch_id(),
+      &self.initiator,
       info_hash,
       &connect.connection_id,
       now,
@@ -218,11 +273,11 @@ pub(crate) async fn accept(
       serde_json::to_string(&acceptance)
         .map_err(|e| ControlError::Protocol(format!("accept ticket: {e}")))?,
     );
-    punch.signal(&response).await?;
+    self.channel.signal(&response).await?;
 
     let offered = tokio::time::timeout(OFFER_TIMEOUT, async {
       loop {
-        let offered = punch.recv_signal().await?;
+        let offered = self.channel.recv_signal().await?;
         if offered.connection_id == connect.connection_id {
           match offered.kind {
             SignalType::Offer => break Ok(offered),
@@ -235,7 +290,7 @@ pub(crate) async fn accept(
         if offered.kind == SignalType::Connect {
           let mut reject = message(SignalType::Reject, &offered.connection_id);
           reject.reason = Some(RejectReason::Busy);
-          punch.signal(&reject).await?;
+          self.channel.signal(&reject).await?;
         }
       }
     })
@@ -245,32 +300,32 @@ pub(crate) async fn accept(
       return Err(ControlError::Protocol("offer ticket changed".into()));
     }
     let offer = description(&offered, RTCSdpType::Offer)?;
-    let mut rtc = rtc_connection(turn).await?;
+    let mut rtc = rtc_connection(&self.turn).await?;
     let answer = rtc.answer(offer).await.map_err(ControlError::Transport)?;
     let mut answer_message = message(SignalType::Answer, &connect.connection_id);
     answer_message.sdp = Some(
       serde_json::to_string(&answer)
         .map_err(|e| ControlError::Protocol(format!("answer SDP: {e}")))?,
     );
-    punch.signal(&answer_message).await?;
-    let data_channel = negotiate(&mut rtc, punch, &connect.connection_id, None).await?;
+    self.channel.signal(&answer_message).await?;
+    let data_channel = negotiate(&mut rtc, &self.channel, &connect.connection_id, None).await?;
     PeerIdentity {
-      local: identity,
-      remote_key: initiator_key,
+      local: &self.identity,
+      remote_key: self.initiator_key,
       role: Role::Responder,
-      info_hash,
+      info_hash: self.info_hash,
       connection_id: &connect.connection_id,
     }
     .authenticate(&rtc, data_channel.control.as_ref())
     .await?;
-    return Ok(PeerSession {
-      peer_id: initiator,
-      info_hash,
-      connection_id: connect.connection_id,
+    Ok(PeerSession {
+      peer_id: self.initiator.clone(),
+      info_hash: self.info_hash,
+      connection_id: connect.connection_id.clone(),
       rtc,
       control: data_channel.control,
       data: data_channel.data,
-    });
+    })
   }
 }
 
@@ -373,15 +428,15 @@ trait SignalChannel {
   async fn recv_signal(&self) -> Result<SignalRequest, ControlError>;
 }
 
-impl SignalChannel for PunchBinding {
+impl SignalChannel for RoutedPunch {
   async fn signal(
     &self,
     request: &SignalRequest,
   ) -> Result<q2q_punch::message::SignalResponse, ControlError> {
-    PunchBinding::signal(self, request).await
+    self.punch.signal(request).await
   }
   async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
-    PunchBinding::recv_signal(self).await
+    self.route.recv().await
   }
 }
 

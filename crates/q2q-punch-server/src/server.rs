@@ -1019,6 +1019,31 @@ mod tests {
     assert!(held.pending[0].contains("answer"));
   }
 
+  #[test]
+  fn reject_reaches_initiator_after_removing_connection() {
+    let st = state(60);
+    let b = peer(2);
+    let ticket = connect_token(1, "punch-1", &b, "cid-reject", 1_000_000);
+    let body = serde_json::from_str(&ticket).unwrap();
+    st.connections.open(&body, &b, true, 1_000_000).unwrap();
+    let mut reject = signal(SignalType::Reject, "cid-reject");
+    reject.reason = Some(q2q_punch::signal::RejectReason::Busy);
+    let outcome = call_with(
+      &st,
+      "punch.signal",
+      serde_json::to_value(&reject).unwrap(),
+      Caller { peer: Some(b) },
+    );
+    assert!(outcome.response.error.is_none());
+    assert!(st.connections.get("cid-reject").is_none());
+    assert_eq!(outcome.forwards.len(), 1);
+    assert!(
+      matches!(&outcome.forwards[0].to, crate::signalling::Recipient::Initiator(id) if id == "cid-reject")
+    );
+    let forwarded: SignalRequest = serde_json::from_str(&outcome.forwards[0].message).unwrap();
+    assert_eq!(forwarded.reason, reject.reason);
+  }
+
   fn peer(seed: u8) -> PeerId {
     let (sk, _) = keypair_from_seed(&[seed; 32]);
     peer_id_of(&sk)

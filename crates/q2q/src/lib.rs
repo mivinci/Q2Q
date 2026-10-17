@@ -3,6 +3,7 @@
 //! The SDK prepares a persistent identity, publishes local files and downloads
 //! verified blocks through authenticated WebRTC peer sessions.
 
+mod admission;
 mod block_queue;
 mod cdn;
 mod control;
@@ -20,9 +21,14 @@ mod progress;
 mod punch_transport;
 mod reader;
 mod scheduler;
+mod signal_router;
 mod source_file;
 mod task_scope;
 pub mod transfer;
+mod upload;
+mod upload_progress;
+mod upload_rate;
+mod upload_session;
 mod webrtc_transport;
 
 pub mod client;

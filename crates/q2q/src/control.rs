@@ -11,10 +11,10 @@ use q2q_track::wire::{
   AnnounceRequest, AnnounceResponse, ErrorBody, HeartbeatRequest, HeartbeatResponse, QueryResponse,
 };
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as SyncRwLock};
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 use url::Url;
 
 const SESSION_TTL: u64 = 300;
@@ -37,7 +37,9 @@ pub struct ControlSession {
   turn: RwLock<q2q_track::wire::TurnWire>,
   assignment: SyncRwLock<q2q_track::wire::PunchWire>,
   punch: RwLock<Arc<PunchBinding>>,
-  incoming: Mutex<()>,
+  punch_changed: watch::Sender<u64>,
+  upload_admission: AtomicBool,
+  admission: Arc<crate::admission::Admission>,
 }
 
 impl ControlSession {
@@ -81,7 +83,9 @@ impl ControlSession {
       turn: RwLock::new(announced.turn),
       assignment: SyncRwLock::new(announced.punch),
       punch: RwLock::new(Arc::new(punch)),
-      incoming: Mutex::new(()),
+      punch_changed: watch::channel(0).0,
+      upload_admission: AtomicBool::new(true),
+      admission: Arc::new(crate::admission::Admission::default()),
     })
   }
 
@@ -136,11 +140,39 @@ impl ControlSession {
   }
 
   /// Accept the next request for a specific content hash on this Punch Binding.
+  /// Concurrent caller-managed accepts are allowed. A managed publication on
+  /// this session owns admission exclusively and returns AdmissionConflict.
   pub async fn accept_peer(&self, info_hash: [u8; 32]) -> Result<PeerSession, ControlError> {
-    let _incoming = self.incoming.lock().await;
-    let punch = self.punch.read().await.clone();
-    let turn = self.turn.read().await.clone();
-    peer::accept(&self.identity, &punch, info_hash, &turn).await
+    // Keep the lease through negotiation. A managed publisher must not pause
+    // this reader, and this API must not reopen a publisher's closed gate.
+    let _lease = self.admission.manual()?;
+    self.set_upload_admission(true).await;
+    self.incoming_peer(info_hash).await?.accept().await
+  }
+
+  pub(crate) fn claim_publication(&self) -> Result<crate::admission::AdmissionLease, ControlError> {
+    self.admission.managed()
+  }
+
+  pub(crate) async fn set_upload_admission(&self, enabled: bool) {
+    let punch = self.punch.read().await;
+    self.upload_admission.store(enabled, Ordering::Release);
+    punch.set_accepting(enabled).await;
+  }
+
+  pub(crate) async fn incoming_peer(
+    &self,
+    info_hash: [u8; 32],
+  ) -> Result<peer::PendingPeer, ControlError> {
+    let mut changed = self.punch_changed.subscribe();
+    loop {
+      let punch = self.punch.read().await.clone();
+      let turn = self.turn.read().await.clone();
+      tokio::select! {
+        request = peer::incoming(&self.identity, punch, info_hash, turn) => return request,
+        _ = changed.changed() => {},
+      }
+    }
   }
 
   /// Refresh both sessions. Sequence numbers are consumed before I/O so a
@@ -272,8 +304,17 @@ impl ControlSession {
     };
     if changed {
       let replacement = Arc::new(PunchBinding::connect(&self.identity, &announced.punch).await?);
-      let previous = std::mem::replace(&mut *self.punch.write().await, replacement);
+      let previous = {
+        let mut punch = self.punch.write().await;
+        replacement
+          .set_accepting(self.upload_admission.load(Ordering::Acquire))
+          .await;
+        std::mem::replace(&mut *punch, replacement)
+      };
       *self.assignment.write().unwrap_or_else(|e| e.into_inner()) = announced.punch;
+      self
+        .punch_changed
+        .send_modify(|generation| *generation = generation.wrapping_add(1));
       let _ = previous.close().await;
     }
     *self.turn.write().await = announced.turn;
@@ -331,6 +372,12 @@ async fn expect_success(
 
 #[derive(Debug)]
 pub enum ControlError {
+  /// A managed publication and caller-managed accept cannot own admission together.
+  AdmissionConflict,
+  /// The standing channel stopped admitting new connections.
+  AdmissionPaused,
+  /// The remote publisher has no upload connection slot available.
+  Busy,
   /// A shared session heartbeat failure; the original typed error is retained.
   Shared(Arc<ControlError>),
   Http(reqwest::Error),
@@ -349,6 +396,9 @@ pub enum ControlError {
 impl fmt::Display for ControlError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
+      Self::AdmissionConflict => f.write_str("peer admission is owned by another operation"),
+      Self::AdmissionPaused => f.write_str("peer admission is paused"),
+      Self::Busy => f.write_str("peer upload capacity is full"),
       Self::Shared(e) => e.fmt(f),
       Self::Http(e) => write!(f, "Track request failed: {e}"),
       Self::Remote {

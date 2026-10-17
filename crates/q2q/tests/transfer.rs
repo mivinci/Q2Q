@@ -1,8 +1,10 @@
 use super::*;
 use crate::publication::PrepareError;
+use crate::source_file::PreparedFile;
 use crate::test_destination::{create_destination, destination_complete, sync_destination};
 use crate::transfer::{Transfer, TransferState};
 use q2q_core::file::StoreError;
+use std::sync::Mutex;
 use tokio::sync::watch;
 
 #[tokio::test]

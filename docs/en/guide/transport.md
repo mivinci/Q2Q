@@ -13,7 +13,12 @@ flowchart TB
     Handles --> Download["Download orchestration<br/>download.rs"]
     Download --> Workers["Peer pool / CDN workers<br/>scheduler.rs / cdn.rs"]
     Workers --> Peer["Peer protocol and connections<br/>peer_transfer.rs / peer.rs<br/>webrtc_transport.rs"]
-    Pub --> Peer
+    Pub --> Upload["Upload admission and workers<br/>upload.rs"]
+    Upload --> Session["Per-connection upload protocol<br/>upload_session.rs"]
+    Session --> Peer
+    Session --> Rate["Shared rate budget<br/>upload_rate.rs"]
+    Upload --> Stats["Upload progress<br/>upload_progress.rs"]
+    Session --> Stats
     Workers --> Dest["Verification and commit<br/>destination.rs"]
     Handles -->|"Verified reads"| Dest
     Dest --> Store["Disk and receipts<br/>download_store.rs"]
@@ -57,4 +62,65 @@ Publication manages announcements, holding renewal, uploads and withdrawal. Acti
 
 Dropping a transfer or reader cancels network tasks. Blocking disk jobs already started can finish and retain the destination lock until they do. Block proofs are stored in `.q2q.resume`; resume reads and verifies the disk bytes again. A complete file can resume offline.
 
-The SDK supports fixed files and VOD with a single read cursor. Each Client has one active publication, serving one downloading peer at a time. Discovery uses the current Track page without pagination or refresh. Files are limited to 65,536 blocks, or 16 GiB with the default block size. Live indexes, partial-file seeding and browser adaptation are not implemented yet.
+The SDK supports fixed files and VOD with a single read cursor. Each Client has one active publication, serving multiple downloading peers concurrently (`max_upload_peers` defaults to 4, range 1–16). Discovery uses the current Track page without pagination or refresh. Files are limited to 65,536 blocks, or 16 GiB with the default block size. Live indexes, partial-file seeding and browser adaptation are not implemented yet.
+
+## Concurrent uploads
+
+`client::builder().max_upload_peers(4)` sets the per-Client upload connection budget, independently of `max_download_peers`. A slot is reserved before accepting a handshake and remains occupied during negotiation, transfer and idle VOD connections. Full capacity returns Busy through Punch; low-level dialing exposes `ControlError::Busy`. There is no upload waiting queue or automatic Busy retry. Download scheduling can try another candidate or a configured CDN.
+
+One reader owns the standing Punch channel. Connect requests enter a bounded admission queue; other signals are routed by `connection_id` into independent bounded mailboxes. Each upload task negotiates and transfers independently. Remote disconnects, timeouts and protocol failures end that task; source read failures or changed content stop the entire publication and withdraw its announcement.
+
+Upload tasks share the prepared file and Merkle tree. The source lock covers reads and verification, and is released before network I/O. `Publication::close()` stops admission and waits for upload tasks and in-flight blocking reads before withdrawing. Drop triggers the same asynchronous cleanup. Requests arriving while publication is closed are rejected; buffered admission requests do not carry into the next publication.
+
+Callers using `ControlSession::accept_peer` / `PeerSession::serve_file` manage their own tasks and concurrency budget. Connection capacity does not limit total upload bandwidth.
+
+### Total upload rate
+
+```rust
+let client = q2q::client::builder()
+    // ... Track, identity and storage settings ...
+    .max_upload_peers(4)
+    .upload_rate_limit(10 * 1024 * 1024) // bytes per second across this Client
+    .build()
+    .await?;
+```
+
+Omit `upload_rate_limit` for unlimited uploads; zero is invalid. Managed publications share a single Client-owned token bucket, including across publication lifetimes. Each encoded piece is charged before sending, including its 17-byte header, short final pieces and retransmits. Control messages and WebRTC/SCTP/DTLS/UDP overhead are excluded, so this is not a cap on total network interface traffic. Low-level `PeerSession::serve_file` remains caller-managed and unlimited.
+
+The bucket allows a burst of 100 ms of configured traffic, with a minimum burst of one full piece (1041 bytes). Idle time cannot accumulate extra burst credit. Waiting holds neither the source lock nor a future bandwidth reservation; cancellation removes the wait immediately. When rate limiting is enabled, waiting connections take FIFO turns for one piece of budget. Each connection has at most one pending request and rejoins at the back after sending; retransmits use the same turns. Standard pieces have equal sizes, so continuously ready connections get approximately equal byte shares; short final pieces are still charged at their actual length. Idle VOD connections and connections waiting on network or disk I/O do not queue, allowing others to use spare bandwidth. This guarantees turns among ready requests, not equal observed network throughput. Weights and priorities are not implemented; unlimited uploads do not use this scheduling.
+
+Upload tasks keep consuming both channel event queues, so buffer notifications cannot stall the RTC driver; received control messages use a bounded inbox. While waiting, the uploader sends `upload_wait` hints on the control channel. The receiver defers missing-piece retries and keeps its progress deadline alive. Actual DataChannel sends retain a 20-second timeout; time waiting for rate budget is excluded. VOD `read_timeout` still bounds application reads. Rate-limited uploads require receivers that understand this new control message; older receivers reject unknown message types. Unrestricted uploads do not emit the hints.
+
+### Upload progress and subscriptions
+
+```rust
+let publication = client.publish_file("video.mp4").await?;
+let snapshot = publication.progress();
+let mut updates = publication.subscribe_progress();
+
+// Usually consumed by a UI/monitor task; another task closes publication.
+loop {
+    let snapshot = updates.borrow_and_update().clone();
+    // Update the UI. Never hold a watch borrow across an await.
+    if matches!(snapshot.state,
+        q2q::publication::PublicationState::Closed
+        | q2q::publication::PublicationState::Failed) {
+        break;
+    }
+    if updates.changed().await.is_err() { break; }
+}
+```
+
+`UploadProgress` exposes cumulative `sent_bytes`, its `retransmitted_bytes` subset, handshake/active/idle connection counts and completed/failed/cancelled session counts. `connections` contains only live admitted connections, with connection ID, Peer ID, state and byte counters, bounded by upload capacity. Capacity rejections and requests failing before admission are excluded. Finished records are removed while totals remain. A new publication starts from zero; caller-managed low-level uploads are excluded.
+
+Connection states are `Handshaking`, `Idle` and `Sending`. The Peer ID comes from a verified ticket during negotiation and is authenticated when the handshake completes. `Sending` includes source reads, rate-budget waits, network sends and waiting for BlockDone; active connections are not necessarily consuming network bandwidth. A valid BlockDone returns the connection to idle. A normal session end increments completed even if it served only part of the file. Remote disconnects, timeouts, protocol or source errors increment failed; local worker cancellation, including publication shutdown, increments cancelled. An isolated remote failure does not fail the publication.
+
+Byte counters follow the rate-limit accounting: encoded piece bytes, including the 17-byte header, short final pieces and retransmits, counted only after DataChannel accepts the send. Failed sends add nothing. These counters do not represent receive acknowledgements, unique file bytes or durable bytes. Control messages and transport overhead are excluded. Applications derive speed from byte deltas and local elapsed time; the SDK stores no speed history.
+
+`progress()` returns current counters immediately. Normal watch updates are coalesced every 100 ms; subscribing also synchronizes the latest value. Closing and terminal states notify immediately, and final counters can continue changing during cleanup. Publication transitions from `Publishing` through `Closing` to `Closed`, or enters `Failed` on error. Live records are empty after cleanup. Retain a receiver before close to read final snapshots after close consumes the handle; Drop triggers the same asynchronous cleanup. Watch updates can merge; unread notifications do not backpressure uploads. Clone borrowed watch values promptly and never retain the read guard across an await.
+
+### Admission ownership and module boundaries
+
+`admission.rs` owns admission leases for the shared control session. One managed publication owns admission exclusively; multiple low-level `accept_peer` calls may coexist, but the two modes cannot overlap. Conflicts return `ControlError::AdmissionConflict`, and low-level accepts cannot reopen a managed publisher’s gate. Manual leases last through acceptance/negotiation or cancellation; managed leases remain until upload tasks, blocking reads and withdrawal finish. An independent pause notification wakes readers waiting for requests or the queue lock with `AdmissionPaused` before buffered requests are drained.
+
+`upload.rs` organizes capacity, handshake workers and error isolation. `upload_session.rs` owns per-connection resources, event consumption and upload protocol handling. Download protocol and shared control-message helpers remain in `peer_transfer.rs`. A private runner in `publication.rs` unifies startup, renewal, stop and withdrawal. Every exit stops admission, waits for workers and blocking reads, withdraws, releases leases and then publishes the terminal snapshot. Source and test directories remain flat.

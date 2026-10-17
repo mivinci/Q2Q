@@ -1,5 +1,5 @@
 //! Immutable local source preparation and upload-time integrity checks.
-use q2q_core::merkle::{self, Hash, Proof};
+use q2q_core::merkle::{self, Hash, Proof, ProofTree};
 use q2q_core::seed::{DEFAULT_BLOCK_SIZE, Info, Seed};
 use std::fmt;
 use std::fs::File;
@@ -11,6 +11,7 @@ pub struct PreparedFile {
   path: PathBuf,
   file: File,
   seed: Seed,
+  tree: ProofTree,
 }
 
 impl PreparedFile {
@@ -49,12 +50,18 @@ impl PreparedFile {
       return Err(PrepareError::SourceChanged);
     }
 
-    let mut info = Info::new(length, merkle::root(&leaves));
+    let tree = ProofTree::new(&leaves);
+    let mut info = Info::new(length, tree.root());
     info.name = Some(name);
     let mut seed = Seed::new(info);
     seed.track_list.push(track_url);
     seed.leaf_hashes = Some(leaves);
-    Ok(Self { path, file, seed })
+    Ok(Self {
+      path,
+      file,
+      seed,
+      tree,
+    })
   }
 
   pub fn path(&self) -> &Path {
@@ -76,15 +83,10 @@ impl PreparedFile {
   /// Return a proof for a block in this seed. The upload path must pair it
   /// with `read_verified_block`, which refuses data changed since preparation.
   pub fn proof(&self, index: usize) -> Result<Proof, PrepareError> {
-    let leaves = self
-      .seed
-      .leaf_hashes
-      .as_ref()
-      .expect("prepared seed has leaves");
-    if index >= leaves.len() {
-      return Err(PrepareError::BlockOutOfRange(index));
-    }
-    Ok(merkle::prove(leaves, index))
+    self
+      .tree
+      .proof(index)
+      .ok_or(PrepareError::BlockOutOfRange(index))
   }
 
   /// Read a block from the same open file and compare it to its committed leaf.
