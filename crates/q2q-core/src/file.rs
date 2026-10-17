@@ -7,6 +7,8 @@
 
 use crate::bencode::{self, BValue, Dict};
 use crate::merkle::{self, Hash, Proof};
+// block 大小的合法范围由 seed 定义（spec 5.2），store 不再自己另立一套
+use crate::seed::{MAX_BLOCK_SIZE, MIN_BLOCK_SIZE};
 use std::fs::File as FsFile;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -26,6 +28,7 @@ pub enum BlockState {
 /// State and bitmap live together because they are one thing. Keeping them in
 /// parallel vectors means every access has to index twice and stay in step by
 /// hand; here the association is structural.
+#[derive(Debug)]
 pub struct Block {
   state: BlockState,
   /// Byte length; only the last block is shorter than the store's block size.
@@ -63,12 +66,16 @@ impl Block {
   }
 
   /// Bytes in one piece. Only the last piece of a short block can be short.
+  /// Out-of-range pieces give 0 — this is public, so it must not panic.
   pub fn piece_len(&self, piece: usize) -> usize {
     let start = piece * PIECE_SIZE;
-    (self.len - start).min(PIECE_SIZE)
+    self.len.saturating_sub(start).min(PIECE_SIZE)
   }
 
   pub fn piece_present(&self, piece: usize) -> bool {
+    if piece >= self.piece_count() {
+      return false;
+    }
     let (word, bit) = (piece / 64, piece % 64);
     self.bitmap[word] & (1 << bit) != 0
   }
@@ -90,6 +97,11 @@ impl Block {
   fn mark_piece(&mut self, piece: usize) -> BlockState {
     self.set_piece(piece, true);
     if self.state == BlockState::Missing {
+      self.state = BlockState::Partial;
+    }
+    // 往已校验的 block 里写 piece，字节已经跟 root 不一致了，不能再算 verified。
+    // piece 齐了就落到 Downloaded —— 数据是全的，只是得重新校验一次。
+    if self.state == BlockState::Verified {
       self.state = BlockState::Partial;
     }
     if self.state == BlockState::Partial && self.all_pieces_present() {
@@ -133,10 +145,20 @@ pub enum StoreError {
   Io(String),
   BlockOutOfRange(usize),
   PieceOutOfRange(usize),
-  WrongDataLength { expected: usize, got: usize },
+  WrongDataLength {
+    expected: usize,
+    got: usize,
+  },
   NotDownloadable(BlockState),
   MalformedProgress,
   ProgressMismatch,
+  /// `open` 找到的文件长度与声明的不符：要么不是同一个文件，要么被别的程序改过
+  LengthMismatch {
+    expected: u64,
+    got: u64,
+  },
+  BlockSizeOutOfRange(u32),
+  BlockSizeNotPowerOfTwo(u32),
 }
 
 impl std::fmt::Display for StoreError {
@@ -151,6 +173,11 @@ impl std::fmt::Display for StoreError {
       StoreError::NotDownloadable(s) => write!(f, "block is {s:?}, nothing to verify"),
       StoreError::MalformedProgress => f.write_str("progress file is malformed"),
       StoreError::ProgressMismatch => f.write_str("progress file belongs to a different file"),
+      StoreError::LengthMismatch { expected, got } => {
+        write!(f, "file is {got} bytes, expected {expected}")
+      }
+      StoreError::BlockSizeOutOfRange(s) => write!(f, "block size out of range: {s}"),
+      StoreError::BlockSizeNotPowerOfTwo(s) => write!(f, "block size is not a power of two: {s}"),
     }
   }
 }
@@ -163,6 +190,7 @@ impl From<std::io::Error> for StoreError {
   }
 }
 
+#[derive(Debug)]
 pub struct FileStore {
   path: PathBuf,
   length: u64,
@@ -170,24 +198,60 @@ pub struct FileStore {
   blocks: Vec<Block>,
 }
 
+/// spec 5.2 的 block 大小规则，store 与 seed 用同一套，免得两边判出来的不一样。
+fn check_block_size(block_size: u32) -> Result<(), StoreError> {
+  if !(MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size) {
+    return Err(StoreError::BlockSizeOutOfRange(block_size));
+  }
+  if !block_size.is_power_of_two() {
+    return Err(StoreError::BlockSizeNotPowerOfTwo(block_size));
+  }
+  Ok(())
+}
+
+fn blocks_of(length: u64, block_size: u32) -> Vec<Block> {
+  (0..length.div_ceil(block_size as u64))
+    .map(|i| {
+      let start = i * block_size as u64;
+      Block::new((length - start).min(block_size as u64) as usize)
+    })
+    .collect()
+}
+
 impl FileStore {
+  /// 新建：已存在的同名文件会被清空。要接着上次的进度下载，用 `open`。
   pub fn create(path: impl AsRef<Path>, length: u64, block_size: u32) -> Result<Self, StoreError> {
     let path = path.as_ref().to_path_buf();
+    check_block_size(block_size)?;
     let f = FsFile::create(&path)?;
     if length > 0 {
       f.set_len(length)?;
     }
-    let blocks = (0..length.div_ceil(block_size as u64))
-      .map(|i| {
-        let start = i * block_size as u64;
-        Block::new((length - start).min(block_size as u64) as usize)
-      })
-      .collect();
     Ok(FileStore {
       path,
       length,
       block_size,
-      blocks,
+      blocks: blocks_of(length, block_size),
+    })
+  }
+
+  /// 打开一个已经存在的文件，一个字节都不动——恢复进度必须走这里。
+  /// `create` 会把它清零，那样位图还标着 Partial、字节却没了，是静默丢数据。
+  pub fn open(path: impl AsRef<Path>, length: u64, block_size: u32) -> Result<Self, StoreError> {
+    let path = path.as_ref().to_path_buf();
+    check_block_size(block_size)?;
+    let got = std::fs::metadata(&path)?.len();
+    if got != length {
+      return Err(StoreError::LengthMismatch {
+        expected: length,
+        got,
+      });
+    }
+    Ok(FileStore {
+      path,
+      length,
+      block_size,
+      blocks: blocks_of(length, block_size),
     })
   }
 
@@ -360,11 +424,14 @@ impl FileStore {
         BValue::Int(n) => *n,
         _ => return Err(StoreError::MalformedProgress),
       };
+      // 只认 0..=3。写别的说明进度文件坏了，按 Verified 收下会让没校验过的
+      // 数据被当作可信——宁可整个拒绝。
       self.blocks[i].state = match n {
         0 => BlockState::Missing,
         1 => BlockState::Partial,
         2 => BlockState::Downloaded,
-        _ => BlockState::Verified,
+        3 => BlockState::Verified,
+        _ => return Err(StoreError::MalformedProgress),
       };
     }
     for (i, m) in maps.iter().enumerate() {
@@ -530,15 +597,138 @@ mod tests {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("f");
     let block_size = 256 * 1024u32;
-    let mut store = FileStore::create(&path, 4 * PIECE_SIZE as u64, block_size).unwrap();
+    let length = 4 * PIECE_SIZE as u64;
+    let mut store = FileStore::create(&path, length, block_size).unwrap();
     store.write_piece(0, 0, &[9u8; PIECE_SIZE]).unwrap();
     store.save_progress().unwrap();
 
-    let mut reopened = FileStore::create(&path, 4 * PIECE_SIZE as u64, block_size).unwrap();
+    let mut reopened = FileStore::open(&path, length, block_size).unwrap();
     reopened.load_progress().unwrap();
     assert_eq!(reopened.state(0).unwrap(), BlockState::Partial);
     assert!(reopened.block(0).unwrap().piece_present(0));
     assert!(!reopened.block(0).unwrap().piece_present(1));
+    // 字节必须还在。用 create 恢复会把文件清零，而位图仍标着已下载
+    assert_eq!(
+      &std::fs::read(&path).unwrap()[..PIECE_SIZE],
+      &[9u8; PIECE_SIZE][..]
+    );
+  }
+
+  #[test]
+  fn open_keeps_the_bytes_where_create_clears_them() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("f");
+    let block_size = 256 * 1024u32;
+    let length = 4 * PIECE_SIZE as u64;
+    let mut store = FileStore::create(&path, length, block_size).unwrap();
+    store.write_piece(0, 0, &[7u8; PIECE_SIZE]).unwrap();
+
+    let kept = FileStore::open(&path, length, block_size).unwrap();
+    assert_eq!(
+      &kept.read_block(0).unwrap()[..PIECE_SIZE],
+      &[7u8; PIECE_SIZE][..]
+    );
+
+    FileStore::create(&path, length, block_size).unwrap();
+    assert_eq!(
+      &std::fs::read(&path).unwrap()[..PIECE_SIZE],
+      &[0u8; PIECE_SIZE][..]
+    );
+  }
+
+  #[test]
+  fn open_rejects_a_missing_file_and_a_wrong_length() {
+    let dir = TempDir::new().unwrap();
+    let missing = dir.path().join("nope");
+    assert!(matches!(
+      FileStore::open(&missing, 4 * PIECE_SIZE as u64, 256 * 1024),
+      Err(StoreError::Io(_))
+    ));
+
+    let path = dir.path().join("f");
+    FileStore::create(&path, 4 * PIECE_SIZE as u64, 256 * 1024).unwrap();
+    match FileStore::open(&path, 8 * PIECE_SIZE as u64, 256 * 1024).unwrap_err() {
+      StoreError::LengthMismatch { expected, got } => {
+        assert_eq!(expected, 8 * PIECE_SIZE as u64);
+        assert_eq!(got, 4 * PIECE_SIZE as u64);
+      }
+      other => panic!("expected LengthMismatch, got {other}"),
+    }
+  }
+
+  #[test]
+  fn create_rejects_a_block_size_seed_would_reject() {
+    let dir = TempDir::new().unwrap();
+    assert!(matches!(
+      FileStore::create(dir.path().join("f"), 1024, 1000),
+      Err(StoreError::BlockSizeOutOfRange(1000))
+    ));
+    // 模式里不能写算术，提一个常量出来
+    const ODD: u32 = 3 * 256 * 1024;
+    assert!(matches!(
+      FileStore::create(dir.path().join("g"), 1024, ODD),
+      Err(StoreError::BlockSizeNotPowerOfTwo(ODD))
+    ));
+  }
+
+  #[test]
+  fn progress_with_an_unknown_block_state_is_rejected() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("f");
+    let block_size = 256 * 1024u32;
+    let length = 4 * PIECE_SIZE as u64;
+    let store = FileStore::create(&path, length, block_size).unwrap();
+    store.save_progress().unwrap();
+
+    // 手工把状态写成 9：旧实现落在 `_ => Verified` 上，等于没校验就信任
+    let mut d = match bencode::decode(&std::fs::read(store.progress_path()).unwrap()).unwrap() {
+      BValue::Dict(d) => d,
+      _ => unreachable!(),
+    };
+    d.insert(b"states".to_vec(), BValue::List(vec![BValue::Int(9)]));
+    std::fs::write(store.progress_path(), BValue::Dict(d).encode()).unwrap();
+
+    let mut reopened = FileStore::open(&path, length, block_size).unwrap();
+    assert_eq!(reopened.load_progress(), Err(StoreError::MalformedProgress));
+  }
+
+  #[test]
+  fn rewriting_a_verified_block_drops_it_back_to_downloaded() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("f");
+    let block_size = 256 * 1024u32;
+    let mut store = FileStore::create(&path, 2 * PIECE_SIZE as u64, block_size).unwrap();
+    let data = vec![5u8; 2 * PIECE_SIZE];
+    for p in 0..2 {
+      let start = p * PIECE_SIZE;
+      store
+        .write_piece(0, p, &data[start..start + PIECE_SIZE])
+        .unwrap();
+    }
+    let leaf = leaf_hash(&data);
+    let proof = merkle::prove(&[leaf], 0);
+    let root = merkle::root(&[leaf]);
+    assert_eq!(
+      store.verify(0, &proof, &root).unwrap(),
+      BlockState::Verified
+    );
+
+    // 校验通过之后又被写入：字节已经变了，不能再对外声称 verified
+    assert_eq!(
+      store.write_piece(0, 0, &[6u8; PIECE_SIZE]).unwrap(),
+      BlockState::Downloaded
+    );
+    assert_eq!(store.state(0).unwrap(), BlockState::Downloaded);
+    assert!(store.verified_bitfield().iter().all(|b| *b == 0));
+  }
+
+  #[test]
+  fn out_of_range_queries_answer_instead_of_panicking() {
+    let dir = TempDir::new().unwrap();
+    let store = FileStore::create(dir.path().join("f"), 4 * PIECE_SIZE as u64, 256 * 1024).unwrap();
+    let block = store.block(0).unwrap();
+    assert_eq!(block.piece_len(block.piece_count()), 0);
+    assert!(!block.piece_present(block.piece_count()));
   }
 
   #[test]
