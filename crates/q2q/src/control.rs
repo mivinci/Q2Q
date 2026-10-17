@@ -27,6 +27,7 @@ pub struct ControlSession {
   track_seq: u64,
   track_expires_at: u64,
   heartbeat_interval: u32,
+  #[allow(dead_code, reason = "used when peer sessions are connected")]
   turn: q2q_track::wire::TurnWire,
   punch: PunchBinding,
 }
@@ -86,6 +87,7 @@ impl ControlSession {
     self.track_expires_at
   }
 
+  #[allow(dead_code, reason = "used by the upcoming peer session orchestration")]
   pub(crate) async fn rtc_connection(&self) -> Result<RtcConnection, ControlError> {
     let turn = (self.turn.expires_at > q2q_track::state::now()).then_some((
       self.turn.url.as_str(),
@@ -97,6 +99,7 @@ impl ControlSession {
       .map_err(ControlError::Transport)
   }
 
+  #[allow(dead_code, reason = "used by the upcoming peer session orchestration")]
   pub(crate) async fn signal(
     &self,
     request: &SignalRequest,
@@ -104,6 +107,7 @@ impl ControlSession {
     self.punch.signal(request).await
   }
 
+  #[allow(dead_code, reason = "used by the upcoming peer session orchestration")]
   pub(crate) async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
     self.punch.recv_signal().await
   }

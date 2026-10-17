@@ -96,6 +96,7 @@ impl PunchBinding {
   }
 
   /// Send one signalling message over the authenticated standing channel.
+  #[allow(dead_code, reason = "used by the upcoming peer session orchestration")]
   pub(crate) async fn signal(
     &self,
     request: &SignalRequest,
@@ -113,6 +114,7 @@ impl PunchBinding {
   }
 
   /// Receive a forwarded signal pushed by Punch on a QUIC unidirectional stream.
+  #[allow(dead_code, reason = "used by the upcoming peer session orchestration")]
   pub(crate) async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
     let mut stream = self
       .connection

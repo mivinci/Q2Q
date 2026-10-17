@@ -43,7 +43,6 @@ impl RtcConnection {
         urls: vec![url.to_owned()],
         username: username.to_owned(),
         credential: credential.to_owned(),
-        ..Default::default()
       }]);
     }
     let peer = PeerConnectionBuilder::new()
