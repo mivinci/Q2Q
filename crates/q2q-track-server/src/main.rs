@@ -5,12 +5,26 @@
 
 mod api;
 
+use axum::Router;
 use clap::Parser;
 use q2q_track::state::{MemoryState, PunchAssignment, TrackState, UnixSeconds};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Bind and serve. Pulled out of `main` so a test can drive the real path.
+///
+/// ConnectInfo has to be asked for explicitly: without it the rate limiter
+/// finds no peer address and lets everything through. Unit tests cannot see
+/// that, because they call the router directly and never go through here.
+async fn serve(listener: tokio::net::TcpListener, app: Router) -> std::io::Result<()> {
+  axum::serve(
+    listener,
+    app.into_make_service_with_connect_info::<SocketAddr>(),
+  )
+  .await
+}
 
 /// Config file shape. Punch servers are deployment facts, not protocol.
 #[derive(Debug, serde::Deserialize)]
@@ -183,7 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   let app = api::router_with(state, track_config, punch_list, api::limiter());
   let listener = tokio::net::TcpListener::bind(config.bind).await?;
   tracing::info!(bind = %config.bind, "listening");
-  axum::serve(listener, app).await?;
+  serve(listener, app).await?;
   Ok(())
 }
 
@@ -194,8 +208,35 @@ fn modified(path: &PathBuf) -> Option<std::time::SystemTime> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use axum::extract::ConnectInfo;
+  use axum::routing::get;
   use base64::Engine as _;
   use base64::engine::general_purpose::STANDARD as B64;
+  use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+  /// 限流靠 ConnectInfo 拿对端地址，而单测是直接调 router 的，永远走不到
+  /// `serve` 这条路径。这个测试走一次真实连接，确认地址确实传到了 handler。
+  #[tokio::test]
+  async fn a_real_connection_sees_its_peer_address() {
+    let app = Router::new().route(
+      "/addr",
+      get(|ConnectInfo(addr): ConnectInfo<SocketAddr>| async move { addr.ip().to_string() }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(serve(listener, app));
+
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream
+      .write_all(b"GET /addr HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+      .await
+      .unwrap();
+    let mut buf = String::new();
+    stream.read_to_string(&mut buf).await.unwrap();
+
+    assert!(buf.starts_with("HTTP/1.1 200"), "response was: {buf}");
+    assert!(buf.ends_with("127.0.0.1"), "body was: {buf}");
+  }
 
   fn config_with_key(key: &str) -> Config {
     let text = format!(
