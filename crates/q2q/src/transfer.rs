@@ -11,7 +11,6 @@ use q2q_core::file::{FileStore, StoreError};
 use q2q_core::merkle::{self, Proof};
 use q2q_core::peer_wire::{Control, MAX_BLOCKS, Piece, WireError};
 use q2q_core::seed::Seed;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -158,7 +157,7 @@ impl TransferError {
 }
 
 impl PeerSession {
-  /// Serve one prepared source until the downloader acknowledges all blocks.
+  /// Serve a prepared source until the downloader confirms the end of this session.
   pub async fn serve_file(self, source: Arc<Mutex<PreparedFile>>) -> Result<(), TransferError> {
     let seed = source
       .lock()
@@ -184,11 +183,7 @@ impl PeerSession {
     )
     .await?;
     receive_bitfield(&*self.control, seed.info.leaf_count()).await?;
-    if seed.info.length == 0 {
-      return Ok(());
-    }
     let mut pending: Option<(usize, Vec<u8>, Proof)> = None;
-    let mut done = HashSet::new();
     loop {
       let control = tokio::time::timeout(IDLE, receive(&*self.control))
         .await
@@ -292,14 +287,20 @@ impl PeerSession {
           {
             return Err(protocol("unexpected block acknowledgement"));
           }
-          done.insert(block_index);
           pending = None;
-          if done.len() == seed.info.leaf_count() {
-            return Ok(());
-          }
         }
         Control::Have { .. } => {}
-        Control::Cancel { .. } => return Ok(()),
+        Control::Cancel { block_index, count } => {
+          // Acknowledge the ordered end marker before either side closes RTC.
+          // It also ends sessions that supplied only a subset after failover.
+          send(&*self.control, Control::Cancel { block_index, count }).await?;
+          return match tokio::time::timeout(IDLE, receive(&*self.control)).await {
+            Ok(Err(TransferError::Closed)) => Ok(()),
+            Ok(Err(error)) => Err(error),
+            Ok(Ok(_)) => Err(protocol("unexpected message after transfer ended")),
+            Err(_) => Err(TransferError::Timeout),
+          };
+        }
         _ => return Err(protocol("unexpected upload control message")),
       }
     }
@@ -401,7 +402,29 @@ impl PeerSession {
       )
       .await?;
     }
-    Ok(())
+    send(
+      &*self.control,
+      Control::Cancel {
+        block_index: 0,
+        count: 0,
+      },
+    )
+    .await?;
+    tokio::time::timeout(IDLE, async {
+      loop {
+        match receive(&*self.control).await? {
+          Control::Cancel {
+            block_index: 0,
+            count: 0,
+          } => return Ok(()),
+          // A proof retry may already have been queued before BlockDone.
+          Control::Proof { block_index, .. } if block_index < count as u64 => {}
+          _ => return Err(protocol("expected transfer end acknowledgement")),
+        }
+      }
+    })
+    .await
+    .map_err(|_| TransferError::Timeout)?
   }
 
   async fn receive_block(
@@ -693,7 +716,6 @@ mod tests {
       )
       .await
       .unwrap();
-      receive_bitfield(&*upload.control, 3).await.unwrap();
       upload
     };
     let (received, _upload) = tokio::join!(download.download_file(seed, &destination), upload);
@@ -702,6 +724,38 @@ mod tests {
     );
     assert_eq!(std::fs::read(&destination).unwrap(), bytes);
     drop(prepared);
+  }
+
+  #[tokio::test]
+  async fn switching_peers_keeps_verified_blocks_and_finishes_a_subset_session() {
+    let directory = tempfile::tempdir().unwrap();
+    let bytes = vec![73u8; 262144 + 19];
+    let prepared = source(directory.path(), &bytes);
+    let seed = prepared.seed().clone();
+    let path = directory.path().join("download.bin");
+    let store = create_destination(&seed, &path).await.unwrap();
+    {
+      let mut destination = store.lock().unwrap();
+      for (piece, data) in bytes[..262144].chunks(PIECE_SIZE).enumerate() {
+        destination.write_piece(0, piece, data).unwrap();
+      }
+      destination
+        .verify(0, Some(&prepared.proof(0).unwrap()), &seed.info.root)
+        .unwrap();
+    }
+    let (download, upload) = crate::peer::test_pair(seed.info_hash()).await;
+    let (received, served) = tokio::time::timeout(Duration::from_secs(10), async {
+      tokio::join!(
+        download.download_into(&seed, store.clone()),
+        upload.serve_file(Arc::new(Mutex::new(prepared)))
+      )
+    })
+    .await
+    .unwrap();
+    received.unwrap();
+    served.unwrap();
+    assert!(destination_complete(&store).unwrap());
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
   }
 
   #[tokio::test]
@@ -766,8 +820,34 @@ mod tests {
           }
           message => panic!("expected selective retry, got {message:?}"),
         }
-        // Keep the peer alive until verification either acknowledges or closes it.
-        let _ = tokio::time::timeout(Duration::from_secs(5), receive(&*upload.control)).await;
+        if corrupt {
+          assert!(matches!(
+            receive(&*upload.control).await,
+            Err(TransferError::Closed)
+          ));
+        } else {
+          assert!(matches!(
+            receive(&*upload.control).await.unwrap(),
+            Control::Have { block_index: 0 }
+          ));
+          assert!(matches!(
+            receive(&*upload.control).await.unwrap(),
+            Control::BlockDone { block_index: 0 }
+          ));
+          let end = receive(&*upload.control).await.unwrap();
+          assert!(matches!(
+            end,
+            Control::Cancel {
+              block_index: 0,
+              count: 0
+            }
+          ));
+          send(&*upload.control, end).await.unwrap();
+          assert!(matches!(
+            receive(&*upload.control).await,
+            Err(TransferError::Closed)
+          ));
+        }
       };
       let destination = directory.path().join("download.bin");
       let (received, ()) = tokio::join!(download.download_file(seed, &destination), upload);
