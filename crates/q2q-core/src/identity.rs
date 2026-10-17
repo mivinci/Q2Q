@@ -147,6 +147,15 @@ pub enum Audience {
 ///
 /// The spec never spells out how a ticket is encoded inside a request body, so
 /// this is the shared answer: a JSON object with binary fields in base64. Both
+/// The only ticket version this builds or accepts. Bump it when the payload
+/// shape changes — an old ticket must stop verifying, not be quietly tolerated.
+pub const TICKET_VERSION: u32 = 1;
+
+/// How far into the future a ticket may expire. The issuer picks `exp` itself,
+/// so without a ceiling it could mint one that stays valid for years — and
+/// spec 211 says a credential's lifetime *is* the security boundary.
+pub const MAX_TICKET_LIFETIME: u64 = 600;
+
 /// Track and Punch parse tickets, so it lives here rather than in either.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TicketBody {
@@ -203,7 +212,7 @@ impl TicketBody {
       public_key,
       iat: self.iat,
       exp: self.exp,
-      aud: Audience::from_wire(&self.aud),
+      aud: self.aud.clone(),
       tgt: self.tgt.as_ref().map(|t| PeerId::unchecked(t.clone())),
       ih,
       cid: self.cid.clone(),
@@ -222,20 +231,14 @@ impl TicketBody {
   }
 }
 
+/// What a verifier expects `aud` to say. It is built from the verifier's own
+/// identity — never parsed out of the wire string, which carries two meanings
+/// in one field and cannot be classified without guessing.
 impl Audience {
-  fn as_str(&self) -> &str {
+  pub fn as_str(&self) -> &str {
     match self {
       Audience::Track => "track",
       Audience::Punch(id) => id.as_str(),
-    }
-  }
-
-  /// Parse `aud` as it appears on the wire: either the literal `track`, or the
-  /// id of the one Punch Server the ticket may be spent at.
-  pub fn from_wire(s: &str) -> Self {
-    match s {
-      "track" => Audience::Track,
-      other => Audience::Punch(other.to_string()),
     }
   }
 }
@@ -268,7 +271,12 @@ pub struct Ticket {
   pub public_key: [u8; 32],
   pub iat: u64,
   pub exp: u64,
-  pub aud: Audience,
+  /// The wire string, kept verbatim. `aud` is either the literal `track` or a
+  /// Punch id (spec 3.1.2) — one string field carrying two meanings — so it
+  /// cannot be parsed into an `Audience` without guessing. Comparing against
+  /// what the verifier expects loses nothing and keeps every id expressible,
+  /// including one that happens to be named `track`.
+  pub aud: String,
   pub tgt: Option<PeerId>,
   pub ih: Option<[u8; 32]>,
   pub cid: Option<String>,
@@ -308,7 +316,7 @@ impl Ticket {
       public_key: B64.encode(self.public_key),
       iat: self.iat,
       exp: self.exp,
-      aud: self.aud.as_str().to_string(),
+      aud: self.aud.clone(),
       tgt: self.tgt.as_ref().map(|t| t.as_str().to_string()),
       ih: self.ih.map(|h| B64.encode(h)),
       cid: self.cid.clone(),
@@ -328,7 +336,7 @@ impl Ticket {
     self.check_identity(now)?;
 
     // 4. this ticket was meant for us
-    if &self.aud != expected_audience {
+    if self.aud != expected_audience.as_str() {
       return Err(TicketError::WrongAudience);
     }
     if let Some(tgt) = &self.tgt {
@@ -346,7 +354,7 @@ impl Ticket {
   /// checked there instead. A connect that names no target is refused outright.
   pub fn verify_as_relay(&self, expected_audience: &Audience, now: u64) -> Result<(), TicketError> {
     self.check_identity(now)?;
-    if &self.aud != expected_audience {
+    if self.aud != expected_audience.as_str() {
       return Err(TicketError::WrongAudience);
     }
     if self.tgt.is_none() {
@@ -357,6 +365,15 @@ impl Ticket {
 
   /// Steps 1–3: the key is the issuer's, the signature holds, it has not expired.
   fn check_identity(&self, now: u64) -> Result<(), TicketError> {
+    // 0. before the expensive checks: the version has to be one we speak, and
+    // the window has to make sense at all. spec 3.1.2's four steps assume both.
+    if self.v != TICKET_VERSION {
+      return Err(TicketError::UnsupportedVersion(self.v));
+    }
+    if self.iat > self.exp {
+      return Err(TicketError::BadValidityWindow);
+    }
+
     // 1. the embedded key must actually be the issuer's
     if peer_id_from_public_key(&self.public_key) != self.iss {
       return Err(TicketError::KeyDoesNotMatchIssuer);
@@ -372,9 +389,14 @@ impl Ticket {
       .verify(&self.payload().encode(), &sig)
       .map_err(|_| TicketError::BadSignature)?;
 
-    // 3. still valid
+    // 3. still valid, and not valid for absurdly long.
+    // `exp` is the issuer's own choice; a ticket that outlives the deployment
+    // makes the "short lifetime" boundary meaningless, so cap it here.
     if now >= self.exp {
       return Err(TicketError::Expired);
+    }
+    if self.exp - now > MAX_TICKET_LIFETIME {
+      return Err(TicketError::LifetimeTooLong);
     }
     Ok(())
   }
@@ -391,6 +413,12 @@ pub enum TicketError {
   Expired,
   WrongAudience,
   WrongTarget,
+  UnsupportedVersion(u32),
+  /// `iat` 晚于 `exp`——有效期窗口自相矛盾，签出来就是废的
+  BadValidityWindow,
+  /// `exp` 距现在超过 `MAX_TICKET_LIFETIME`：自签票据唯一的边界就是寿命，
+  /// 签发方不能自己把它拉长
+  LifetimeTooLong,
 }
 
 impl std::fmt::Display for TicketError {
@@ -404,6 +432,11 @@ impl std::fmt::Display for TicketError {
       TicketError::Expired => "ticket has expired",
       TicketError::WrongAudience => "ticket was issued to a different audience",
       TicketError::WrongTarget => "ticket names a different target peer",
+      TicketError::UnsupportedVersion(v) => {
+        return write!(f, "ticket version {v} is not {TICKET_VERSION}")
+      }
+      TicketError::BadValidityWindow => "ticket expires before it was issued",
+      TicketError::LifetimeTooLong => "ticket stays valid for too long",
     };
     f.write_str(s)
   }
@@ -482,7 +515,7 @@ mod tests {
       public_key: public_key_of(sk),
       iat: now,
       exp: now + 60,
-      aud: Audience::Track,
+      aud: "track".to_string(),
       tgt: None,
       ih: None,
       cid: None,
@@ -490,6 +523,72 @@ mod tests {
     };
     t.sign(sk);
     t
+  }
+
+  #[test]
+  fn rejects_a_ticket_of_another_version() {
+    let sk = key_from(3);
+    let mut t = ticket_from(&sk, 1_000);
+    // 重新签名，让它在版本之外都合法——否则只会撞到 BadSignature
+    t.v = TICKET_VERSION + 1;
+    t.sign(&sk);
+    assert_eq!(
+      t.verify(&Audience::Track, None, 1_000),
+      Err(TicketError::UnsupportedVersion(TICKET_VERSION + 1))
+    );
+  }
+
+  #[test]
+  fn rejects_a_window_that_expires_before_it_was_issued() {
+    let sk = key_from(4);
+    let mut t = ticket_from(&sk, 1_000);
+    t.iat = t.exp + 1;
+    t.sign(&sk);
+    assert_eq!(
+      t.verify(&Audience::Track, None, 1_000),
+      Err(TicketError::BadValidityWindow)
+    );
+  }
+
+  #[test]
+  fn a_punch_named_track_can_verify_its_own_ticket() {
+    // 这台 Punch 的 id 就叫 "track"。wire 字符串保留原样、比较用验证方的期望值，
+    // 于是"字面量 track"与"名叫 track 的 Punch"不再互相吞掉
+    let sk = key_from(7);
+    let now = 1_000;
+    let mut t = ticket_from(&sk, now);
+    t.aud = "track".to_string();
+    t.sign(&sk);
+    assert!(t
+      .verify(&Audience::Punch("track".to_string()), None, now)
+      .is_ok());
+    // 已知代价：同一张票在 Track 上也能过——一个字符串两种语义，靠期望值
+    // 比较是消不掉这一层的。加类型前缀（方案 C）才是根治，见 todos/core-design.md
+    assert_eq!(t.verify(&Audience::Track, None, now), Ok(()));
+  }
+
+  #[test]
+  fn rejects_a_ticket_that_stays_valid_for_too_long() {
+    let sk = key_from(5);
+    let now = 1_000;
+    let mut t = ticket_from(&sk, now);
+    // 自签票据的 exp 由签发方自己填，服务端必须自己兜住上限
+    t.exp = now + MAX_TICKET_LIFETIME + 1;
+    t.sign(&sk);
+    assert_eq!(
+      t.verify(&Audience::Track, None, now),
+      Err(TicketError::LifetimeTooLong)
+    );
+  }
+
+  #[test]
+  fn a_ticket_exactly_at_the_lifetime_limit_passes() {
+    let sk = key_from(6);
+    let now = 1_000;
+    let mut t = ticket_from(&sk, now);
+    t.exp = now + MAX_TICKET_LIFETIME;
+    t.sign(&sk);
+    assert!(t.verify(&Audience::Track, None, now).is_ok());
   }
 
   #[test]
@@ -567,7 +666,7 @@ mod tests {
   fn punch_audience_is_the_concrete_server() {
     let sk = key_from(9);
     let mut t = ticket_from(&sk, 1000);
-    t.aud = Audience::Punch("punch-42".into());
+    t.aud = "punch-42".to_string();
     t.sign(&sk);
     assert_eq!(
       t.verify(&Audience::Punch("punch-42".into()), None, 1000),

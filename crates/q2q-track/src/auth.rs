@@ -24,6 +24,8 @@ pub enum AuthError {
   BadSignature,
   KeyNotIssuer,
   Expired,
+  /// 票据声明的有效期超过 `MAX_TICKET_LIFETIME`：不是过期，是压根不该签这么长
+  LifetimeTooLong,
   WrongAudience,
   BadMac,
   StaleTimestamp,
@@ -36,6 +38,7 @@ impl AuthError {
       AuthError::BadSignature => "bad_signature",
       AuthError::KeyNotIssuer => "key_not_issuer",
       AuthError::Expired => "expired",
+      AuthError::LifetimeTooLong => "lifetime_too_long",
       AuthError::WrongAudience => "wrong_audience",
       AuthError::BadMac => "bad_mac",
       AuthError::StaleTimestamp => "stale_timestamp",
@@ -62,10 +65,15 @@ fn map_ticket_err(e: TicketError) -> AuthError {
     TicketError::KeyDoesNotMatchIssuer => AuthError::KeyNotIssuer,
     TicketError::BadSignature => AuthError::BadSignature,
     TicketError::Expired => AuthError::Expired,
+    TicketError::LifetimeTooLong => AuthError::LifetimeTooLong,
     TicketError::WrongAudience => AuthError::WrongAudience,
     TicketError::WrongTarget => AuthError::WrongAudience,
     TicketError::Malformed(d) => AuthError::MalformedTicket(d),
-    TicketError::MalformedPeerId | TicketError::BadKey => AuthError::MalformedTicket(e.to_string()),
+    // 版本不对、有效期窗口自相矛盾：都是票本身签错了，不是身份或授权的问题
+    TicketError::MalformedPeerId
+    | TicketError::BadKey
+    | TicketError::UnsupportedVersion(_)
+    | TicketError::BadValidityWindow => AuthError::MalformedTicket(e.to_string()),
   }
 }
 
@@ -123,7 +131,7 @@ mod tests {
       public_key: pk,
       iat: now,
       exp,
-      aud: Audience::from_wire(aud),
+      aud: aud.to_string(),
       tgt: None,
       ih: None,
       cid: None,
@@ -155,7 +163,8 @@ mod tests {
   #[test]
   fn expired_ticket_is_rejected() {
     let now = 1_000_000;
-    let body = announce(2, "track", now - 1, now);
+    // iat 要早于 exp，否则这是个窗口倒置的票，会在那一步就被拒
+    let body = announce(2, "track", now - 1, now - 120);
     assert_eq!(verify_announce(&body, now), Err(AuthError::Expired));
   }
 

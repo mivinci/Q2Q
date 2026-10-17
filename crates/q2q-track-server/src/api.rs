@@ -505,7 +505,7 @@ mod tests {
   use super::*;
   use axum::body::Body;
   use axum::http::{Request, StatusCode};
-  use q2q_core::identity::{Audience, Ticket, keypair_from_seed, peer_id_of};
+  use q2q_core::identity::{Ticket, keypair_from_seed, peer_id_of};
   use q2q_ratelimit::PeerAddr;
   use q2q_track::state::MemoryState;
   use tower::ServiceExt;
@@ -553,7 +553,7 @@ mod tests {
       public_key: sk.verifying_key().to_bytes(),
       iat: q2q_track::state::now(),
       exp: q2q_track::state::now() + 600,
-      aud: Audience::from_wire(aud),
+      aud: aud.to_string(),
       tgt: None,
       ih: None,
       cid: None,

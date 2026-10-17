@@ -448,9 +448,10 @@ mod tests {
     }
   }
 
-  /// `Ticket::aud` is an enum in core; build it through the public API.
-  fn audience(aud: &str) -> q2q_core::identity::Audience {
-    q2q_core::identity::Audience::from_wire(aud)
+  /// `aud` travels as the wire string, so there is nothing to construct here
+  /// beyond keeping the callers short.
+  fn audience(aud: &str) -> String {
+    aud.to_string()
   }
 
   fn call_with(state: &State, method: &str, params: serde_json::Value, caller: Caller) -> Outcome {

@@ -174,7 +174,8 @@ fn decode_at(input: &[u8], mut pos: usize) -> Result<(BValue, usize), DecodeErro
       }
       let len: usize = digits.parse().map_err(|_| DecodeError::InvalidLength)?;
       pos += 1; // skip the ':'
-      if pos + len > input.len() {
+                // 写成 `pos + len` 在 len 接近 usize::MAX 时会溢出
+      if len > input.len() - pos {
         return Err(DecodeError::UnexpectedEnd);
       }
       Ok((BValue::Bytes(input[pos..pos + len].to_vec()), pos + len))
@@ -242,6 +243,15 @@ mod tests {
       m.insert(k.as_bytes().to_vec(), v.clone());
     }
     BValue::Dict(m)
+  }
+
+  #[test]
+  fn an_absurd_length_is_rejected_without_overflowing() {
+    // usize::MAX：`pos + len` 会溢出，改成比较差值就不会
+    assert_eq!(
+      decode(b"18446744073709551615:"),
+      Err(DecodeError::UnexpectedEnd)
+    );
   }
 
   fn hex(bytes: &[u8]) -> String {

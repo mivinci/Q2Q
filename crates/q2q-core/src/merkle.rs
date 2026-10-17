@@ -173,9 +173,23 @@ pub fn verify_range(
     return false;
   }
   let sizes = layer_sizes(leaf_count);
+
+  // 载荷带了叶子哈希时，它就是对数据的承诺（spec 4.2.1 的 base layer = 0）：
+  // 必须跟区间一一对应，且每块算出来的叶子都得对上，否则字节本身就不对，
+  // 不必再往上重建 root。上传方可以在短区间上省略它，那就走纯验证路径。
+  if !proof.leaf_hashes.is_empty() && proof.leaf_hashes.len() != blocks.len() {
+    return false;
+  }
+
   let mut known: HashMap<(usize, u64), Hash> = HashMap::new();
   for (i, b) in blocks.iter().enumerate() {
-    known.insert((0, (start + i) as u64), leaf_hash(b));
+    let leaf = leaf_hash(b);
+    if let Some(claimed) = proof.leaf_hashes.get(i) {
+      if leaf != *claimed {
+        return false;
+      }
+    }
+    known.insert((0, (start + i) as u64), leaf);
   }
   for n in &proof.nodes {
     if n.level as usize >= sizes.len() {
@@ -190,6 +204,96 @@ pub fn verify_range(
     Some(h) => h == *root_hash,
     None => false,
   }
+}
+
+/// Leaf hashes that have already been checked against a root.
+///
+/// The invariant that makes this safe: nothing enters the cache until it has
+/// taken part in a root comparison that succeeded, or arrived as a full list
+/// that rebuilds to `root` locally. A cache filled from unverified claims would
+/// be a second trust root — every O(1) lookup after that would be comparing
+/// against bytes a peer invented.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LeafCache {
+  leaves: Vec<Option<Hash>>,
+}
+
+impl LeafCache {
+  pub fn new(leaf_count: usize) -> Self {
+    LeafCache {
+      leaves: vec![None; leaf_count],
+    }
+  }
+
+  pub fn leaf_count(&self) -> usize {
+    self.leaves.len()
+  }
+
+  pub fn known(&self, index: usize) -> bool {
+    matches!(self.leaves.get(index), Some(Some(_)))
+  }
+
+  pub fn known_count(&self) -> usize {
+    self.leaves.iter().filter(|h| h.is_some()).count()
+  }
+
+  /// O(1) check for a block whose leaf is cached. `None` means this index is
+  /// not cached yet and the caller has to go get a proof.
+  pub fn verify(&self, index: usize, block: &[u8]) -> Option<bool> {
+    let claimed = self.leaves.get(index)?.as_ref()?;
+    Some(leaf_hash(block) == *claimed)
+  }
+
+  /// A whole list at once — the CDN / `proof_list` path of spec 5.1. It is
+  /// rebuilt into a root and compared before any of it is trusted, which is the
+  /// same code the proof path uses.
+  pub fn from_leaf_hashes(leaves: &[Hash], root_hash: &Hash) -> Option<Self> {
+    if leaves.is_empty() || &root(leaves) != root_hash {
+      return None;
+    }
+    Some(LeafCache {
+      leaves: leaves.iter().map(|h| Some(*h)).collect(),
+    })
+  }
+
+  /// The root this cache rebuilds, once every leaf is known. A cache coming
+  /// back off disk can be checked against `info.root` with this.
+  pub fn root(&self) -> Option<Hash> {
+    // 有一个未知就收不出整表
+    let leaves = self.leaves.iter().copied().collect::<Option<Vec<Hash>>>()?;
+    Some(root(&leaves))
+  }
+
+  /// Private on purpose: the only way in is `verify_range_into_cache`, which
+  /// absorbs only after the root comparison passed.
+  fn absorb(&mut self, start: usize, leaf_hashes: &[Hash]) {
+    for (i, h) in leaf_hashes.iter().enumerate() {
+      if let Some(slot) = self.leaves.get_mut(start + i) {
+        *slot = Some(*h);
+      }
+    }
+  }
+}
+
+/// Verify a range and, only if it passed, remember its leaves.
+///
+/// Bundling the two is the whole point — it leaves no way to cache a proof
+/// that has not been checked. spec 4.2.1 allows the uploader to omit leaf
+/// hashes on short ranges; in that case nothing is cached and the next block
+/// in the range still needs a proof.
+pub fn verify_range_into_cache(
+  blocks: &[&[u8]],
+  start: usize,
+  leaf_count: usize,
+  proof: &Proof,
+  root_hash: &Hash,
+  cache: &mut LeafCache,
+) -> bool {
+  if !verify_range(blocks, start, leaf_count, proof, root_hash) {
+    return false;
+  }
+  cache.absorb(start, &proof.leaf_hashes);
+  true
 }
 
 /// Rebuild a node from whatever is known, memoised so each node is hashed once.
@@ -272,6 +376,105 @@ mod tests {
         assert!(verify(block, i, n, &proof, &root_hash), "n={n} index={i}");
       }
     }
+  }
+
+  #[test]
+  fn a_cached_leaf_answers_without_a_proof() {
+    let (blocks, leaves) = leaves_of(4, 32);
+    let root_hash = root(&leaves);
+    let mut cache = LeafCache::new(4);
+    let proof = prove_range(&leaves, 1, 2);
+    let range: Vec<&[u8]> = blocks[1..3].iter().map(|b| b.as_slice()).collect();
+
+    assert!(verify_range_into_cache(
+      &range, 1, 4, &proof, &root_hash, &mut cache
+    ));
+    assert_eq!(cache.known_count(), 2);
+    // O(1) 查表，不必再走一遍路径
+    assert_eq!(cache.verify(1, &blocks[1]), Some(true));
+    assert_eq!(cache.verify(2, &blocks[2]), Some(true));
+    assert_eq!(cache.verify(1, &blocks[0]), Some(false)); // 拿错了块
+    assert_eq!(cache.verify(3, &blocks[3]), None); // 这块还没缓存过
+  }
+
+  #[test]
+  fn a_failed_verification_caches_nothing() {
+    let (blocks, leaves) = leaves_of(4, 32);
+    let root_hash = root(&leaves);
+    let mut cache = LeafCache::new(4);
+    let proof = prove_range(&leaves, 1, 2);
+
+    let mut bad = blocks.clone();
+    bad[2][0] ^= 0xff;
+    let range: Vec<&[u8]> = bad[1..3].iter().map(|b| b.as_slice()).collect();
+    assert!(!verify_range_into_cache(
+      &range, 1, 4, &proof, &root_hash, &mut cache
+    ));
+    assert_eq!(cache.known_count(), 0);
+  }
+
+  #[test]
+  fn a_leaf_list_only_loads_if_it_rebuilds_the_root() {
+    let (_, leaves) = leaves_of(4, 32);
+    let root_hash = root(&leaves);
+    let cache = LeafCache::from_leaf_hashes(&leaves, &root_hash).unwrap();
+    assert_eq!(cache.known_count(), 4);
+    assert_eq!(cache.root(), Some(root_hash));
+
+    // 一份对不上 root 的列表：一个都不许装进去
+    let mut other = leaves.clone();
+    other[2][0] ^= 0xff;
+    assert!(LeafCache::from_leaf_hashes(&other, &root_hash).is_none());
+  }
+
+  #[test]
+  fn an_incomplete_cache_has_no_root() {
+    let (blocks, leaves) = leaves_of(4, 32);
+    let root_hash = root(&leaves);
+    let mut cache = LeafCache::new(4);
+    let proof = prove_range(&leaves, 1, 1);
+    let range: Vec<&[u8]> = blocks[1..2].iter().map(|b| b.as_slice()).collect();
+    assert!(verify_range_into_cache(
+      &range, 1, 4, &proof, &root_hash, &mut cache
+    ));
+    // 只知其一，重建不出整棵树的根
+    assert_eq!(cache.root(), None);
+  }
+
+  #[test]
+  fn leaf_hashes_commit_to_the_bytes() {
+    let (blocks, leaves) = leaves_of(4, 32);
+    let root_hash = root(&leaves);
+    let proof = prove_range(&leaves, 1, 2);
+    let range: Vec<&[u8]> = blocks[1..3].iter().map(|b| b.as_slice()).collect();
+    assert!(verify_range(&range, 1, 4, &proof, &root_hash));
+
+    // 改一个字节：带了叶子哈希就该在叶子层当场拒绝
+    let mut tampered = blocks.clone();
+    tampered[2][0] ^= 0xff;
+    let bad: Vec<&[u8]> = tampered[1..3].iter().map(|b| b.as_slice()).collect();
+    assert!(!verify_range(&bad, 1, 4, &proof, &root_hash));
+  }
+
+  #[test]
+  fn leaf_hashes_that_cover_only_part_of_the_range_are_rejected() {
+    let (blocks, leaves) = leaves_of(4, 32);
+    let root_hash = root(&leaves);
+    let mut proof = prove_range(&leaves, 1, 2);
+    proof.leaf_hashes.truncate(1); // 少一个：这份承诺不完整
+    let range: Vec<&[u8]> = blocks[1..3].iter().map(|b| b.as_slice()).collect();
+    assert!(!verify_range(&range, 1, 4, &proof, &root_hash));
+  }
+
+  #[test]
+  fn a_proof_without_leaf_hashes_still_verifies() {
+    // 上传方可以省略叶子哈希，此时走纯验证路径
+    let (blocks, leaves) = leaves_of(4, 32);
+    let root_hash = root(&leaves);
+    let mut proof = prove_range(&leaves, 1, 2);
+    proof.leaf_hashes.clear();
+    let range: Vec<&[u8]> = blocks[1..3].iter().map(|b| b.as_slice()).collect();
+    assert!(verify_range(&range, 1, 4, &proof, &root_hash));
   }
 
   #[test]
