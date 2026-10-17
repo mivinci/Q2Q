@@ -82,8 +82,10 @@ impl Info {
       BValue::Dict(d) => d,
       _ => return Err(SeedError::InfoNotADict),
     };
+    // 上下界都要卡：负数和大数经 `as u32` 会回绕成别的值，
+    // 报出来的错就不再是"这个字段不对"了
     let v_num = match d.get(&b"v"[..]) {
-      Some(BValue::Int(n)) => *n,
+      Some(BValue::Int(n)) if *n >= 0 && *n <= u32::MAX as i64 => *n as u32,
       Some(_) => return Err(SeedError::FieldWrongType("v")),
       None => return Err(SeedError::MissingField("v")),
     };
@@ -93,7 +95,7 @@ impl Info {
       None => return Err(SeedError::MissingField("length")),
     };
     let block_size = match d.get(&b"block_size"[..]) {
-      Some(BValue::Int(n)) if *n >= 0 => *n as u32,
+      Some(BValue::Int(n)) if *n >= 0 && *n <= u32::MAX as i64 => *n as u32,
       Some(_) => return Err(SeedError::FieldWrongType("block_size")),
       None => return Err(SeedError::MissingField("block_size")),
     };
@@ -123,7 +125,7 @@ impl Info {
     };
 
     Ok(Info {
-      v: v_num as u32,
+      v: v_num,
       name,
       length,
       block_size,
@@ -481,6 +483,31 @@ mod tests {
     assert!(matches!(
       info.validate(),
       Err(SeedError::BlockSizeOutOfRange(_))
+    ));
+  }
+
+  #[test]
+  fn rejects_a_block_size_that_does_not_fit_in_u32() {
+    let mut d = sample_info().to_value();
+    if let BValue::Dict(m) = &mut d {
+      m.insert(b"block_size".to_vec(), BValue::Int(1 << 33));
+    }
+    // 不卡上界的话 `as u32` 回绕成 0，报出来的会是 OutOfRange(0) 而不是字段不对
+    assert!(matches!(
+      Info::from_value(&d),
+      Err(SeedError::FieldWrongType("block_size"))
+    ));
+  }
+
+  #[test]
+  fn rejects_a_negative_version() {
+    let mut d = sample_info().to_value();
+    if let BValue::Dict(m) = &mut d {
+      m.insert(b"v".to_vec(), BValue::Int(-1));
+    }
+    assert!(matches!(
+      Info::from_value(&d),
+      Err(SeedError::FieldWrongType("v"))
     ));
   }
 

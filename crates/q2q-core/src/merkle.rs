@@ -173,9 +173,23 @@ pub fn verify_range(
     return false;
   }
   let sizes = layer_sizes(leaf_count);
+
+  // 载荷带了叶子哈希时，它就是对数据的承诺（spec 4.2.1 的 base layer = 0）：
+  // 必须跟区间一一对应，且每块算出来的叶子都得对上，否则字节本身就不对，
+  // 不必再往上重建 root。上传方可以在短区间上省略它，那就走纯验证路径。
+  if !proof.leaf_hashes.is_empty() && proof.leaf_hashes.len() != blocks.len() {
+    return false;
+  }
+
   let mut known: HashMap<(usize, u64), Hash> = HashMap::new();
   for (i, b) in blocks.iter().enumerate() {
-    known.insert((0, (start + i) as u64), leaf_hash(b));
+    let leaf = leaf_hash(b);
+    if let Some(claimed) = proof.leaf_hashes.get(i) {
+      if leaf != *claimed {
+        return false;
+      }
+    }
+    known.insert((0, (start + i) as u64), leaf);
   }
   for n in &proof.nodes {
     if n.level as usize >= sizes.len() {
@@ -272,6 +286,42 @@ mod tests {
         assert!(verify(block, i, n, &proof, &root_hash), "n={n} index={i}");
       }
     }
+  }
+
+  #[test]
+  fn leaf_hashes_commit_to_the_bytes() {
+    let (blocks, leaves) = leaves_of(4, 32);
+    let root_hash = root(&leaves);
+    let proof = prove_range(&leaves, 1, 2);
+    let range: Vec<&[u8]> = blocks[1..3].iter().map(|b| b.as_slice()).collect();
+    assert!(verify_range(&range, 1, 4, &proof, &root_hash));
+
+    // 改一个字节：带了叶子哈希就该在叶子层当场拒绝
+    let mut tampered = blocks.clone();
+    tampered[2][0] ^= 0xff;
+    let bad: Vec<&[u8]> = tampered[1..3].iter().map(|b| b.as_slice()).collect();
+    assert!(!verify_range(&bad, 1, 4, &proof, &root_hash));
+  }
+
+  #[test]
+  fn leaf_hashes_that_cover_only_part_of_the_range_are_rejected() {
+    let (blocks, leaves) = leaves_of(4, 32);
+    let root_hash = root(&leaves);
+    let mut proof = prove_range(&leaves, 1, 2);
+    proof.leaf_hashes.truncate(1); // 少一个：这份承诺不完整
+    let range: Vec<&[u8]> = blocks[1..3].iter().map(|b| b.as_slice()).collect();
+    assert!(!verify_range(&range, 1, 4, &proof, &root_hash));
+  }
+
+  #[test]
+  fn a_proof_without_leaf_hashes_still_verifies() {
+    // 上传方可以省略叶子哈希，此时走纯验证路径
+    let (blocks, leaves) = leaves_of(4, 32);
+    let root_hash = root(&leaves);
+    let mut proof = prove_range(&leaves, 1, 2);
+    proof.leaf_hashes.clear();
+    let range: Vec<&[u8]> = blocks[1..3].iter().map(|b| b.as_slice()).collect();
+    assert!(verify_range(&range, 1, 4, &proof, &root_hash));
   }
 
   #[test]
