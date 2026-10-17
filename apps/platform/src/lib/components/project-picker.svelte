@@ -27,7 +27,7 @@
       const body = new FormData();
       body.set('projectId', projectId);
       body.set('returnTo', page.url.pathname);
-      const response = await fetch('/?/switchProject', { method: 'POST', body, headers: { 'x-sveltekit-action': 'true' } });
+      const response = await fetch('/library?/switchProject', { method: 'POST', body, headers: { 'x-sveltekit-action': 'true' } });
       const result = deserialize(await response.text());
       if (result.type === 'redirect') await applyAction(result);
       else error = text.projectActionFailed;
@@ -67,7 +67,7 @@
     <Dialog.Content onEscapeKeydown={(event) => { if (busy) event.preventDefault(); }} onInteractOutside={(event) => { if (busy) event.preventDefault(); }} class="fixed top-1/2 left-1/2 z-[60] w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border bg-popover p-6 text-popover-foreground shadow-xl outline-none">
       <Dialog.Title class="text-lg font-semibold tracking-tight">{text.createProject}</Dialog.Title>
       <Dialog.Description class="mt-2 text-sm text-muted-foreground">{text.createProjectDescription}</Dialog.Description>
-      <form action="/?/createProject" method="POST" class="mt-6 space-y-5" use:enhance={() => {
+      <form action="/library?/createProject" method="POST" class="mt-6 space-y-5" use:enhance={() => {
         busy = true;
         error = '';
         return async ({ result }) => {

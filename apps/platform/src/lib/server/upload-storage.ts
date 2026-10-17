@@ -21,7 +21,7 @@ export function storageIdentity(mode = uploadTransport()): string {
   return JSON.stringify({ endpoint: new URL(config.endpoint).toString().replace(/\/$/, ''), region: config.region, bucket: config.bucket, forcePathStyle: config.forcePathStyle });
 }
 
-function s3Config(): S3Config {
+export function s3Config(): S3Config {
   if (!env.S3_ENDPOINT || !env.S3_REGION || !env.S3_BUCKET || !env.S3_ACCESS_KEY_ID || !env.S3_SECRET_ACCESS_KEY) error(503, 'uploadUnavailable');
   return { endpoint: env.S3_ENDPOINT, region: env.S3_REGION, bucket: env.S3_BUCKET, accessKeyId: env.S3_ACCESS_KEY_ID, secretAccessKey: env.S3_SECRET_ACCESS_KEY, forcePathStyle: env.S3_FORCE_PATH_STYLE !== 'false' };
 }

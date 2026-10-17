@@ -22,6 +22,10 @@ export function resolveLocale(preference: string | undefined, acceptLanguage: st
 }
 
 const zh = {
+  exportDownloadSeed: '导出下载种子', downloadGrantWarning: '持有此种子的人可下载此版本，直到授权被撤销或版本被撤回。已签发的链接最多仍有效 5 分钟。', revokeDownloadGrant: '撤销授权', downloadGrantRevoked: '已撤销',
+  publicationCleanup: '等待产物清理', publicationRetryCleanup: '重试清理',
+  publications: '发布版本', publishVersion: '发布新版本', withdrawVersion: '撤回', publicationCreating: '正在准备发布产物…', publicationPublished: '已发布', publicationFailed: '发布失败，请重新创建版本。', publicationWithdrawn: '已撤回', publicationDescription: '固定当前内容和种子。下载授权将在后续单独配置。', publicationWithdrawConfirm: '撤回此版本？撤回后需要创建新版本才能再次发布。', publicationRedispatch: '重新提交任务',
+  publicationNotFound: '发布版本不存在或无权访问。', publicationInvalid: '发布请求无效。', publicationConflict: '此发布请求已用于其他文件。', publicationActive: '此文件已有创建中或已发布的版本。', publicationNotReady: '请先完成文件上传和种子处理。', publicationInUse: '此文件仍被发布版本引用，请先撤回并等待下载授权到期、清理完成。',
   uploadStored: '已上传',
   processingTitle: '种子与内容证明', processingPending: '等待处理', processingRunning: '正在生成种子', processingReady: '种子已生成', processingFailed: '处理失败，请重试。', processingStart: '生成种子', processingRetry: '重试处理', processingProgress: '处理进度', processingUnavailable: '处理服务暂不可用，请稍后重试。', processingSourceChanged: '存储来源已改变，请检查原始文件。', processingNotReady: '种子尚未生成。', downloadSeed: '下载种子', contentIdentity: '内容身份', processingDescription: '种子包含内容证明。当前不会自动做种或公开下载地址，分发还需配置 Track 和可用来源。',
   fileDetails: '文件详情', fileStatus: '状态', filePending: '待上传', fileDeleting: '删除中', deleteFile: '删除文件', deleteFileConfirm: '删除此文件及存储对象？此操作无法撤销。', fileCreatedAt: '上传时间', backToLibrary: '返回内容库', libraryLimit: '显示最近 50 个文件',
@@ -75,6 +79,10 @@ const zh = {
 
 type Messages = { [Key in keyof typeof zh]: (typeof zh)[Key] };
 const en: Messages = {
+  exportDownloadSeed: 'Export download seed', downloadGrantWarning: 'Anyone with this seed can download this version until its grant is revoked or the version is withdrawn. Issued links may remain valid for up to 5 minutes.', revokeDownloadGrant: 'Revoke access', downloadGrantRevoked: 'Revoked',
+  publicationCleanup: 'Waiting for artifact cleanup', publicationRetryCleanup: 'Retry cleanup',
+  publications: 'Publications', publishVersion: 'Publish a version', withdrawVersion: 'Withdraw', publicationCreating: 'Preparing publication artifacts…', publicationPublished: 'Published', publicationFailed: 'Publication failed. Create a new version to retry.', publicationWithdrawn: 'Withdrawn', publicationDescription: 'Freeze the current content and seed. Download grants will be configured separately.', publicationWithdrawConfirm: 'Withdraw this version? Publishing again requires a new version.', publicationRedispatch: 'Resubmit task',
+  publicationNotFound: 'Publication not found or access denied.', publicationInvalid: 'Invalid publication request.', publicationConflict: 'This publication request belongs to another file.', publicationActive: 'This file already has a creating or published version.', publicationNotReady: 'Complete the upload and seed processing first.', publicationInUse: 'A publication still references this file. Withdraw it and wait for issued links to expire and cleanup to finish.',
   uploadStored: 'Uploaded',
   processingTitle: 'Seed & content proof', processingPending: 'Queued for processing', processingRunning: 'Generating seed', processingReady: 'Seed ready', processingFailed: 'Processing failed. Please retry.', processingStart: 'Generate seed', processingRetry: 'Retry processing', processingProgress: 'Processing progress', processingUnavailable: 'Processing is unavailable. Please try again later.', processingSourceChanged: 'The stored source has changed. Check the original file.', processingNotReady: 'The seed is not ready.', downloadSeed: 'Download seed', contentIdentity: 'Content identity', processingDescription: 'The seed includes content proof. Seeding and public download URLs are not enabled automatically; distribution still needs Track and an available source.',
   fileDetails: 'File details', fileStatus: 'Status', filePending: 'Awaiting upload', fileDeleting: 'Deleting', deleteFile: 'Delete file', deleteFileConfirm: 'Delete this file and its stored object? This cannot be undone.', fileCreatedAt: 'Uploaded at', backToLibrary: 'Back to library', libraryLimit: 'Showing the latest 50 files',

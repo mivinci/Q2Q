@@ -45,17 +45,23 @@ export async function deleteFile(id: string, userId: string): Promise<void> {
     .bind(id, userId, userId).first<FileRecord>();
   if (!file) error(404, 'fileNotFound');
   if (file.status === 'deleted') return;
-  // A single conditional write arbitrates deletion against new upload sessions.
+  // One conditional write arbitrates against new uploads, processing and publication references.
   const result = await env.DB.prepare(`UPDATE file_record SET status = 'deleting', updatedAt = ?
     WHERE id = ? AND status IN ('pending', 'uploaded', 'deleting') AND NOT EXISTS (
       SELECT 1 FROM upload_task WHERE fileId = file_record.id
       AND (status IN ('initializing', 'uploading', 'completing') OR cleanupPending = 1))
-    AND NOT EXISTS (SELECT 1 FROM seed_task WHERE fileId = file_record.id AND status IN ('pending', 'running'))`)
-    .bind(Date.now(), id).run();
-  if (!result.meta.changes) error(409, 'fileUploadActive');
+    AND NOT EXISTS (SELECT 1 FROM seed_task WHERE fileId = file_record.id AND status IN ('pending', 'running'))
+    AND NOT EXISTS (SELECT 1 FROM content_publication WHERE fileId = file_record.id
+      AND (status IN ('creating', 'published') OR cleanupPending = 1 OR lastSignedUntil > ?))`)
+    .bind(Date.now(), id, Date.now()).run();
+  if (!result.meta.changes) {
+    const referenced = await env.DB.prepare(`SELECT id FROM content_publication WHERE fileId = ?
+      AND (status IN ('creating', 'published') OR cleanupPending = 1 OR lastSignedUntil > ?)`).bind(id, Date.now()).first();
+    error(409, referenced ? 'publicationInUse' : 'fileUploadActive');
+  }
   const { results } = await env.DB.prepare(`SELECT objectKey, transport, bucketIdentity FROM upload_task
     WHERE fileId = ? AND status = 'uploaded'`).bind(id).all<{ objectKey: string; transport: string; bucketIdentity: string }>();
-  // No published content references exist in this stage; keep a tombstone so deletion can retry safely.
+  // References were checked before entering deleting; keep a tombstone for safe provider retries.
   for (const object of results) await uploadStorage(object).delete(object.objectKey);
   const artifacts = await env.DB.prepare(`SELECT s.seedKey, s.proofKey, u.transport, u.bucketIdentity FROM seed_task s
     JOIN upload_task u ON u.id = s.uploadId WHERE s.fileId = ?`).bind(id)

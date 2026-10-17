@@ -158,6 +158,8 @@ impl Source {
       .timeout(Duration::from_secs(20))
       .connect_timeout(Duration::from_secs(5))
       .redirect(reqwest::redirect::Policy::limited(3))
+      // Stable source URLs may contain bearer grants; never forward them as Referer.
+      .referer(false)
       .build()
       .map_err(http_error)?;
     let urls: Vec<_> = seed

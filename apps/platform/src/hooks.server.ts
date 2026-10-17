@@ -1,10 +1,17 @@
-import type { Handle } from '@sveltejs/kit/hooks';
+import type { Handle, HandleServerError } from '@sveltejs/kit/hooks';
 import { env } from 'cloudflare:workers';
 import { building } from '$app/env';
 import { svelteKitHandler } from 'better-auth/svelte-kit';
 import { error } from '@sveltejs/kit';
 import { createAuth } from '#lib/server/auth.js';
 import { localeCookie, resolveLocale } from '#lib/i18n.js';
+
+export const handleError: HandleServerError = ({ event, kind }) => {
+  if (kind !== 'unknown') return;
+  // Do not log Request, URL or raw transport errors: grant and S3 URLs carry credentials.
+  console.error('platform request failed', { route: event.route.id, kind });
+  return { message: 'requestUnavailable' };
+};
 
 export const handle: Handle = async ({ event, resolve }) => {
   // Request-local data prevents language preferences leaking between SSR requests.
@@ -31,6 +38,7 @@ export const handle: Handle = async ({ event, resolve }) => {
     : await resolvePage(event);
   const response = new Response(result.body, result);
   response.headers.set('Cache-Control', 'private, no-store');
+  response.headers.set('Referrer-Policy', 'no-referrer');
   response.headers.set('Content-Language', event.locals.locale);
   // HTML depends on both the explicit preference and browser language.
   response.headers.append('Vary', 'Cookie, Accept-Language');

@@ -14,6 +14,7 @@ pub(super) struct Request {
   pub(super) path: String,
   pub(super) range: Option<String>,
   pub(super) identity: bool,
+  pub(super) referer: Option<String>,
 }
 pub(super) struct Reply {
   pub(super) status: u16,
@@ -22,6 +23,7 @@ pub(super) struct Reply {
   pub(super) length: Option<usize>,
   pub(super) body: Vec<u8>,
   pub(super) hang: bool,
+  pub(super) location: Option<String>,
 }
 impl Reply {
   pub(super) fn body(body: Vec<u8>) -> Self {
@@ -32,6 +34,7 @@ impl Reply {
       length: Some(body.len()),
       body,
       hang: false,
+      location: None,
     }
   }
 }
@@ -79,10 +82,11 @@ impl Server {
               let headers = String::from_utf8(bytes).unwrap();
               let mut lines = headers.lines();
               let path = lines.next().unwrap().split_whitespace().nth(1).unwrap().to_string();
-              let mut request = Request { path, range: None, identity: false };
+              let mut request = Request { path, range: None, identity: false, referer: None };
               for line in lines {
                 if let Some((key, value)) = line.split_once(':') {
                   if key.eq_ignore_ascii_case("range") { request.range = Some(value.trim().into()); }
+                  if key.eq_ignore_ascii_case("referer") { request.referer = Some(value.trim().into()); }
                   if key.eq_ignore_ascii_case("accept-encoding") { request.identity = value.trim() == "identity"; }
                 }
               }
@@ -92,6 +96,7 @@ impl Server {
               if let Some(length) = reply.length { headers.push_str(&format!("Content-Length: {length}\r\n")); }
               if let Some(range) = reply.range { headers.push_str(&format!("Content-Range: {range}\r\n")); }
               if let Some(encoding) = reply.encoding { headers.push_str(&format!("Content-Encoding: {encoding}\r\n")); }
+              if let Some(location) = reply.location { headers.push_str(&format!("Location: {location}\r\n")); }
               headers.push_str("\r\n");
               if stream.write_all(headers.as_bytes()).await.is_err() { return; }
               if reply.hang {

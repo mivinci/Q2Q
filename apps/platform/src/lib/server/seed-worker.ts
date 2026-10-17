@@ -16,6 +16,14 @@ export interface SeedComputer {
 }
 const leaseMs = 120_000;
 
+async function deleteUnusedArtifact(db: D1Database, storage: ReturnType<typeof createS3Storage>, key: string) {
+  // A creating version pins its processing inputs until independent artifacts exist.
+  const referenced = await db.prepare(`SELECT id FROM content_publication WHERE status IN ('creating', 'published')
+    AND (preparedSeedKey = ? OR preparedProofKey = ? OR seedKey = ? OR proofKey = ?) LIMIT 1`)
+    .bind(key, key, key, key).first();
+  if (!referenced) await storage.delete(key);
+}
+
 export async function processSeed(db: D1Database, config: S3Config, message: ProcessingMessage, create: (size: number) => SeedComputer) {
   const now = Date.now();
   const token = crypto.randomUUID();
@@ -46,7 +54,7 @@ export async function processSeed(db: D1Database, config: S3Config, message: Pro
     const prefix = `projects/processing/${task.fileId}/${token}`;
     seedKey = `${prefix}/seed.q2q`;
     proofKey = `${prefix}/proof.bin`;
-    for (const key of [task.seedKey, task.proofKey]) if (key) await storage.delete(key);
+    for (const key of [task.seedKey, task.proofKey]) if (key) await deleteUnusedArtifact(db, storage, key);
     const intent = await db.prepare(`UPDATE seed_task SET seedKey = ?, proofKey = ? WHERE fileId = ? AND leaseToken = ? AND status = 'running'`)
       .bind(seedKey, proofKey, task.fileId, token).run();
     if (!intent.meta.changes) throw new Error('processingLeaseLost');
@@ -93,7 +101,7 @@ export async function processSeed(db: D1Database, config: S3Config, message: Pro
     const state = await db.prepare('SELECT status, seedKey FROM seed_task WHERE fileId = ?').bind(task.fileId)
       .first<{ status: string; seedKey: string | null }>();
     if (state?.status === 'ready' && state.seedKey === seedKey) return 'done';
-    if (storage) for (const key of [seedKey, proofKey]) if (key) await storage.delete(key).catch(() => {});
+    if (storage) for (const key of [seedKey, proofKey]) if (key) await deleteUnusedArtifact(db, storage, key).catch(() => {});
     const code = cause instanceof Error && ['processingSourceChanged', 'processingLeaseLost'].includes(cause.message) ? cause.message : 'processingFailed';
     await db.prepare(`UPDATE seed_task SET status = 'failed', leaseToken = NULL, leaseUntil = NULL, errorCode = ?, updatedAt = ?
       WHERE fileId = ? AND leaseToken = ? AND status = 'running'`).bind(code, Date.now(), task.fileId, token).run();

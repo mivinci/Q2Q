@@ -7,6 +7,86 @@ use std::sync::Mutex;
 use crate::test_http::*;
 
 #[tokio::test]
+async fn grant_redirect_preserves_range_without_leaking_referer() {
+  let bytes = vec![42; 262144 + 17];
+  let mut seed = fixture(&bytes);
+  let served = bytes.clone();
+  let object = Server::start(move |request| range_reply(&request, &served)).await;
+  let target = format!("{}/signed-object", object.url);
+  let entry = Server::start(move |_| {
+    let mut reply = Reply::body(Vec::new());
+    reply.status = 307;
+    reply.location = Some(target.clone());
+    reply
+  })
+  .await;
+  seed.cdn_list = vec![format!("{}/content?secret=fixture-only", entry.url)];
+  let progress = crate::progress::channel(&seed, &[]);
+  let source = Source::load(&seed, &progress).await.unwrap();
+  for index in 0..2 {
+    let (received, _) = source.fetch(&seed, index, &progress).await.unwrap();
+    let start = index * 262144;
+    assert_eq!(received, bytes[start..bytes.len().min(start + 262144)]);
+  }
+  let requests = object.requests.lock().unwrap();
+  assert_eq!(requests.len(), 2);
+  assert_eq!(requests[0].range.as_deref(), Some("bytes=0-262143"));
+  assert_eq!(requests[1].range.as_deref(), Some("bytes=262144-262160"));
+  assert!(
+    requests
+      .iter()
+      .all(|request| request.referer.is_none() && request.identity)
+  );
+  // Each block returns to the stable entry; a signed redirect is never cached as its source.
+  assert_eq!(entry.requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn expired_signed_target_is_replaced_via_stable_entry_for_the_next_block() {
+  use std::sync::atomic::{AtomicUsize, Ordering};
+  let bytes = vec![7; 262144 + 17];
+  let mut seed = fixture(&bytes);
+  let generation = Arc::new(AtomicUsize::new(0));
+  let validity = generation.clone();
+  let served = bytes.clone();
+  let object = Server::start(move |request| {
+    if request.path != format!("/signed-{}", validity.load(Ordering::SeqCst)) {
+      let mut denied = Reply::body(Vec::new());
+      denied.status = 403;
+      return denied;
+    }
+    range_reply(&request, &served)
+  })
+  .await;
+  let signing = generation.clone();
+  let target = object.url.clone();
+  let entry = Server::start(move |_| {
+    let mut reply = Reply::body(Vec::new());
+    reply.status = 307;
+    reply.location = Some(format!(
+      "{target}/signed-{}",
+      signing.load(Ordering::SeqCst)
+    ));
+    reply
+  })
+  .await;
+  seed.cdn_list = vec![format!("{}/content?secret=fixture-only", entry.url)];
+  let progress = crate::progress::channel(&seed, &[]);
+  let source = Source::load(&seed, &progress).await.unwrap();
+  source.fetch(&seed, 0, &progress).await.unwrap();
+  generation.store(1, Ordering::SeqCst);
+  let expired = Client::new()
+    .get(format!("{}/signed-0", object.url))
+    .send()
+    .await
+    .unwrap();
+  assert_eq!(expired.status(), StatusCode::FORBIDDEN);
+  let (tail, _) = source.fetch(&seed, 1, &progress).await.unwrap();
+  assert_eq!(tail, bytes[262144..]);
+  assert_eq!(entry.requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn invalid_range_status_encoding_and_body_lengths_are_rejected() {
   let bytes = vec![9; 262144 + 5];
   let seed = fixture(&bytes);

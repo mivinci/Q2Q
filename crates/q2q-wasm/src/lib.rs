@@ -2,6 +2,29 @@
 use q2q_core::seed_builder::SeedBuilder as CoreBuilder;
 use wasm_bindgen::prelude::*;
 
+/// Source hints live outside info; changing them must preserve content identity.
+#[wasm_bindgen]
+pub fn seed_with_source(bytes: &[u8], source: String) -> Result<Vec<u8>, JsError> {
+  let mut seed = q2q_core::seed::Seed::parse(bytes)?;
+  seed.validate()?;
+  if seed.leaf_hashes.is_none() || source.len() > 4096
+    || !(source.starts_with("https://") || source.starts_with("http://")) {
+    return Err(JsError::new("inline seed and HTTP source required"));
+  }
+  seed.cdn_list = vec![source];
+  seed.proof_list.clear();
+  Ok(seed.encode())
+}
+
+/// Rebuild publication proof bytes from the validated, digest-pinned inline seed.
+#[wasm_bindgen]
+pub fn publication_proof(bytes: &[u8]) -> Result<Vec<u8>, JsError> {
+  let seed = q2q_core::seed::Seed::parse(bytes)?;
+  seed.validate()?;
+  let leaves = seed.leaf_hashes.ok_or_else(|| JsError::new("inline proof required"))?;
+  Ok(leaves.into_iter().flatten().collect())
+}
+
 #[wasm_bindgen]
 pub struct SeedBuilder {
   inner: CoreBuilder,

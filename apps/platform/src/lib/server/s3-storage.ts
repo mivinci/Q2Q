@@ -54,6 +54,16 @@ export async function signS3Part(config: S3Config, key: string, uploadId: string
   return { url: signed.url.toString(), headers: { 'Content-Type': 'application/octet-stream' } };
 }
 
+export async function signS3Download(config: S3Config, key: string, version: string | null, expiresIn = 240): Promise<string> {
+  const url = s3ObjectUrl(config, key);
+  if (version) url.searchParams.set('versionId', version);
+  url.searchParams.set('X-Amz-Expires', String(expiresIn));
+  const signed = await new AwsV4Signer({ method: 'GET', url: url.toString(), region: config.region,
+    service: 's3', accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey,
+    signQuery: true }).sign();
+  return signed.url.toString();
+}
+
 export function createS3Storage(config: S3Config): UploadStorage {
   const client = new AwsClient({ accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey, region: config.region, service: 's3', retries: 0 });
   async function request(key: string, method: string, query: Record<string, string> = {}, headers?: HeadersInit, body?: string | Uint8Array) {

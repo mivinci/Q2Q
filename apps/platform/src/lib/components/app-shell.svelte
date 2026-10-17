@@ -39,7 +39,7 @@
   $effect(() => { if (desktop.current) drawerOpen = false; });
 
   const navigation = [
-    { label: 'library', icon: FolderClosed, href: '/' },
+    { label: 'library', icon: FolderClosed, href: '/library' },
     { label: 'storage', icon: HardDrive, href: '/storage' },
     { label: 'nodes', icon: Radio, href: null },
     { label: 'usage', icon: ChartNoAxesColumn, href: null }
@@ -56,7 +56,7 @@
       <p class="mb-2 px-3 text-xs text-muted-foreground">{text.workspace}</p>
       <nav aria-label={text.navigation} class="flex flex-col gap-1">
         {#each navigation as item}
-          {@const active = item.href !== null && page.url.pathname === item.href}
+          {@const active = item.href !== null && (page.url.pathname === item.href || page.url.pathname.startsWith(item.href + '/'))}
           <Button href={item.href ?? undefined} variant="ghost" disabled={item.href === null}
             onclick={drawer ? closeDrawer : undefined} aria-current={active ? 'page' : undefined}
             class={active
@@ -82,7 +82,7 @@
       <Button variant="ghost" size="icon-lg" class="mt-6 size-11 text-muted-foreground" aria-label={text.projectNavigation} title={text.projectNavigation} onclick={openDrawer}><Layers class="size-5" aria-hidden="true" /></Button>
       <nav aria-label={text.navigation} class="mt-5 flex flex-col gap-2">
         {#each navigation as item}
-          {@const active = item.href !== null && page.url.pathname === item.href}
+          {@const active = item.href !== null && (page.url.pathname === item.href || page.url.pathname.startsWith(item.href + '/'))}
           <Button href={item.href ?? undefined} variant="ghost" size="icon-lg" disabled={item.href === null}
             aria-label={text[item.label]} title={text[item.label]} aria-current={active ? 'page' : undefined}
             class={active ? 'size-11 bg-sidebar-accent text-sidebar-accent-foreground' : 'size-11 text-muted-foreground'}>

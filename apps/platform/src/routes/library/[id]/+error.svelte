@@ -9,5 +9,5 @@
 <section class="px-4 py-12 sm:px-7">
   <h1 class="text-2xl font-medium">{page.status}</h1>
   <p class="mt-3 text-sm text-muted-foreground">{page.error?.message === 'fileNotFound' ? text.fileNotFound : text.projectActionFailed}</p>
-  <Button href="/" variant="outline" class="mt-6">{text.backToLibrary}</Button>
+  <Button href="/library" variant="outline" class="mt-6">{text.backToLibrary}</Button>
 </section>

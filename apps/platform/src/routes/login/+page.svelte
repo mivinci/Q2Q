@@ -16,7 +16,7 @@
     failed = false;
     try {
       const result = await authClient.signIn.social({
-        provider: 'github', callbackURL: '/', errorCallbackURL: '/login'
+        provider: 'github', callbackURL: '/library', errorCallbackURL: '/login'
       });
       if (result.error) failed = true;
     } catch {

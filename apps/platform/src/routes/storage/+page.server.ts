@@ -8,7 +8,7 @@ import { enablePlatformStorage, getPlatformStorage } from '#lib/server/storage.j
 export const load: PageServerLoad = async ({ locals, parent }) => {
   if (!locals.user) redirect(303, '/login');
   const { currentProject } = await parent();
-  if (!currentProject) redirect(303, '/');
+  if (!currentProject) redirect(303, '/library');
   return {
     storageConnection: await getPlatformStorage(env.DB, currentProject.id),
     storageAvailable: uploadTransport() !== null

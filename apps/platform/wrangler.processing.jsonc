@@ -5,6 +5,7 @@
   "compatibility_date": "2026-10-17",
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
   "limits": { "cpu_ms": 300000 },
+  "triggers": { "crons": ["*/5 * * * *"] },
   "d1_databases": [{ "binding": "DB", "database_name": "q2q-platform", "database_id": "local-q2q-platform", "migrations_dir": "migrations" }],
   "queues": { "consumers": [{ "queue": "q2q-seed-processing", "max_batch_size": 1, "max_retries": 5, "max_concurrency": 2 }] }
 }

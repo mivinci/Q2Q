@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "dev:workers": "wrangler dev -c wrangler.jsonc -c wrangler.processing.jsonc --ip localhost --port 5173",
+    "dev:workers": "wrangler dev -c wrangler.jsonc -c wrangler.processing.jsonc --ip localhost --port 5173 --log-level warn",
     "build": "npm run wasm:build --prefix ../.. && npm run types && vite build && wrangler deploy --dry-run -c wrangler.processing.jsonc --outdir .wrangler/processing-build",
-    "preview": "wrangler dev -c wrangler.jsonc -c wrangler.processing.jsonc --port 4173",
+    "preview": "wrangler dev -c wrangler.jsonc -c wrangler.processing.jsonc --port 4173 --log-level warn",
     "check:processing": "node --experimental-strip-types scripts/check-processing.mjs",
     "prepare": "svelte-kit sync",
     "check": "npm run wasm:build --prefix ../.. && npm run types && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
