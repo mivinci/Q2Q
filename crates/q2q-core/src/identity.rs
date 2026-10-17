@@ -147,6 +147,10 @@ pub enum Audience {
 ///
 /// The spec never spells out how a ticket is encoded inside a request body, so
 /// this is the shared answer: a JSON object with binary fields in base64. Both
+/// The only ticket version this builds or accepts. Bump it when the payload
+/// shape changes — an old ticket must stop verifying, not be quietly tolerated.
+pub const TICKET_VERSION: u32 = 1;
+
 /// Track and Punch parse tickets, so it lives here rather than in either.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TicketBody {
@@ -357,6 +361,15 @@ impl Ticket {
 
   /// Steps 1–3: the key is the issuer's, the signature holds, it has not expired.
   fn check_identity(&self, now: u64) -> Result<(), TicketError> {
+    // 0. before the expensive checks: the version has to be one we speak, and
+    // the window has to make sense at all. spec 3.1.2's four steps assume both.
+    if self.v != TICKET_VERSION {
+      return Err(TicketError::UnsupportedVersion(self.v));
+    }
+    if self.iat > self.exp {
+      return Err(TicketError::BadValidityWindow);
+    }
+
     // 1. the embedded key must actually be the issuer's
     if peer_id_from_public_key(&self.public_key) != self.iss {
       return Err(TicketError::KeyDoesNotMatchIssuer);
@@ -391,6 +404,9 @@ pub enum TicketError {
   Expired,
   WrongAudience,
   WrongTarget,
+  UnsupportedVersion(u32),
+  /// `iat` 晚于 `exp`——有效期窗口自相矛盾，签出来就是废的
+  BadValidityWindow,
 }
 
 impl std::fmt::Display for TicketError {
@@ -404,6 +420,10 @@ impl std::fmt::Display for TicketError {
       TicketError::Expired => "ticket has expired",
       TicketError::WrongAudience => "ticket was issued to a different audience",
       TicketError::WrongTarget => "ticket names a different target peer",
+      TicketError::UnsupportedVersion(v) => {
+        return write!(f, "ticket version {v} is not {TICKET_VERSION}")
+      }
+      TicketError::BadValidityWindow => "ticket expires before it was issued",
     };
     f.write_str(s)
   }
@@ -490,6 +510,31 @@ mod tests {
     };
     t.sign(sk);
     t
+  }
+
+  #[test]
+  fn rejects_a_ticket_of_another_version() {
+    let sk = key_from(3);
+    let mut t = ticket_from(&sk, 1_000);
+    // 重新签名，让它在版本之外都合法——否则只会撞到 BadSignature
+    t.v = TICKET_VERSION + 1;
+    t.sign(&sk);
+    assert_eq!(
+      t.verify(&Audience::Track, None, 1_000),
+      Err(TicketError::UnsupportedVersion(TICKET_VERSION + 1))
+    );
+  }
+
+  #[test]
+  fn rejects_a_window_that_expires_before_it_was_issued() {
+    let sk = key_from(4);
+    let mut t = ticket_from(&sk, 1_000);
+    t.iat = t.exp + 1;
+    t.sign(&sk);
+    assert_eq!(
+      t.verify(&Audience::Track, None, 1_000),
+      Err(TicketError::BadValidityWindow)
+    );
   }
 
   #[test]

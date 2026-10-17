@@ -65,7 +65,11 @@ fn map_ticket_err(e: TicketError) -> AuthError {
     TicketError::WrongAudience => AuthError::WrongAudience,
     TicketError::WrongTarget => AuthError::WrongAudience,
     TicketError::Malformed(d) => AuthError::MalformedTicket(d),
-    TicketError::MalformedPeerId | TicketError::BadKey => AuthError::MalformedTicket(e.to_string()),
+    // 版本不对、有效期窗口自相矛盾：都是票本身签错了，不是身份或授权的问题
+    TicketError::MalformedPeerId
+    | TicketError::BadKey
+    | TicketError::UnsupportedVersion(_)
+    | TicketError::BadValidityWindow => AuthError::MalformedTicket(e.to_string()),
   }
 }
 
@@ -155,7 +159,8 @@ mod tests {
   #[test]
   fn expired_ticket_is_rejected() {
     let now = 1_000_000;
-    let body = announce(2, "track", now - 1, now);
+    // iat 要早于 exp，否则这是个窗口倒置的票，会在那一步就被拒
+    let body = announce(2, "track", now - 1, now - 120);
     assert_eq!(verify_announce(&body, now), Err(AuthError::Expired));
   }
 
