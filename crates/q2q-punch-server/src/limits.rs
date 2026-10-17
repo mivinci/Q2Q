@@ -156,7 +156,7 @@ mod tests {
   #[test]
   fn a_connect_is_charged_to_the_file_it_names() {
     let token = serde_json::to_string(&serde_json::json!({
-      "v": 1, "iss": "x", "pub": "", "iat": 0, "exp": 0, "aud": "punch-1",
+      "v": 1, "iss": "x", "pub": "", "iat": 0, "exp": 0, "aud": "punch:punch-1",
       "ih": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, [9u8; 32]),
       "sig": ""
     }))

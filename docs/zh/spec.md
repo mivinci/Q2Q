@@ -2,11 +2,13 @@
 
 | 状态 | 最后更新 |
 | --- | --- |
-| 设计稿（Experimental） | 2026-09-20 |
+| 设计稿（Experimental） | 2026-10-17 |
 
 > 变更摘要：2026-09-20 起数据面改为 Merkle 证明校验（`info` 的 `hashes` 列表 → `root`，`v: 1` → `v: 2`），新增 `request_proof` / `proof` / `pause` / `resume` 消息与叶子哈希列表的两种来源（envelope 内联 `leaf_hashes`、`proof_list` URL）。证明走可靠控制通道、先于数据到达，载荷默认含叶子哈希以便缓存复用（对齐 BEP 52 的 `base layer = 0`）。2026-09-21 收敛 Track 与 Punch 的耦合面：两者之间只保留 Punch → Track 的吊销查询这一条单向依赖，revoke 通知降级为尽力而为。
 >
 > **2026-10-15 控制面改为自签票据**（本次修订）：去掉 `register` / `login` / `revoke`——身份不再需要服务端背书，公钥内嵌在票据里，随 `announce` 上报、随 `query` 下发，Track 只在 peer 在线期间持有。会话续约改用 `session_key` + HMAC，不再每次携带票据。`grace_until` 移除：中继凭据改为按需自签请求，凭据过期再请求一次即可。新增两项：连接前的**显式同意**（`connect` / `accept` / `reject`，必须先于 offer）与 **block 级来源选择**（逐 block 决定走 CDN 还是 P2P）。组件名由 Tracker 统一改为 Track。代价见 3.1.4 节：**本设计没有吊销机制**。
+>
+> **2026-10-17 `aud` 加类型前缀**（本次修订）：Punch 场景的 `aud` 由裸 `punch_id` 改为 `punch:<punch_id>`（见 3.1.2）。原先一个字符串字段承载两种语义——字面量 `track` 与 Punch 标识——无法无歧义地解析，一个恰好名叫 `track` 的 Punch 节点会永远验不过自己的票。加前缀后两种取值互斥，解析不再需要猜测。
 
 ## 1. 引言
 
@@ -64,14 +66,14 @@ sequenceDiagram
     par A 上线
         A->>T: announce(自签票据[含 pub], entries, ttl)
         T-->>A: session_key、Punch A 地址与公钥、STUN/TURN 配置
-        A->>PA: join(自签票据[aud=punch], public_key, signature)
+        A->>PA: join(自签票据[aud=punch:<punch_id>], public_key, signature)
         PA-->>A: binding_id、binding_key、expires_at
         A->>STUN: Binding Request
         STUN-->>A: A candidates（host / srflx）
     and B 上线并登记文件
         B->>T: announce(自签票据[含 pub], entries[{ info_hash, complete }], ttl)
         T-->>B: session_key、Punch B 地址与公钥、STUN/TURN 配置
-        B->>PB: join(自签票据[aud=punch], public_key, signature)
+        B->>PB: join(自签票据[aud=punch:<punch_id>], public_key, signature)
         PB-->>B: binding_id、binding_key、expires_at
         B->>STUN: Binding Request
         STUN-->>B: B candidates（host / srflx）
@@ -151,7 +153,7 @@ sequenceDiagram
   v, iss: peer_id,
   pub: <32 字节公钥>,      // 必须内嵌：peer_id 是哈希，无法反推
   iat, exp,
-  aud: "track" | "punch",
+  aud: "track" | "punch:<punch_id>",
   tgt: <目标 peer_id>,     // connect 场景
   ih:  <info_hash>,        // connect 场景
   cid: <connection_id>     // 防重放，由签发方生成
@@ -171,11 +173,11 @@ sig = sign(sk, canonical(payload))
 | 用途 | `aud` | 关键字段 | 有效期 |
 | --- | --- | --- | --- |
 | 会话建立 / 文件宣告 / 查询 | `track` | —（含 `pub`） | 分钟级 |
-| 建立 Punch Binding | 指定 `punch_id` | `cid` | 分钟级 |
-| 请求连接目标 Peer | 指定 `punch_b_id` | `tgt`、`ih`、`cid` | 数十秒（打洞窗口） |
+| 建立 Punch Binding | `punch:<punch_id>` | `cid` | 分钟级 |
+| 请求连接目标 Peer | `punch:<punch_b_id>` | `tgt`、`ih`、`cid` | 数十秒（打洞窗口） |
 | 请求 TURN 中继凭据 | `track` | `ih`、对端 `peer_id` | 分钟级 |
 
-`aud` 在 Punch 场景下是**具体的 Punch 标识**（`punch_id` / `punch_b_id`），不是字面量 `punch`——票据只能在指定的那个 Punch 节点消费，泄露了也拿不到别的节点使用（见第 6 章）。
+`aud` 在 Punch 场景下是**具体的 Punch 标识**（`punch_id` / `punch_b_id`），不是字面量 `punch`——票据只能在指定的那个 Punch 节点消费，泄露了也拿不到别的节点使用（见第 6 章）。wire 上 Punch 标识**统一带 `punch:` 前缀**，写作 `punch:<punch_id>`：这样它跟字面量 `track` 不会混淆，一个恰好名叫 `track` 的 Punch 节点写作 `punch:track`，仍然与 Track 区分得开。
 
 `cid` 用于防重放：Punch 维护已消费 `cid` 记录（覆盖票据 `exp` 两倍时长），重复 `cid` **必须**拒绝。
 
@@ -223,7 +225,7 @@ MAC 固定为 `HMAC-SHA-256(session_key, peer_id || seq || timestamp)`，服务�
 
 ### 3.2 Binding：`join`、`heartbeat` 与 `exit`
 
-客户端使用自签票据（`aud=punch`）建立 Binding。票据内嵌公钥（见 3.1.2），Punch 按四步校验即可确认请求方控制该身份——不需要 Track 预先下发令牌，也不需要 Punch 预存 `peer_id → public_key` 映射。防重放依赖票据的一次性 `cid`——Punch 维护已消费 `cid` 记录（覆盖票据 `exp` 两倍时长），首次 join 消费 `cid`，后续同 `cid` 的请求**必须**拒绝；客户端重连或 binding 过期时重新自签一个票据即可，不需要任何网络往返。`timestamp` 仍纳入签名内容以约束签名时效，超出短窗口的请求**必须**拒绝。Punch 验签并验证该证明后创建 `binding_id`，并通过该加密信道的已认证响应返回随机生成的会话级 `binding_key`。此 Binding 代表"该 peer 当前可通过这个 Punch 被联系到"。
+客户端使用自签票据（`aud=punch:<punch_id>`）建立 Binding。票据内嵌公钥（见 3.1.2），Punch 按四步校验即可确认请求方控制该身份——不需要 Track 预先下发令牌，也不需要 Punch 预存 `peer_id → public_key` 映射。防重放依赖票据的一次性 `cid`——Punch 维护已消费 `cid` 记录（覆盖票据 `exp` 两倍时长），首次 join 消费 `cid`，后续同 `cid` 的请求**必须**拒绝；客户端重连或 binding 过期时重新自签一个票据即可，不需要任何网络往返。`timestamp` 仍纳入签名内容以约束签名时效，超出短窗口的请求**必须**拒绝。Punch 验签并验证该证明后创建 `binding_id`，并通过该加密信道的已认证响应返回随机生成的会话级 `binding_key`。此 Binding 代表"该 peer 当前可通过这个 Punch 被联系到"。
 
 之后的保活使用 `heartbeat(binding_id, seq, MAC)`，而不是每次发送完整票据。MAC 固定为 `HMAC-SHA-256(binding_key, binding_id || seq || timestamp || transport_generation)`；服务端仅接受递增序列号（允许一个有限乱序窗口）且 timestamp 在短窗口内的请求。Binding 到期、客户端重新 join、或网络切换时，旧 `binding_key` 和旧序列号空间立即失效。这样既刷新 NAT 映射和在线 TTL，也避免频繁验签与较大的 UDP 包。
 
@@ -257,7 +259,7 @@ Track 的查询结果仅包含 B 的 `peer_id`、B 的身份公钥、B 所在 Pu
 
 ### 3.5 Punch 信令交换
 
-**连接请求与显式同意。** A 自签 `connect` 票据（`aud` 为 Punch B 的 `punch_id`、`tgt` = B、`ih`、`cid`，见 3.1.2），先发送 `type=connect`，**不携带 SDP**。Punch B 按 3.1.2 的四步校验后原子登记 `cid`，再转发给 B（含 A 的 `peer_id` 与 A 的公钥）。B 按本地策略决定，回 `type=accept`（附带 B 自签的票据）或 `type=reject{ reason }`，Punch B 原样转发给 A。**只有收到 `accept` 之后 A 才发送 `type=offer`**——同意必须先于 offer，这样 B 拒绝时完全不触发 ICE 收集，STUN 查询与 TURN 中继的开销都被省掉。
+**连接请求与显式同意。** A 自签 `connect` 票据（`aud` 为 Punch B 的 `punch:<punch_id>`、`tgt` = B、`ih`、`cid`，见 3.1.2），先发送 `type=connect`，**不携带 SDP**。Punch B 按 3.1.2 的四步校验后原子登记 `cid`，再转发给 B（含 A 的 `peer_id` 与 A 的公钥）。B 按本地策略决定，回 `type=accept`（附带 B 自签的票据）或 `type=reject{ reason }`，Punch B 原样转发给 A。**只有收到 `accept` 之后 A 才发送 `type=offer`**——同意必须先于 offer，这样 B 拒绝时完全不触发 ICE 收集，STUN 查询与 TURN 中继的开销都被省掉。
 
 `reject.reason` 决定 A 的下一步：`busy` / `quota_exceeded` 换一个 Peer；`not_found` 说明索引已过期，回 Track 重新 `query` 并上报；`denied` 为策略拒绝，不重试。请求超时按拒绝处理。
 
@@ -531,8 +533,8 @@ scheme 复用通用的 `magnet:`（BT 未发明专属 scheme，复用的正是 m
 | 票据用途 | `aud` | 关键字段 | 典型有效期 |
 | --- | --- | --- | --- |
 | 会话建立 / 文件宣告 / 查询 | `track` | —（含 `pub`） | 分钟级 |
-| 建立 Punch Binding | 指定 `punch_id` | `cid` | 分钟级 |
-| 请求连接目标 Peer | 指定 `punch_b_id` | `tgt`、`ih`、`cid` | 数十秒（`CONNECT_TOKEN_EXP`） |
+| 建立 Punch Binding | `punch:<punch_id>` | `cid` | 分钟级 |
+| 请求连接目标 Peer | `punch:<punch_b_id>` | `tgt`、`ih`、`cid` | 数十秒（`CONNECT_TOKEN_EXP`） |
 | 请求 TURN 中继凭据 | `track` | `ih`、对端 `peer_id` | 分钟级 |
 
 `punch_id` 是 Punch 的稳定标识（由 Track 维护，见 7.1 节），作为 `aud` 限定票据
@@ -736,7 +738,7 @@ Punch 上的接口走加密认证信道（非 REST），以 RPC 风格的接口�
 
 | 请求字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `join_token` | string | 客户端自签的 join 票据（`aud=punch_id`，含 `pub` 与一次性 `cid`） |
+| `join_token` | string | 客户端自签的 join 票据（`aud=punch:<punch_id>`，含 `pub` 与一次性 `cid`） |
 | `public_key` | string | Ed25519 公钥的 base64 编码（32 字节解码后），由请求方自带 |
 | `signature` | string | `sign(private_key, "join" \|\| join_token_raw \|\| timestamp)` 的 base64，其中 `join_token_raw` 是 join 票据 的完整序列化字符串 |
 | `timestamp` | int64 | 请求时间戳 |
