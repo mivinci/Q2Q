@@ -1,9 +1,10 @@
 use super::*;
+use crate::progress;
 
 pub(crate) async fn download<T, F, Fut>(
   targets: Vec<T>,
   seed: Seed,
-  store: Arc<Mutex<DownloadStore>>,
+  store: Destination,
   concurrency: usize,
   progress: watch::Sender<TransferProgress>,
   connect: F,

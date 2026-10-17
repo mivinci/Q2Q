@@ -1,4 +1,9 @@
 use super::*;
+use crate::publication::PrepareError;
+use crate::test_destination::{create_destination, destination_complete, sync_destination};
+use crate::transfer::{Transfer, TransferState};
+use q2q_core::file::StoreError;
+use tokio::sync::watch;
 
 #[tokio::test]
 async fn cancelling_wait_does_not_detach_a_background_download() {
@@ -575,7 +580,7 @@ async fn restored_transfer_only_requests_corrupt_blocks_and_preserves_progress()
   disk.seek(SeekFrom::Start(12)).unwrap();
   disk.write_all(&[255]).unwrap();
   drop(disk);
-  let restored = crate::transfer::open_destination(&seed, &path, true)
+  let restored = crate::test_destination::open_destination(&seed, &path, true)
     .await
     .unwrap();
   let bits = restored.lock().unwrap().verified_bitfield();

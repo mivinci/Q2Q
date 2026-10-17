@@ -171,3 +171,8 @@ let n = file.read(&mut buffer).await?;
 - read_timeout 限制每次缺块等待（包括验证和磁盘读取），超时返回 TimedOut，游标不动；已开始的下载仍可完成。来源耗尽返回读取错误，句柄可通过下一次 read/seek 再请求窗口。首次查询仍只使用 Track 当前页；窗口变更后可重连已有候选，暂不刷新 Track 列表。控制会话失效和 CDN 证明表加载失败后，本句柄不重新建立该来源，需要重新 open。
 - `progress()` / `subscribe_progress()` 沿用下载快照，计数表示整个文件已验证的内容，未必达到完整文件大小。完整文件最终同步后发布 Completed；部分窗口读完仍保持 Downloading，Drop 发布 Cancelled。来源错误可以只影响某次读取；磁盘写入/检查点错误会发布 Failed 并阻止后续提交。
 - 测试覆盖随机 seek、跨块读取、尾部/越界 EOF、非法偏移、取消读取后 seek、超时、恢复、HTTP/磁盘损坏拒绝、窗口撤销、租约互斥、健康 P2P 零 HTTP，以及真实双 WebRTC 连接中 CDN 接手慢块且另一 Peer 继续取块。
+
+
+## 实现架构整理
+
+文件传输与 VOD 合并后，按 [SDK 架构整理](sdk-architecture.md) 完成存储入口、队列策略、下载执行层、协议和共享会话生命周期的拆分；直播继续按独立方案推进。

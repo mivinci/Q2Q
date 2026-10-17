@@ -1,3 +1,64 @@
 # 消息编码
 
-翻译中。英文版见 [Wire protocol](/guide/wire)。
+本文记录当前 Rust SDK 实际发送和接收的文件协议。网络无关的编码定义在 `q2q-core::peer_wire`，握手签名输入在 `q2q-core::peer_auth`；SDK 通过 `q2q::protocol::peer` 重导出 Peer 编码。
+
+连接与通道配置见 [传输层](./transport)，消息与持久化之间的顺序见 [调度](./scheduling)。本页描述当前实现，设计稿中的 pause/resume 和磁力链 info 获取尚未接入。
+
+## 身份确认
+
+身份确认先于 bitfield，使用可靠控制通道上的 JSON 文本消息，不套文件协议 envelope：
+
+```json
+{"type":"identity_hello","v":1,"nonce":"<base64: 32 bytes>"}
+{"type":"identity_proof","v":1,"signature":"<base64: 64 bytes>"}
+```
+
+双方先交换随机 nonce，再验证绑定当前连接与双方 DTLS 指纹的 Ed25519 签名。消息最多 512 字节，总限时 10 秒；业务消息不能代替身份消息。
+
+## 控制消息
+
+每个控制消息占一个文本 DataChannel 消息，最多 16 KiB：
+
+```json
+{"v":1,"message":{"type":"request","block_index":0,"count":1}}
+```
+
+当前版本为 1，未知版本、类型和控制 envelope/message 中的未知字段会被拒绝。
+
+| type | 字段 | 当前语义 |
+| --- | --- | --- |
+| `bitfield` | `bits` | base64 位图，按 block 标记已验证内容 |
+| `have` | `block_index` | 当前块已通过校验并持久化 |
+| `request` | `block_index`, `count` | 请求单块，当前 count 必须为 1 |
+| `request_proof` | `block_index`, `count` | 重请求当前块的 Merkle 证明 |
+| `proof` | `block_index`, `count`, `proof` | 单块证明，走可靠通道 |
+| `piece_nack` | `block_index`, `piece_offset`, `length` | 成对的缺失字节区间数组 |
+| `block_done` | `block_index` | 接收者已完成，上传者可以释放该块重传缓冲 |
+| `cancel` | `block_index`, `count` | 当前 SDK 以两字段均为 0 表示结束当前文件会话 |
+| `reject` | `block_index`, `count`, `retry_after` | 拒绝请求，retry_after 单位毫秒；当前调度器淘汰该连接 |
+
+位图的 block 0 对应首字节最高位，未使用的末尾低位必须为 0；长度必须恰好覆盖 block 数，最多 65,536 块。下载握手要求来源持有完整文件。
+
+`proof` 使用 `q2q_core::merkle::Proof` 的 JSON 表示。单块证明的 count 为 1、nodes 最多 64 个、leaf_hashes 最多 1 个；是否有效仍需按块字节、索引、文件块数和可信根验证。Seed 版本与文件协议 envelope 版本是不同的版本字段。
+
+## 二进制 piece
+
+每个 piece 占一个二进制 DataChannel 消息，不额外附加长度前缀：
+
+| 字节偏移 | 长度 | 内容 |
+| --- | --- | --- |
+| 0 | 4 | ASCII 魔数 `Q2QP` |
+| 4 | 1 | 版本 1 |
+| 5 | 8 | block_index，u64 大端 |
+| 13 | 4 | piece_offset，u32 大端 |
+| 17 | 1–1024 | 数据字节 |
+
+piece_offset 是块内字节偏移，必须按 1024 对齐，不是 piece 序号。最后一个 piece 可以不足 1024 字节；越界、错误块索引、冲突的重复 piece 或文本数据帧都会使当前接收失败。已在本连接完成的块的迟到 piece/proof 会被忽略。
+
+## 补片与结束
+
+块接收有 20 秒总截止时间。500 毫秒无新有效 piece 时触发检查，最多三轮重试；证明缺失时发送 request_proof，数据缺失时发送 piece_nack。每条 nack 最多 64 个区间，两个数组长度相同，区间需按序、不重叠、对齐且不越界。可靠 proof 与不可靠 piece 的到达顺序可能不同。
+
+上传端只保留一个在途块，收到 BlockDone 才释放重传缓冲。接收端所有所需块完成后发送 `cancel { block_index: 0, count: 0 }`，上传端回显，接收端收到确认再关闭连接；上传端等待连接关闭。结束握手也用于只补齐部分块的会话。
+
+这里的 cancel 是当前 SDK 的会话结束约定，不代表已经实现任意块区间的暂停/恢复协议。文件传输的控制消息等待使用 30 秒 idle 限制；应用取消和 VOD 紧急块回退也可能提前关闭连接。

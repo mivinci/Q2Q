@@ -1,6 +1,6 @@
 # CDN 回退
 
-Rust SDK 在 P2P 不可用时，可以通过 HTTP(S) 下载并校验剩余块。策略为 P2P 优先：先尝试当前 Track 查询到的完整节点，再使用 CDN。Track 或 Punch 不可用时也能从 CDN 冷启动。
+Rust SDK 在 P2P 不可用时，可以通过 HTTP(S) 下载并校验剩余块。整文件下载采用 P2P 优先：先尝试当前 Track 查询到的完整节点，再使用 CDN。按需 VOD 还支持当前读取块的紧急回退。Track 或 Punch 不可用时也能从 CDN 冷启动。
 
 ## 配置种子
 
@@ -33,4 +33,40 @@ HTTP 数据在写入目标文件前必须通过 Merkle 校验。成功的块复�
 
 `Transfer::subscribe_progress()` 中的 `active_peers` 表示 WebRTC 节点，`active_cdn_requests` 表示 HTTP 数据或哈希表请求。Drop 或 cancel 会取消 HTTP 请求。保留目标文件及其 `.q2q.resume` 检查点即可之后续传。
 
-当前不与慢速 Peer 竞速、不自动切回 P2P，也不分段拉取哈希表。远程叶子表按每次传输获取和验证；已完成块的证明会保留在检查点中。
+整文件下载不与慢速 Peer 竞速，也不自动切回 P2P。当前不分段拉取哈希表。远程叶子表按每次传输获取和验证；已完成块的证明会保留在检查点中。
+
+
+## VOD 紧急块回退
+
+`client.open(...).await` 的读取窗口与整文件下载使用不同的启动策略。当前读取块先给 P2P `min(2 秒, read_timeout / 2)`；没有 Peer 时，CDN 可以填充整个读取/预取窗口。它无需等待完整的 15 秒发现阶段结束才尝试当前紧急块。
+
+```mermaid
+sequenceDiagram
+    participant R as Reader
+    participant Q as 队列与策略
+    participant P as 慢 Peer worker
+    participant C as CDN worker
+    participant S as Destination
+    R->>Q: 当前读取块及预取窗口
+    P->>Q: 领取当前块租约
+    P->>P: 请求并等待数据
+    Note over Q,C: 超过 P2P 等待预算
+    C->>C: 加载并验证 CDN 证明表
+    C->>Q: CDN 已可用
+    Q-->>P: 策略变化通知
+    P->>P: guard_peer 中断该连接
+    P->>Q: 释放未完成租约
+    C->>Q: 领取同一块租约
+    C->>C: HTTP Range 取块
+    C->>S: 提交字节及证明
+    S->>Q: 持久化成功，完成租约
+    Q-->>R: 块已验证
+    R->>S: 读取并复核字节
+    S-->>R: 返回可读内容
+```
+
+这是一场租约交接：CDN 证明表验证成功后，才允许中断持有紧急块的慢连接；归还租约前 CDN 不能领取同一块。其他 Peer 不会被一起停止。坏 CDN 表不能迫使健康 Peer 退出；坏 CDN 块会尝试下一个镜像，健康 Peer 仍可继续提供内容。
+
+VOD 的 Peer 和 CDN 各自最多运行 max_download_peers 个 worker，不是二者共用一个总连接配额。每块同时只有一个持有者，网络获取和磁盘提交期间都持有租约。
+
+当前只查询一次 Track；窗口变化可以重连已有候选，但不会重新发现。证明表加载失败后，本读取句柄不会重新加载该来源；重新 open 可以重试。调度与取消细节见 [调度](./scheduling)。

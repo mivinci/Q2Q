@@ -1,4 +1,8 @@
 use super::*;
+use crate::block_queue::WorkQueue;
+use crate::download_store::DownloadStore;
+use crate::test_destination::destination_complete;
+use std::sync::Mutex;
 
 use crate::test_http::*;
 
@@ -102,7 +106,7 @@ async fn cdn_fills_only_missing_blocks_after_a_real_peer_fails() {
     )
     .unwrap();
   drop(store);
-  let restored = crate::transfer::open_destination(&seed, &path, true)
+  let restored = crate::test_destination::open_destination(&seed, &path, true)
     .await
     .unwrap();
   let progress = crate::progress::channel(&seed, &[0x80]);
@@ -150,7 +154,7 @@ async fn fallback_waits_for_cancelled_workers_queued_disk_jobs() {
   let server = Server::start(|_| panic!("already committed block must not reach CDN")).await;
   seed.cdn_list = vec![format!("{}/unused", server.url)];
   let path = dir.path().join("data");
-  let store = crate::transfer::create_destination(&seed, &path)
+  let store = crate::test_destination::create_destination(&seed, &path)
     .await
     .unwrap();
   let progress = crate::progress::channel(&seed, &[]);

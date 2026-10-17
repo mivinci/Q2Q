@@ -1,17 +1,14 @@
 //! P2P-first HTTP fallback. Every HTTP byte remains untrusted until root verification.
 
-use crate::download_store::DownloadStore;
+use crate::error::TransferError;
 use crate::progress::{ActiveCdnRequest, TransferProgress};
-use crate::scheduler::WorkQueue;
-use crate::transfer::{TransferError, destination_complete};
 use q2q_core::merkle::{self, Hash, ProofTree};
 use q2q_core::seed::Seed;
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_RANGE, RANGE};
 use reqwest::{Client, Response, StatusCode};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
-use tokio::task::JoinSet;
 use url::Url;
 
 fn error(message: impl Into<String>) -> TransferError {
@@ -146,9 +143,10 @@ async fn block(
   exact_body(response, length as usize).await
 }
 
+#[derive(Clone)]
 pub(crate) struct Source {
   http: Client,
-  tree: ProofTree,
+  tree: Arc<ProofTree>,
   urls: Vec<Url>,
 }
 impl Source {
@@ -171,7 +169,23 @@ impl Source {
       return Err(error("no usable CDN source"));
     }
     let tree = leaf_tree(&http, seed, progress).await?;
-    Ok(Self { http, tree, urls })
+    Ok(Self {
+      http,
+      tree: Arc::new(tree),
+      urls,
+    })
+  }
+  pub(crate) fn mirrors(&self) -> impl Iterator<Item = Self> + '_ {
+    let mut seen = std::collections::HashSet::new();
+    self
+      .urls
+      .iter()
+      .filter(move |url| seen.insert((*url).clone()))
+      .map(|url| Self {
+        http: self.http.clone(),
+        tree: self.tree.clone(),
+        urls: vec![url.clone()],
+      })
   }
   pub(crate) async fn fetch(
     &self,
@@ -202,105 +216,8 @@ impl Source {
   }
 }
 
-pub(crate) async fn download(
-  seed: Seed,
-  store: Arc<Mutex<DownloadStore>>,
-  concurrency: usize,
-  progress: watch::Sender<TransferProgress>,
-) -> Result<(), TransferError> {
-  // A cancelled P2P worker may still be finishing a blocking commit. Snapshot
-  // its durable state off the runtime thread and keep the same progress sender.
-  let destination = store.clone();
-  let bits = tokio::task::spawn_blocking(move || {
-    let store = destination
-      .lock()
-      .map_err(|_| TransferError::Checkpoint("destination lock poisoned".into()))?;
-    Ok::<_, TransferError>(store.verified_bitfield())
-  })
-  .await??;
-  let queue = WorkQueue::new(&seed, &bits, progress.clone());
-  if queue.complete() {
-    return Ok(());
-  }
-  let http = Client::builder()
-    .timeout(Duration::from_secs(20))
-    .connect_timeout(Duration::from_secs(5))
-    .redirect(reqwest::redirect::Policy::limited(3))
-    .build()
-    .map_err(http_error)?;
-  let tree = Arc::new(leaf_tree(&http, &seed, &progress).await?);
-  let seed = Arc::new(seed);
-  let mut last = error("no usable CDN source");
-  let mut seen = std::collections::HashSet::new();
-  for source in &seed.cdn_list {
-    if !seen.insert(source) {
-      continue;
-    }
-    let url = match http_url(source) {
-      Ok(url) => url,
-      Err(e) => {
-        last = e;
-        continue;
-      }
-    };
-    let mut workers = JoinSet::new();
-    for _ in 0..concurrency {
-      let http = http.clone();
-      let url = url.clone();
-      let seed = seed.clone();
-      let tree = tree.clone();
-      let store = store.clone();
-      let queue = queue.clone();
-      workers.spawn(async move {
-        while let Some(lease) = queue.claim().await {
-          let index = lease.index;
-          let bytes = block(&http, url.clone(), &seed, index, &queue.progress).await?;
-          let proof = tree
-            .proof(index)
-            .expect("queue index is within validated tree");
-          if !merkle::verify(
-            &bytes,
-            index,
-            seed.info.leaf_count(),
-            &proof,
-            &seed.info.root,
-          ) {
-            return Err(error("HTTP block does not match content root"));
-          }
-          let destination = store.clone();
-          let root = seed.info.root;
-          let task = lease.disk_task();
-          tokio::task::spawn_blocking(move || {
-            let _task = task;
-            let mut store = destination
-              .lock()
-              .map_err(|_| TransferError::Checkpoint("destination lock poisoned".into()))?;
-            store.commit(index, &bytes, proof, &root)?;
-            lease.commit();
-            Ok::<_, TransferError>(())
-          })
-          .await??;
-        }
-        Ok::<_, TransferError>(())
-      });
-    }
-    while let Some(result) = workers.join_next().await {
-      match result? {
-        Ok(()) => {}
-        Err(e @ TransferError::Cdn(_)) => last = e,
-        Err(e) => return Err(e),
-      }
-    }
-    if queue.complete() {
-      return Ok(());
-    }
-  }
-  if destination_complete(&store)? {
-    Ok(())
-  } else {
-    Err(last)
-  }
-}
+#[cfg(test)]
+pub(crate) use crate::download::cdn_all as download;
 
 #[cfg(test)]
 #[path = "../tests/cdn.rs"]

@@ -26,6 +26,7 @@ struct TrackAuth {
 
 /// A shared control-plane presence with serialized Track session rotations.
 pub struct ControlSession {
+  online: crate::online::Online,
   http: reqwest::Client,
   identity: Identity,
   track_url: Url,
@@ -66,6 +67,7 @@ impl ControlSession {
     let session_key = decode_key(&announced.session_key, "Track session_key")?;
     let punch = PunchBinding::connect(identity, &announced.punch).await?;
     Ok(Self {
+      online: crate::online::Online::default(),
       http,
       identity: identity.clone(),
       track_url: track_url.clone(),
@@ -81,6 +83,24 @@ impl ControlSession {
       punch: RwLock::new(Arc::new(punch)),
       incoming: Mutex::new(()),
     })
+  }
+
+  /// Active publications/downloads share a heartbeat task. The last user
+  /// dropping its lease aborts the task without retaining the session forever.
+  pub(crate) async fn keep_online(self: &Arc<Self>) -> ControlError {
+    let session = self.clone();
+    let lease = self.online.lease(async move {
+      loop {
+        tokio::time::sleep(Duration::from_secs(
+          u64::from(session.heartbeat_interval()).max(1),
+        ))
+        .await;
+        if let Err(error) = session.heartbeat().await {
+          return error;
+        }
+      }
+    });
+    ControlError::Shared(lease.failed().await)
   }
 
   pub fn peer_id(&self) -> &PeerId {
@@ -311,6 +331,8 @@ async fn expect_success(
 
 #[derive(Debug)]
 pub enum ControlError {
+  /// A shared session heartbeat failure; the original typed error is retained.
+  Shared(Arc<ControlError>),
   Http(reqwest::Error),
   Remote {
     service: &'static str,
@@ -327,6 +349,7 @@ pub enum ControlError {
 impl fmt::Display for ControlError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
+      Self::Shared(e) => e.fmt(f),
       Self::Http(e) => write!(f, "Track request failed: {e}"),
       Self::Remote {
         service,
@@ -354,6 +377,7 @@ impl fmt::Display for ControlError {
 impl std::error::Error for ControlError {
   fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
     match self {
+      Self::Shared(e) => Some(e.as_ref()),
       Self::Http(e) => Some(e),
       Self::Random(e) => Some(e),
       _ => None,
