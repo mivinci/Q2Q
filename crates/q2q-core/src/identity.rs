@@ -212,7 +212,7 @@ impl TicketBody {
       public_key,
       iat: self.iat,
       exp: self.exp,
-      aud: Audience::from_wire(&self.aud),
+      aud: self.aud.clone(),
       tgt: self.tgt.as_ref().map(|t| PeerId::unchecked(t.clone())),
       ih,
       cid: self.cid.clone(),
@@ -231,20 +231,14 @@ impl TicketBody {
   }
 }
 
+/// What a verifier expects `aud` to say. It is built from the verifier's own
+/// identity — never parsed out of the wire string, which carries two meanings
+/// in one field and cannot be classified without guessing.
 impl Audience {
-  fn as_str(&self) -> &str {
+  pub fn as_str(&self) -> &str {
     match self {
       Audience::Track => "track",
       Audience::Punch(id) => id.as_str(),
-    }
-  }
-
-  /// Parse `aud` as it appears on the wire: either the literal `track`, or the
-  /// id of the one Punch Server the ticket may be spent at.
-  pub fn from_wire(s: &str) -> Self {
-    match s {
-      "track" => Audience::Track,
-      other => Audience::Punch(other.to_string()),
     }
   }
 }
@@ -277,7 +271,12 @@ pub struct Ticket {
   pub public_key: [u8; 32],
   pub iat: u64,
   pub exp: u64,
-  pub aud: Audience,
+  /// The wire string, kept verbatim. `aud` is either the literal `track` or a
+  /// Punch id (spec 3.1.2) — one string field carrying two meanings — so it
+  /// cannot be parsed into an `Audience` without guessing. Comparing against
+  /// what the verifier expects loses nothing and keeps every id expressible,
+  /// including one that happens to be named `track`.
+  pub aud: String,
   pub tgt: Option<PeerId>,
   pub ih: Option<[u8; 32]>,
   pub cid: Option<String>,
@@ -317,7 +316,7 @@ impl Ticket {
       public_key: B64.encode(self.public_key),
       iat: self.iat,
       exp: self.exp,
-      aud: self.aud.as_str().to_string(),
+      aud: self.aud.clone(),
       tgt: self.tgt.as_ref().map(|t| t.as_str().to_string()),
       ih: self.ih.map(|h| B64.encode(h)),
       cid: self.cid.clone(),
@@ -337,7 +336,7 @@ impl Ticket {
     self.check_identity(now)?;
 
     // 4. this ticket was meant for us
-    if &self.aud != expected_audience {
+    if self.aud != expected_audience.as_str() {
       return Err(TicketError::WrongAudience);
     }
     if let Some(tgt) = &self.tgt {
@@ -355,7 +354,7 @@ impl Ticket {
   /// checked there instead. A connect that names no target is refused outright.
   pub fn verify_as_relay(&self, expected_audience: &Audience, now: u64) -> Result<(), TicketError> {
     self.check_identity(now)?;
-    if &self.aud != expected_audience {
+    if self.aud != expected_audience.as_str() {
       return Err(TicketError::WrongAudience);
     }
     if self.tgt.is_none() {
@@ -516,7 +515,7 @@ mod tests {
       public_key: public_key_of(sk),
       iat: now,
       exp: now + 60,
-      aud: Audience::Track,
+      aud: "track".to_string(),
       tgt: None,
       ih: None,
       cid: None,
@@ -549,6 +548,23 @@ mod tests {
       t.verify(&Audience::Track, None, 1_000),
       Err(TicketError::BadValidityWindow)
     );
+  }
+
+  #[test]
+  fn a_punch_named_track_can_verify_its_own_ticket() {
+    // 这台 Punch 的 id 就叫 "track"。wire 字符串保留原样、比较用验证方的期望值，
+    // 于是"字面量 track"与"名叫 track 的 Punch"不再互相吞掉
+    let sk = key_from(7);
+    let now = 1_000;
+    let mut t = ticket_from(&sk, now);
+    t.aud = "track".to_string();
+    t.sign(&sk);
+    assert!(t
+      .verify(&Audience::Punch("track".to_string()), None, now)
+      .is_ok());
+    // 已知代价：同一张票在 Track 上也能过——一个字符串两种语义，靠期望值
+    // 比较是消不掉这一层的。加类型前缀（方案 C）才是根治，见 todos/core-design.md
+    assert_eq!(t.verify(&Audience::Track, None, now), Ok(()));
   }
 
   #[test]
@@ -650,7 +666,7 @@ mod tests {
   fn punch_audience_is_the_concrete_server() {
     let sk = key_from(9);
     let mut t = ticket_from(&sk, 1000);
-    t.aud = Audience::Punch("punch-42".into());
+    t.aud = "punch-42".to_string();
     t.sign(&sk);
     assert_eq!(
       t.verify(&Audience::Punch("punch-42".into()), None, 1000),

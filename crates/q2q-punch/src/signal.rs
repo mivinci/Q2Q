@@ -451,7 +451,7 @@ mod tests {
       public_key: sk.verifying_key().to_bytes(),
       iat: now,
       exp: now + 60,
-      aud: Audience::from_wire(aud),
+      aud: aud.to_string(),
       tgt: tgt.cloned(),
       ih: Some([7u8; 32]),
       cid: Some(cid.into()),

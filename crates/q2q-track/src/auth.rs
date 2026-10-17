@@ -131,7 +131,7 @@ mod tests {
       public_key: pk,
       iat: now,
       exp,
-      aud: Audience::from_wire(aud),
+      aud: aud.to_string(),
       tgt: None,
       ih: None,
       cid: None,
