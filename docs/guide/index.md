@@ -12,6 +12,31 @@ as the fallback rather than the primary path. Three kinds of programs take part:
 Track and Punch are the *control plane*: they help peers find each other
 and set up a connection, but never carry file data and never see the content.
 
+The two planes are independent, and both are built on the same network-free core:
+
+```mermaid
+flowchart TB
+  subgraph cp["Control plane — discovery and permission"]
+    direction LR
+    tr["Track<br/>REST · online and file index"]
+    pu["Punch<br/>QUIC · bindings and signalling"]
+    tu["STUN / TURN<br/>coturn · not built here"]
+  end
+  subgraph dp["Data plane — block transfer"]
+    direction LR
+    ca["Client A<br/>downloader"] <-->|"WebRTC · block / piece"| cb["Client B<br/>seeder"]
+  end
+  subgraph core["q2q-core — network-free, shared by both planes"]
+    direction LR
+    idm["identity"]
+    sd["seed"]
+    mk["merkle"]
+    st["store / cache"]
+  end
+```
+
+Peers then talk to those servers like this:
+
 ```mermaid
 flowchart LR
   A[Peer A] -->|announce / query| T[Track]
