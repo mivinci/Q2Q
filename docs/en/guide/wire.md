@@ -38,7 +38,7 @@ Version is currently 1. Unsupported versions/types and unknown fields in the con
 | `cancel` | `block_index`, `count` | Both fields 0 end the current SDK file session |
 | `reject` | `block_index`, `count`, `retry_after` | Request rejected; milliseconds; the current scheduler retires that connection |
 
-Block 0 is the high bit of the first bitmap byte. Unused trailing low bits must be zero and the byte length must exactly cover the block count, limited to 65,536 blocks. The download handshake requires a complete source.
+Block 0 is the high bit of the first bitmap byte. Unused trailing low bits must be zero and the byte length must exactly cover the block count, limited to 65,536 blocks. Partial source bitmaps are accepted. Requests are restricted to blocks marked available; Have updates the connection bitmap and wakes block selection. Out-of-range Have indexes fail the connection. Track stores only partial/complete status, not block bitmaps.
 
 Proofs use the JSON representation of `q2q_core::merkle::Proof`. Single-block count is 1, with at most 64 nodes and at most one leaf hash. Those limits do not establish validity: bytes, block index, file block count and the trusted root must still verify. Seed versions and the file envelope version are separate fields.
 

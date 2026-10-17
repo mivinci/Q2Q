@@ -11,16 +11,19 @@ flowchart TB
     Client["Client<br/>client.rs"] --> Pub["Publication<br/>publication.rs"]
     Client --> Handles["Transfer / VerifiedFile<br/>transfer.rs / reader.rs"]
     Handles --> Download["Download orchestration<br/>download.rs"]
-    Download --> Workers["Peer pool / CDN workers<br/>scheduler.rs / cdn.rs"]
+    Download --> Workers["Peer pool / CDN workers<br/>discovery.rs / scheduler.rs / cdn.rs"]
     Workers --> Peer["Peer protocol and connections<br/>peer_transfer.rs / peer.rs<br/>webrtc_transport.rs"]
-    Pub --> Upload["Upload admission and workers<br/>upload.rs"]
+    Pub --> Router["info_hash → content<br/>upload_router.rs"]
+    Router --> Upload["Upload admission and workers<br/>upload.rs"]
     Upload --> Session["Per-connection upload protocol<br/>upload_session.rs"]
     Session --> Peer
     Session --> Rate["Shared rate budget<br/>upload_rate.rs"]
     Upload --> Stats["Upload progress<br/>upload_progress.rs"]
     Session --> Stats
     Session --> Reads["max_upload_reads"]
-    Reads --> Source["PreparedFile / ProofTree<br/>source_file.rs"]
+    Reads --> Source["UploadSource<br/>upload_source.rs"]
+    Source --> Prepared["PreparedFile / ProofTree<br/>source_file.rs"]
+    Source --> Dest
     Workers --> Dest["Verification and commit<br/>destination.rs"]
     Handles -->|"Verified reads"| Dest
     Dest --> Store["Disk and receipts<br/>download_store.rs"]
@@ -32,7 +35,7 @@ Track and Punch do not authenticate file bytes. Peer identity is confirmed throu
 
 ## Establishing an authenticated connection
 
-1. Query Track for complete holders on the current page, deduplicate candidates and exclude the local peer.
+1. Query Track for complete and partial holders on the current page, deduplicate candidates and exclude the local peer. Complete holders are preferred; candidates refresh every five seconds.
 2. Request connection consent through Punch, then exchange SDP and ICE candidates after acceptance.
 3. `webrtc-rs/webrtc` establishes ICE / DTLS / SCTP connectivity and opens two DataChannels.
 4. Exchange random challenges and Ed25519 signatures on the reliable control channel before starting the file protocol.
@@ -64,15 +67,15 @@ Publication manages announcements, holding renewal, uploads and withdrawal. Acti
 
 Dropping a transfer or reader cancels network tasks. Blocking disk jobs already started can finish and retain the destination lock until they do. Block proofs are stored in `.q2q.resume`; resume reads and verifies the disk bytes again. A complete file can resume offline.
 
-The SDK supports fixed files and VOD with a single read cursor. Each Client has one active publication, serving multiple downloading peers concurrently (`max_upload_peers` defaults to 4, range 1–16). Discovery uses the current Track page without pagination or refresh. Files are limited to 65,536 blocks, or 16 GiB with the default block size. Live indexes, partial-file seeding and browser adaptation are not implemented yet.
+The SDK supports fixed files and VOD with a single read cursor. Each Client supports up to 32 distinct active content hashes, serving multiple downloading peers concurrently (`max_upload_peers` defaults to 4, range 1–16). Discovery refreshes the current Track page, without pagination. Files are limited to 65,536 blocks, or 16 GiB with the default block size. Partial-file sharing is opt-in. Live indexes and browser adaptation are not implemented yet.
 
 ## Concurrent uploads
 
-`client::builder().max_upload_peers(4)` sets the per-Client upload connection budget, independently of `max_download_peers`. A slot is reserved before accepting a handshake and remains occupied during negotiation, transfer and idle VOD connections. Full capacity returns Busy through Punch; low-level dialing exposes `ControlError::Busy`. There is no upload waiting queue or automatic Busy retry. Download scheduling can try another candidate or a configured CDN.
+`client::builder().max_upload_peers(4)` sets the per-Client upload connection budget, independently of `max_download_peers`. A slot is reserved before accepting a handshake and remains occupied during negotiation, transfer and idle VOD connections. Full capacity returns Busy through Punch; low-level dialing exposes `ControlError::Busy`. There is no server-side upload waiting queue. Download scheduling tries other candidates and retries known peers after five seconds; configured CDNs remain a fallback.
 
-One reader owns the standing Punch channel. Connect requests enter a bounded admission queue; other signals are routed by `connection_id` into independent bounded mailboxes. Each upload task negotiates and transfers independently. Remote disconnects, timeouts and protocol failures end that task; source read failures or changed content stop the entire publication and withdraw its announcement.
+One reader owns the standing Punch channel. The Client upload router dispatches validated Connect tickets by info_hash into bounded content mailboxes; other signals are routed by `connection_id` into independent bounded mailboxes. Each upload task negotiates and transfers independently. Remote disconnects, timeouts and protocol failures end that task; source read failures or changed content stop the entire publication and withdraw its announcement.
 
-Upload tasks share a read-only file handle, Seed and Merkle tree. Unix/Windows use absolute-offset reads without a shared cursor mutex around reads and verification; a separate budget bounds concurrent source reads. `Publication::close()` stops admission and waits for upload tasks and in-flight blocking reads before withdrawing. Drop triggers the same asynchronous cleanup. Requests arriving while publication is closed are rejected; buffered admission requests do not carry into the next publication.
+Upload tasks share a read-only file handle, Seed and Merkle tree. Unix/Windows use absolute-offset reads without a shared cursor mutex around reads and verification; a separate budget bounds concurrent source reads. `Publication::close()` stops admission for that content and waits for upload tasks and in-flight blocking reads before withdrawing. Drop triggers the same asynchronous cleanup. Closing one content leaves other contents active. The last registration closes the shared admission gate and drains pending requests; duplicate active hashes are rejected.
 
 Callers using `ControlSession::accept_peer` / `PeerSession::serve_file` manage their own tasks and concurrency budget. Connection capacity does not limit total upload bandwidth.
 
@@ -123,11 +126,11 @@ Byte counters follow the rate-limit accounting: encoded piece bytes, including t
 
 ### Admission ownership and module boundaries
 
-`admission.rs` owns admission leases for the shared control session. One managed publication owns admission exclusively; multiple low-level `accept_peer` calls may coexist, but the two modes cannot overlap. Conflicts return `ControlError::AdmissionConflict`, and low-level accepts cannot reopen a managed publisher’s gate. Manual leases last through acceptance/negotiation or cancellation; managed leases remain until upload tasks, blocking reads and withdrawal finish. An independent pause notification wakes readers waiting for requests or the queue lock with `AdmissionPaused` before buffered requests are drained.
+`admission.rs` owns admission leases for the shared control session. One Client upload router owns managed admission for all registered contents; multiple low-level `accept_peer` calls may coexist, but the two modes cannot overlap. Conflicts return `ControlError::AdmissionConflict`, and low-level accepts cannot reopen a managed publisher’s gate. Manual leases last through acceptance/negotiation or cancellation; managed leases remain until upload tasks, blocking reads and withdrawal finish. An independent pause notification wakes readers waiting for requests or the queue lock with `AdmissionPaused` before buffered requests are drained.
 
-`upload.rs` organizes capacity, handshake workers and error isolation. `upload_session.rs` owns per-connection resources, event consumption and upload protocol handling. Download protocol and shared control-message helpers remain in `peer_transfer.rs`. A private runner in `publication.rs` unifies startup, renewal, stop and withdrawal. Every exit stops admission, waits for workers and blocking reads, withdraws, releases leases and then publishes the terminal snapshot. Source and test directories remain flat.
+`upload_router.rs` owns the Client reader and dispatches by content hash. `upload_source.rs` defines the internal Seed/availability/read interface, implemented by prepared files and download destinations. `upload.rs` organizes capacity, handshake workers and error isolation. `upload_session.rs` owns per-connection resources, event consumption and upload protocol handling. Download protocol and shared control-message helpers remain in `peer_transfer.rs`. A private runner in `publication.rs` unifies startup, renewal, stop and withdrawal. Every exit refuses new requests for that content, waits for workers and blocking reads, withdraws, releases its registration and then publishes the terminal snapshot. The final registration releases managed admission. Source and test directories remain flat.
 
-### Concurrent source reads
+### Concurrent complete-source reads
 
 ```rust
 let client = q2q::client::builder()
@@ -144,3 +147,23 @@ Receivers can read different blocks concurrently, including arbitrary VOD seeks.
 Every read checks the open file’s length and modification time before and after I/O and verifies the committed block leaf. Premature EOF caused by truncation is SourceChanged. Replacing the path does not replace the original open source. The synchronous `PreparedFile::read_verified_block(&self, index)` does not acquire the SDK async budget; callers creating their own threads manage concurrency themselves. The low-level serve_file parameter remains `Arc<Mutex<PreparedFile>>`; it briefly locks once to clone the immutable handle and performs no upload I/O under that lock.
 
 This removes SDK cursor serialization, not physical disk or CPU contention. Throughput is not guaranteed to scale with receiver count.
+
+
+## Sharing while downloading
+
+Sharing is disabled by default. Ordinary downloads return an independent upload handle when explicitly requested:
+
+```rust
+let (transfer, sharing) = client.download_shared(&seed, "download.bin").await?;
+let path = transfer.wait().await?;
+// Keep sharing to continue seeding the completed file.
+sharing.close().await?;
+```
+
+`resume_download_shared` revalidates receipts before sharing existing blocks. VOD uses `client.open(&seed, "video.mp4").share(true).await?`; the reader owns the upload handle by default. `file.sharing()` observes it; `file.take_sharing()` transfers ownership to the application. Closing sharing leaves download/read activity running. Cancelling or failing an incomplete download/reader stops sharing, even if the application retained the upload handle. A completed download continues seeding until that handle closes or drops. Upload failures are observable through its progress and close result and do not silently cancel the download.
+
+The first verified block is announced only after both its data and proof receipt are durable and the upload route exists. Track receives add=[hash] with an empty complete set. Later committed blocks produce Have messages on existing connections, with coalesced availability notifications. No per-block Track request is made. Once every block is committed and final file sync succeeds, an announcement upgrades the holding to complete. Heartbeats and holding renewal continue while sharing is active; closing or a source failure withdraws that hash.
+
+A download source uses an in-memory block-to-receipt-offset index, rebuilt only from revalidated receipts on resume. Upload reads seek directly to the bounded proof record and verify disk bytes and proof against the Seed root again. Uncommitted sparse bytes are unavailable. Destination reads and writes currently serialize under the destination lock; complete-source positional reads remain independent. Both source types share the Client's upload connection, disk-read and rate budgets. No block cache is added.
+
+`PublicationState::Publishing` includes waiting for the first shareable block; `download_shared` returns before its first announcement. Use Track discovery when an external observer needs confirmation of visibility. A source or announcement failure produces Failed and is returned by close. Failed withdrawal can leave a stale Track entry until its holding TTL expires; the local upload route still closes.

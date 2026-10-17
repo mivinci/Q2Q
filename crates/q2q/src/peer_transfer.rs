@@ -62,6 +62,8 @@ impl PeerSession {
     index: usize,
     length: usize,
     completed: &HashSet<u64>,
+    available: &std::sync::Mutex<Vec<u8>>,
+    count: usize,
   ) -> Result<(Vec<u8>, Proof), TransferError> {
     let mut assembly = Assembly::new(length);
     let mut proof = None;
@@ -86,7 +88,7 @@ impl PeerSession {
             deadline.as_mut().reset(now + waiting.max(BLOCK_DEADLINE));
           },
           Control::UploadWait { block_index, .. } if completed.contains(&block_index) => {},
-          Control::Have { .. } => {},
+          Control::Have { block_index } => record_have(available, count, block_index)?,
           _ => return Err(protocol("unexpected download control message")),
         },
         event = self.data.poll() => match event {
@@ -252,6 +254,8 @@ pub(crate) fn protocol(detail: impl Into<String>) -> TransferError {
 pub(crate) struct PeerDownload {
   session: PeerSession,
   completed: HashSet<u64>,
+  available: std::sync::Mutex<Vec<u8>>,
+  count: usize,
 }
 impl PeerSession {
   pub(crate) async fn begin_download(
@@ -271,16 +275,47 @@ impl PeerSession {
     )
     .await?;
     let available = receive_bitfield(&*self.control, count).await?;
-    if (0..count).any(|i| available[i / 8] & (1 << (7 - i % 8)) == 0) {
-      return Err(protocol("peer does not hold the complete file"));
-    }
     Ok(PeerDownload {
       session: self,
       completed: HashSet::new(),
+      available: std::sync::Mutex::new(available),
+      count,
     })
   }
 }
+fn record_have(
+  available: &std::sync::Mutex<Vec<u8>>,
+  count: usize,
+  index: u64,
+) -> Result<(), TransferError> {
+  let index = usize::try_from(index).map_err(|_| protocol("Have index overflows platform"))?;
+  if index >= count {
+    return Err(protocol("Have index out of bounds"));
+  }
+  available.lock().unwrap_or_else(|e| e.into_inner())[index / 8] |= 1 << (7 - index % 8);
+  Ok(())
+}
 impl PeerDownload {
+  pub(crate) fn available(&self) -> Vec<u8> {
+    self
+      .available
+      .lock()
+      .unwrap_or_else(|e| e.into_inner())
+      .clone()
+  }
+  pub(crate) async fn receive_have(&self) -> Result<(), TransferError> {
+    loop {
+      match receive(&*self.session.control).await? {
+        Control::Have { block_index } => {
+          return record_have(&self.available, self.count, block_index);
+        }
+        Control::Proof { block_index, .. } | Control::UploadWait { block_index, .. }
+          if self.completed.contains(&block_index) => {}
+        _ => return Err(protocol("expected availability update")),
+      }
+    }
+  }
+
   pub(crate) async fn fetch(
     &self,
     index: usize,
@@ -296,7 +331,7 @@ impl PeerDownload {
     .await?;
     self
       .session
-      .receive_block(index, length, &self.completed)
+      .receive_block(index, length, &self.completed, &self.available, self.count)
       .await
   }
   pub(crate) async fn acknowledge(&mut self, index: usize) -> Result<(), TransferError> {
@@ -332,6 +367,7 @@ impl PeerDownload {
             block_index: 0,
             count: 0,
           } => return Ok(()),
+          Control::Have { block_index } => record_have(&self.available, self.count, block_index)?,
           // A proof retry may already have been queued before BlockDone.
           Control::Proof { block_index, .. } | Control::UploadWait { block_index, .. }
             if self.completed.contains(&block_index) => {}

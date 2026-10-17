@@ -193,15 +193,25 @@ pub(crate) async fn incoming(
   turn: TurnWire,
 ) -> Result<PendingPeer, ControlError> {
   loop {
-    let request = punch.incoming().await?;
-    if let Some(peer) =
-      PendingPeer::validate(identity, punch.clone(), info_hash, turn.clone(), request).await?
-    {
+    let peer = incoming_any(identity, punch.clone(), turn.clone()).await?;
+    if peer.info_hash == info_hash {
       return Ok(peer);
     }
+    peer.reject(RejectReason::NotFound).await?;
   }
 }
+pub(crate) async fn incoming_any(
+  identity: &Identity,
+  punch: Arc<PunchBinding>,
+  turn: TurnWire,
+) -> Result<PendingPeer, ControlError> {
+  let request = punch.incoming().await?;
+  PendingPeer::validate(identity, punch, turn, request).await
+}
 impl PendingPeer {
+  pub(crate) fn info_hash(&self) -> [u8; 32] {
+    self.info_hash
+  }
   pub(crate) fn connection_id(&self) -> &str {
     &self.connect.connection_id
   }
@@ -211,10 +221,9 @@ impl PendingPeer {
   async fn validate(
     identity: &Identity,
     punch: Arc<PunchBinding>,
-    info_hash: [u8; 32],
     turn: TurnWire,
     request: crate::signal_router::IncomingSignal,
-  ) -> Result<Option<Self>, ControlError> {
+  ) -> Result<Self, ControlError> {
     let connect = request.connect;
     let token = connect
       .connect_token
@@ -233,13 +242,10 @@ impl PendingPeer {
         "connect target or id mismatch".into(),
       ));
     }
-    if ticket.ih != Some(info_hash) {
-      let mut reject = message(SignalType::Reject, &connect.connection_id);
-      reject.reason = Some(RejectReason::NotFound);
-      punch.signal(&reject).await?;
-      return Ok(None);
-    }
-    Ok(Some(Self {
+    let info_hash = ticket
+      .ih
+      .ok_or_else(|| ControlError::Protocol("connect lacks content hash".into()))?;
+    Ok(Self {
       identity: identity.clone(),
       initiator: ticket.iss,
       initiator_key: ticket.public_key,
@@ -250,7 +256,7 @@ impl PendingPeer {
         route: request.route,
       },
       turn,
-    }))
+    })
   }
   pub(crate) async fn reject(self, reason: RejectReason) -> Result<(), ControlError> {
     let mut reject = message(SignalType::Reject, &self.connect.connection_id);

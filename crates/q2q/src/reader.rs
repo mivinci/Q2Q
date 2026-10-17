@@ -23,6 +23,7 @@ pub struct OpenOptions<'a> {
   concurrency: usize,
   prefetch: usize,
   timeout: Duration,
+  sharing: bool,
 }
 impl<'a> OpenOptions<'a> {
   pub(crate) fn new(client: &'a Client, seed: Seed, path: PathBuf, concurrency: usize) -> Self {
@@ -33,6 +34,7 @@ impl<'a> OpenOptions<'a> {
       concurrency,
       prefetch: 8,
       timeout: Duration::from_secs(30),
+      sharing: false,
     }
   }
   /// Blocks fetched ahead of the read cursor (default 8, maximum 64).
@@ -46,6 +48,13 @@ impl<'a> OpenOptions<'a> {
     self
   }
 
+  /// Share verified blocks while this reader is active (default false).
+  /// Use `VerifiedFile::take_sharing` to own the upload lifetime separately.
+  pub fn share(mut self, enabled: bool) -> Self {
+    self.sharing = enabled;
+    self
+  }
+
   async fn start(self) -> Result<VerifiedFile, TransferError> {
     crate::destination::check_seed(&self.seed)?;
     if self.prefetch > 64 || self.timeout.is_zero() {
@@ -55,8 +64,14 @@ impl<'a> OpenOptions<'a> {
     }
     let peer_wait = Duration::from_secs(2).min(self.timeout / 2);
     let engine = crate::download::open(self.client, self.seed, self.path, self.concurrency).await?;
+    let sharing = if self.sharing {
+      Some(self.client.share_destination(&engine.store).await?)
+    } else {
+      None
+    };
     Ok(VerifiedFile {
       engine,
+      sharing,
       position: 0,
       prefetch: self.prefetch,
       timeout: self.timeout,
@@ -79,6 +94,7 @@ impl<'a> IntoFuture for OpenOptions<'a> {
 /// Dropping this handle cancels network work and preserves verified receipts.
 pub struct VerifiedFile {
   engine: crate::download::ReadSession,
+  sharing: Option<crate::publication::Publication>,
   position: u64,
   prefetch: usize,
   timeout: Duration,
@@ -87,6 +103,15 @@ pub struct VerifiedFile {
   pending: Option<ReadTask>,
 }
 impl VerifiedFile {
+  /// Detach the upload handle. Closing it leaves reads active; dropping an
+  /// incomplete reader still cancels its download and withdraws shared blocks.
+  pub fn take_sharing(&mut self) -> Option<crate::publication::Publication> {
+    self.sharing.take()
+  }
+  pub fn sharing(&self) -> Option<&crate::publication::Publication> {
+    self.sharing.as_ref()
+  }
+
   pub fn len(&self) -> u64 {
     self.engine.seed.info.length
   }

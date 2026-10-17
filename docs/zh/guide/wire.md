@@ -38,7 +38,7 @@
 | `cancel` | `block_index`, `count` | 当前 SDK 以两字段均为 0 表示结束当前文件会话 |
 | `reject` | `block_index`, `count`, `retry_after` | 拒绝请求，retry_after 单位毫秒；当前调度器淘汰该连接 |
 
-位图的 block 0 对应首字节最高位，未使用的末尾低位必须为 0；长度必须恰好覆盖 block 数，最多 65,536 块。下载握手要求来源持有完整文件。
+位图的 block 0 对应首字节最高位，未使用的末尾低位必须为 0；长度必须恰好覆盖 block 数，最多 65,536 块。允许部分来源位图，只请求该连接宣告可用的块；Have 更新连接位图并唤醒选块，越界索引使连接失败。Track 只保存部分/完整状态，不保存块位图。
 
 `proof` 使用 `q2q_core::merkle::Proof` 的 JSON 表示。单块证明的 count 为 1、nodes 最多 64 个、leaf_hashes 最多 1 个；是否有效仍需按块字节、索引、文件块数和可信根验证。Seed 版本与文件协议 envelope 版本是不同的版本字段。
 

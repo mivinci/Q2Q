@@ -6,7 +6,7 @@
 
 ```mermaid
 flowchart TB
-    D["download.rs<br/>整文件或按需模式"] --> P["scheduler.rs<br/>有并发上限的 Peer 连接池"]
+    D["download.rs<br/>整文件或按需模式"] --> P["discovery.rs / scheduler.rs<br/>有并发上限的 Peer 连接池"]
     D --> C["CDN workers"]
     subgraph Q["block_queue.rs：同一个锁下原子更新"]
         Policy["download_policy.rs<br/>窗口、来源资格与期限"]
@@ -31,7 +31,7 @@ flowchart TB
 
 - **策略**不执行网络 I/O，负责窗口、来源可用性、紧急期限和来源错误。
 - **队列**保存待取、在途、已完成状态，并发领取时独占一个块。策略与块状态在同一把锁下更新，网络和磁盘 I/O 不持有这把队列锁。
-- **执行层**创建、取消和等待 worker；Peer 连接池由 `scheduler.rs` 实现，CDN worker 由 `download.rs` 组织。
+- **执行层**创建、取消和等待 worker；`discovery.rs` 管理发现刷新和连接上限，`scheduler.rs` 执行单 Peer 任务，CDN worker 由 `download.rs` 组织。
 - **Destination**持有块租约直到校验和持久化完成，防止来源切换时两个任务同时写同一块。
 
 ## 从取块到完成
@@ -60,7 +60,7 @@ CDN 使用同一个提交入口，提交后不发送 Peer 确认。来源错误�
 | --- | --- | --- |
 | 初始需求 | 所有未验证块 | 首次 read/seek 建立当前窗口 |
 | 排序 | 未完成块顺序取，失败块归还到队首 | 当前块，然后前向预取块 |
-| Peer 重试 | 当前候选逐一尝试，失败时补充新候选 | 共用连接池；窗口变化后可重连已有候选 |
+| Peer 重试 | 刷新候选，失败后退避重试 | 刷新连接池；窗口变化后可重连已有候选 |
 | CDN 启动 | Peer 候选耗尽或控制面失败 | 无 Peer 或当前读取块超过等待预算 |
 | 队列衔接 | 等待 Peer/磁盘任务退出，再按已验证位图建 CDN 队列 | Peer 与 CDN 共用同一个队列 |
 | 镜像失败 | 当前镜像 worker 全部退出后换镜像 | 当前块依次尝试镜像 |
@@ -68,7 +68,7 @@ CDN 使用同一个提交入口，提交后不发送 Peer 确认。来源错误�
 
 `max_download_peers` 默认 4，范围 1–16，分别限制 Peer 并发和 CDN worker 数。VOD 两类来源可以同时运行，这个参数不是二者相加后的总连接上限。每个 worker 最多持有一个块，不是按字节自适应调整的预算。
 
-Peer 建连上限 45 秒，发现阶段上限 15 秒。Peer 来源需持有完整文件；当前不会基于部分块可用性做 rarest-first、endgame 或自适应吞吐调度。
+Peer 建连上限 45 秒，发现阶段上限 15 秒。来源可以只持有部分文件：每个连接仅领取初始 Bitfield 或后续 Have 标记的块。没有可用任务的连接最多等待三秒后让出名额。候选每五秒刷新，已有连接工作时仍可补充发现；失败或空闲连接退避五秒后重试，仅保留当前 Track 页最多 32 个候选。整文件下载在没有连接且十秒无进展后结束 P2P 阶段；VOD 持续发现直到完成或取消，应用读取仍受 read_timeout 限制。当前不实现 rarest-first、endgame 或自适应吞吐调度。
 
 ## VOD 的读取窗口
 

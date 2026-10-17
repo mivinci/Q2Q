@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) struct Destination {
   store: Arc<Mutex<DownloadStore>>,
   seed: Arc<Seed>,
+  available: tokio::sync::watch::Sender<crate::upload_source::Availability>,
 }
 impl Destination {
   pub(crate) async fn open(seed: &Seed, path: &Path, resume: bool) -> Result<Self, TransferError> {
@@ -28,7 +29,14 @@ impl Destination {
       }
     })
     .await??;
+    let available = tokio::sync::watch::channel(crate::upload_source::Availability {
+      bits: store.verified_bitfield(),
+      failed: false,
+      complete: false,
+    })
+    .0;
     Ok(Self {
+      available,
       store: Arc::new(Mutex::new(store)),
       seed,
     })
@@ -64,6 +72,7 @@ impl Destination {
     let seed = self.seed.clone();
     let store = self.store.clone();
     let guard = lease.disk_task();
+    let available = self.available.clone();
     tokio::task::spawn_blocking(move || {
       let _guard = guard;
       let index = lease.index;
@@ -83,7 +92,11 @@ impl Destination {
       let mut store = store
         .lock()
         .map_err(|_| TransferError::Checkpoint("destination lock poisoned".into()))?;
-      store.commit(index, &bytes, proof, &seed.info.root)?;
+      if let Err(error) = store.commit(index, &bytes, proof, &seed.info.root) {
+        available.send_modify(|state| state.failed = true);
+        return Err(error);
+      }
+      available.send_modify(|state| state.bits[index / 8] |= 1 << (7 - index % 8));
       lease.commit();
       Ok(())
     })
@@ -93,7 +106,27 @@ impl Destination {
     self.access(move |store| store.read_verified(index)).await
   }
   pub(crate) async fn finish(&self) -> Result<(), TransferError> {
-    self.access(|store| store.sync().map_err(Into::into)).await
+    self
+      .access(|store| store.sync().map_err(Into::into))
+      .await?;
+    if self.complete().await? {
+      self.available.send_modify(|state| state.complete = true);
+    }
+    Ok(())
+  }
+
+  pub(crate) fn stop_sharing(&self) {
+    self.available.send_modify(|state| state.failed = true);
+  }
+
+  pub(crate) fn upload_source(
+    &self,
+    reads: Arc<tokio::sync::Semaphore>,
+  ) -> Arc<dyn crate::upload_source::UploadSource> {
+    Arc::new(DownloadSource {
+      destination: self.clone(),
+      reads,
+    })
   }
 
   // Fault-injection fixtures deliberately bypass the production access boundary.
@@ -117,4 +150,58 @@ pub(crate) fn check_seed(seed: &Seed) -> Result<(), TransferError> {
     return Err(invalid_seed("empty file has a nonempty Merkle root"));
   }
   Ok(())
+}
+
+pub(crate) struct DownloadGuard {
+  store: Destination,
+  finished: bool,
+}
+impl DownloadGuard {
+  pub(crate) fn new(store: Destination) -> Self {
+    Self {
+      store,
+      finished: false,
+    }
+  }
+  pub(crate) fn finish(&mut self) {
+    self.finished = true;
+  }
+}
+impl Drop for DownloadGuard {
+  fn drop(&mut self) {
+    if !self.finished {
+      self.store.stop_sharing();
+    }
+  }
+}
+
+struct DownloadSource {
+  destination: Destination,
+  reads: Arc<tokio::sync::Semaphore>,
+}
+impl crate::upload_source::UploadSource for DownloadSource {
+  fn seed(&self) -> &Seed {
+    &self.destination.seed
+  }
+  fn availability(&self) -> tokio::sync::watch::Receiver<crate::upload_source::Availability> {
+    self.destination.available.subscribe()
+  }
+  fn read_limit(&self) -> Arc<tokio::sync::Semaphore> {
+    self.reads.clone()
+  }
+  fn read_block(&self, index: usize) -> Result<(Vec<u8>, Proof), TransferError> {
+    let result = self
+      .destination
+      .store
+      .lock()
+      .map_err(|_| TransferError::Checkpoint("destination lock poisoned".into()))?
+      .upload_block(index, &self.destination.seed);
+    if result.is_err() {
+      self
+        .destination
+        .available
+        .send_modify(|state| state.failed = true);
+    }
+    result
+  }
 }

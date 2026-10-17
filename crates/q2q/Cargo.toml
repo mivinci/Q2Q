@@ -38,3 +38,7 @@ path = "tests/sdk.rs"
 [[test]]
 name = "local_upload"
 path = "tests/local_upload.rs"
+
+[[test]]
+name = "local_sharing"
+path = "tests/local_sharing.rs"

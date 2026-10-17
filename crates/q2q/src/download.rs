@@ -20,8 +20,22 @@ pub(crate) async fn start(
   resume: bool,
   concurrency: usize,
 ) -> Result<Transfer, TransferError> {
+  start_with_store(client, seed, path, resume, concurrency, None).await
+}
+
+pub(crate) async fn start_with_store(
+  client: &Client,
+  seed: &Seed,
+  path: PathBuf,
+  resume: bool,
+  concurrency: usize,
+  supplied_store: Option<Destination>,
+) -> Result<Transfer, TransferError> {
   crate::destination::check_seed(seed)?;
-  let initial_store = if resume {
+  let supplied = supplied_store.is_some();
+  let initial_store = if let Some(store) = supplied_store {
+    Some(store)
+  } else if resume {
     Some(Destination::open(seed, &path, true).await?)
   } else {
     None
@@ -34,12 +48,15 @@ pub(crate) async fn start(
   if let Some(store) = &initial_store
     && store.complete().await?
   {
+    let store = initial_store.expect("resumed destination");
+    let mut guard = crate::destination::DownloadGuard::new(store.clone());
     return Ok(Transfer::start(progress, async move {
-      initial_store.expect("resumed destination").finish().await?;
+      store.finish().await?;
+      guard.finish();
       Ok(path)
     }));
   }
-  if !resume && tokio::fs::try_exists(&path).await? {
+  if !supplied && !resume && tokio::fs::try_exists(&path).await? {
     return Err(
       std::io::Error::new(
         std::io::ErrorKind::AlreadyExists,
@@ -49,10 +66,14 @@ pub(crate) async fn start(
     );
   }
   if seed.info.length == 0 {
-    let seed = seed.clone();
+    let store = match initial_store {
+      Some(store) => store,
+      None => Destination::open(seed, &path, false).await?,
+    };
+    let mut guard = crate::destination::DownloadGuard::new(store.clone());
     return Ok(Transfer::start(progress, async move {
-      let store = Destination::open(&seed, &path, false).await?;
       store.finish().await?;
+      guard.finish();
       Ok(path)
     }));
   }
@@ -61,37 +82,30 @@ pub(crate) async fn start(
   let discovery = discover(client.connect_owned(), client.peer_id().to_string(), seed).await;
   let discovery = match discovery {
     Err(error) if seed.cdn_list.is_empty() => return Err(error),
+    Ok((_, targets)) if targets.is_empty() && !seed.cdn_list.is_empty() => {
+      Err(TransferError::NoPeers)
+    }
     result => result,
   };
   let seed = seed.clone();
   let updates = progress.clone();
+  let store = match initial_store {
+    Some(store) => store,
+    None => Destination::open(&seed, &path, false).await?,
+  };
+  let mut guard = crate::destination::DownloadGuard::new(store.clone());
   Ok(Transfer::start(progress, async move {
-    let store = match initial_store {
-      Some(store) => store,
-      None => Destination::open(&seed, &path, false).await?,
-    };
     let activity = crate::scheduler::TaskScope::new();
     let p2p = match discovery {
       Ok((session, targets)) => {
-        let dialing = session.clone();
-        let info_hash = seed.info_hash();
-        let attempt = crate::scheduler::download_scoped(
-          targets,
-          seed.clone(),
-          store.clone(),
+        let bits = store.bitfield().await?;
+        let queue = WorkQueue::scoped(&seed, &bits, updates.clone(), activity.clone());
+        let attempt = crate::discovery::Peers {
+          session: session.clone(),
+          candidates: targets,
           concurrency,
-          updates.clone(),
-          move |target| {
-            let session = dialing.clone();
-            async move {
-              session
-                .dial_peer(&target, info_hash)
-                .await
-                .map_err(Into::into)
-            }
-          },
-          activity.clone(),
-        );
+        }
+        .run(Arc::new(seed.clone()), store.clone(), queue, false);
         tokio::select! {
           result = attempt => result,
           result = session.keep_online() => Err(TransferError::Control(result)),
@@ -111,6 +125,7 @@ pub(crate) async fn start(
       cdn_all(seed, store.clone(), concurrency, updates).await?;
     }
     store.finish().await?;
+    guard.finish();
     Ok(path)
   }))
 }
@@ -145,6 +160,7 @@ pub(crate) async fn open(
   let destination = store.clone();
   let task_seed = seed.clone();
   let finishing = store.clone();
+  let mut guard = crate::destination::DownloadGuard::new(store.clone());
   let driver = tokio::spawn(async move {
     let mut tasks = JoinSet::new();
     let q = task_queue.clone();
@@ -172,7 +188,10 @@ pub(crate) async fn open(
     }
     if task_queue.complete() {
       match finishing.finish().await {
-        Ok(()) => progress::finish(&task_queue.progress, TransferState::Completed),
+        Ok(()) => {
+          guard.finish();
+          progress::finish(&task_queue.progress, TransferState::Completed);
+        }
         Err(error) => task_queue.fail(error),
       }
     }
@@ -197,11 +216,8 @@ async fn discover(
     let targets: Vec<_> = response
       .peers
       .into_iter()
-      .filter(|p| p.complete && p.peer_id != peer_id && seen.insert(p.peer_id.clone()))
+      .filter(|p| p.peer_id != peer_id && seen.insert(p.peer_id.clone()))
       .collect();
-    if targets.is_empty() {
-      return Err(TransferError::NoPeers);
-    }
     Ok((session, targets))
   })
   .await
@@ -224,49 +240,13 @@ async fn peers(
     _ = queue.finished() => return Ok(()),
     result = discover(connect, peer_id, &seed) => result?,
   };
-  if targets.is_empty() {
-    return Err(TransferError::NoPeers);
-  }
-  let manager = async {
-    let mut focus = queue.subscribe_focus();
-    loop {
-      queue.peer_status(false, None);
-      let dialing = session.clone();
-      let info_hash = seed.info_hash();
-      crate::scheduler::run_peers(
-        targets.clone(),
-        seed.clone(),
-        store.clone(),
-        queue.clone(),
-        concurrency,
-        move |target| {
-          let session = dialing.clone();
-          async move {
-            session
-              .dial_peer(&target, info_hash)
-              .await
-              .map_err(Into::into)
-          }
-        },
-      )
-      .await
-      .or_else(|error| {
-        if error.peer_retryable() || matches!(error, TransferError::NoPeers) {
-          Ok(())
-        } else {
-          Err(error)
-        }
-      })?;
-      if queue.complete() {
-        return Ok(());
-      }
-      queue.peer_status(true, None);
-      tokio::select! { _ = queue.finished() => return Ok(()), _ = focus.changed() => {} }
-      focus.borrow_and_update();
-    }
+  let peers = crate::discovery::Peers {
+    session: session.clone(),
+    candidates: targets,
+    concurrency,
   };
   tokio::select! {
-    result = manager => result,
+    result = peers.run(seed, store, queue, true) => result,
     error = session.keep_online() => Err(TransferError::Control(error)),
   }
 }

@@ -15,7 +15,7 @@ use q2q_core::identity::PeerId;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::Arc;
 use tokio::sync::{OnceCell, Semaphore};
 use url::Url;
 
@@ -71,7 +71,7 @@ impl Builder {
   }
 
   /// Maximum in-flight source reads and hash checks, 1–16 (default 4).
-  /// Shared by SDK uploads of sources prepared by this client. Independent
+  /// Shared by prepared sources and download sharing on this client. Independent
   /// of upload connections; waiting occurs before spawn_blocking.
   pub fn max_upload_reads(mut self, count: usize) -> Self {
     self.max_upload_reads = Some(count);
@@ -127,7 +127,7 @@ impl Builder {
       storage_dir,
       identity,
       session: Arc::new(OnceCell::new()),
-      publishing: Arc::new(AtomicBool::new(false)),
+      upload_router: Arc::new(crate::upload_router::UploadRouter::default()),
       max_download_peers,
       uploads: Arc::new(Semaphore::new(max_upload_peers)),
       upload_reads: Arc::new(Semaphore::new(max_upload_reads)),
@@ -144,7 +144,7 @@ pub struct Client {
   storage_dir: PathBuf,
   identity: Identity,
   session: Arc<OnceCell<Arc<ControlSession>>>,
-  publishing: Arc<AtomicBool>,
+  upload_router: Arc<crate::upload_router::UploadRouter>,
   max_download_peers: usize,
   uploads: Arc<Semaphore>,
   upload_reads: Arc<Semaphore>,
@@ -184,24 +184,24 @@ impl Client {
   }
 
   /// Publish one local file and maintain its announcement until the handle is
-  /// closed or dropped. Each client permits one active source
-  /// per client; the same client can download while publishing.
+  /// closed or dropped. Multiple content hashes share one upload router and the
+  /// client's upload budgets; duplicate active hashes are rejected.
   pub async fn publish_file(&self, path: impl Into<PathBuf>) -> Result<Publication, TransferError> {
-    let active = crate::publication::ActivePublication::acquire(self.publishing.clone())?;
     let prepared = self.prepare_file(path).await?;
     crate::destination::check_seed(prepared.seed())?;
     let session = self.connect().await?;
     Publication::start(
-      prepared,
+      Arc::new(prepared),
       session,
-      active,
+      self.upload_router.clone(),
+      true,
       self.uploads.clone(),
       self.upload_rate.clone(),
     )
     .await
   }
 
-  /// Download from complete peers concurrently, reassigning failed blocks.
+  /// Download from available peers concurrently, reassigning failed blocks.
   /// `wait` succeeds only after every block has
   /// passed verification; existing destination files are never overwritten.
   pub async fn download(
@@ -210,6 +210,62 @@ impl Client {
     path: impl Into<PathBuf>,
   ) -> Result<Transfer, TransferError> {
     self.start_download(seed, path.into(), false).await
+  }
+
+  /// Download while sharing durably verified blocks. The returned publication
+  /// is independently owned: keep it after `Transfer::wait` to continue seeding,
+  /// or close it to stop uploading without cancelling the download.
+  /// Cancelling or failing the download withdraws its shared content.
+  pub async fn download_shared(
+    &self,
+    seed: &q2q_core::seed::Seed,
+    path: impl Into<PathBuf>,
+  ) -> Result<(Transfer, Publication), TransferError> {
+    self.start_shared_download(seed, path.into(), false).await
+  }
+
+  /// Resume and share only blocks revalidated from root-bound receipts.
+  pub async fn resume_download_shared(
+    &self,
+    seed: &q2q_core::seed::Seed,
+    path: impl Into<PathBuf>,
+  ) -> Result<(Transfer, Publication), TransferError> {
+    self.start_shared_download(seed, path.into(), true).await
+  }
+
+  async fn start_shared_download(
+    &self,
+    seed: &q2q_core::seed::Seed,
+    path: PathBuf,
+    resume: bool,
+  ) -> Result<(Transfer, Publication), TransferError> {
+    let store = crate::destination::Destination::open(seed, &path, resume).await?;
+    let sharing = self.share_destination(&store).await?;
+    let transfer = crate::download::start_with_store(
+      self,
+      seed,
+      path,
+      resume,
+      self.max_download_peers,
+      Some(store),
+    )
+    .await?;
+    Ok((transfer, sharing))
+  }
+
+  pub(crate) async fn share_destination(
+    &self,
+    store: &crate::destination::Destination,
+  ) -> Result<Publication, TransferError> {
+    Publication::start(
+      store.upload_source(self.upload_reads.clone()),
+      self.connect().await?,
+      self.upload_router.clone(),
+      false,
+      self.uploads.clone(),
+      self.upload_rate.clone(),
+    )
+    .await
   }
 
   /// Resume an existing SDK destination using its `.q2q.resume` receipts.

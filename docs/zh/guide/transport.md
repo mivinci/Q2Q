@@ -11,16 +11,19 @@ flowchart TB
     Client["Client<br/>client.rs"] --> Pub["Publication<br/>publication.rs"]
     Client --> Handles["Transfer / VerifiedFile<br/>transfer.rs / reader.rs"]
     Handles --> Download["下载编排<br/>download.rs"]
-    Download --> Workers["Peer 连接池 / CDN workers<br/>scheduler.rs / cdn.rs"]
+    Download --> Workers["Peer 连接池 / CDN workers<br/>discovery.rs / scheduler.rs / cdn.rs"]
     Workers --> Peer["Peer 文件协议与连接<br/>peer_transfer.rs / peer.rs<br/>webrtc_transport.rs"]
-    Pub --> Upload["上传接入与 worker<br/>upload.rs"]
+    Pub --> Router["info_hash → content<br/>upload_router.rs"]
+    Router --> Upload["上传接入与 worker<br/>upload.rs"]
     Upload --> Session["单连接上传协议<br/>upload_session.rs"]
     Session --> Peer
     Session --> Rate["共享速率预算<br/>upload_rate.rs"]
     Upload --> Stats["上传进度<br/>upload_progress.rs"]
     Session --> Stats
     Session --> Reads["max_upload_reads"]
-    Reads --> Source["PreparedFile / ProofTree<br/>source_file.rs"]
+    Reads --> Source["UploadSource<br/>upload_source.rs"]
+    Source --> Prepared["PreparedFile / ProofTree<br/>source_file.rs"]
+    Source --> Dest
     Workers --> Dest["校验与提交<br/>destination.rs"]
     Handles -->|"已验证读取"| Dest
     Dest --> Store["磁盘与检查点<br/>download_store.rs"]
@@ -32,7 +35,7 @@ flowchart TB
 
 ## 从发现到已认证连接
 
-1. 客户端查询 Track，取得当前页的完整文件持有者，去重并排除自身。
+1. 客户端查询 Track，取得当前页的完整或部分持有者，去重并排除自身；优先完整持有者，每五秒刷新候选。
 2. 下载方通过 Punch 请求连接，接收方同意后交换 SDP 与 ICE candidate。
 3. `webrtc-rs/webrtc` 建立 ICE / DTLS / SCTP 连接，并打开两条 DataChannel。
 4. 双方在可靠控制通道交换随机挑战及 Ed25519 签名，验证完成后才进入文件协议。
@@ -64,13 +67,13 @@ flowchart TB
 
 Drop 下载或读取句柄会取消网络任务。已经开始的阻塞磁盘操作可以完成，目标锁在操作结束前继续持有。每块证明保存在 `.q2q.resume`，恢复时重新读取并验证磁盘内容，完整文件可离线恢复。
 
-当前支持固定文件的下载和单游标 VOD。每个 Client 只能发布一个文件，每个发布句柄可同时服务多个下载 Peer（`max_upload_peers` 默认 4，范围 1–16）；候选来自当前 Track 页，暂不分页或刷新发现。最多 65,536 个 block，默认块大小对应 16 GiB。直播索引、部分文件做种和浏览器适配尚未实现。
+当前支持固定文件的下载和单游标 VOD。每个 Client 可同时注册最多 32 个不同内容哈希，每个发布句柄可同时服务多个下载 Peer（`max_upload_peers` 默认 4，范围 1–16）；候选来自当前 Track 页，每五秒刷新，暂不分页。最多 65,536 个 block，默认块大小对应 16 GiB。部分文件共享由应用显式开启；直播索引和浏览器适配尚未实现。
 
 ## 并发上传
 
-`client::builder().max_upload_peers(4)` 设置每个 Client 的上传连接额度，独立于 `max_download_peers`。握手前预留额度，握手、传输和 VOD 空闲连接均占用一个名额；连接结束后释放。容量满时通过 Punch 返回 Busy，低层建连接口返回 `ControlError::Busy`。当前不会等待上传队列或自动重试 Busy，下载调度可尝试其他候选或配置的 CDN。
+`client::builder().max_upload_peers(4)` 设置每个 Client 的上传连接额度，独立于 `max_download_peers`。握手前预留额度，握手、传输和 VOD 空闲连接均占用一个名额；连接结束后释放。容量满时通过 Punch 返回 Busy，低层建连接口返回 `ControlError::Busy`。不提供服务端上传等待队列；下载调度尝试其他候选，并在五秒退避后重试已知 Peer，配置的 CDN 仍可兜底。
 
-Punch 常驻信道只有一个读取者。Connect 进入有界接入队列，其余信令按 `connection_id` 分发到独立有界邮箱；每个上传任务自行完成握手与传输。远端断开、超时或协议错误只结束对应任务；源文件读取失败或内容变化会终止整个发布并撤销宣告。
+Punch 常驻信道只有一个读取者。Client 上传路由器将通过票据校验的 Connect 按 info_hash 分发到有界内容邮箱，其余信令按 `connection_id` 分发到独立有界邮箱；每个上传任务自行完成握手与传输。远端断开、超时或协议错误只结束对应任务；源文件读取失败或内容变化会终止整个发布并撤销宣告。
 
 所有上传任务共享只读源文件句柄、Seed 与 Merkle 树。Unix/Windows 按绝对偏移读取，不用共享游标锁串行化读取和校验；源读取并发由独立额度限制。`Publication::close()` 停止接入并等待全部上传任务和在途阻塞读取，再撤销宣告；Drop 触发相同的异步清理。发布关闭期间的新请求被拒绝，待接入队列不会留给下一次发布。
 
@@ -123,11 +126,11 @@ loop {
 
 ### 接入所有权与模块边界
 
-`admission.rs` 为共享控制会话管理接入租约：一个托管发布独占接入，多个低层 `accept_peer` 可共存，但两种模式不能同时运行。冲突返回 `ControlError::AdmissionConflict`，低层调用不会重新打开托管发布的接入开关；低层租约在接入/握手完成或取消时释放，托管租约在上传任务、阻塞读取和撤销宣告完成后释放。暂停通过独立通知唤醒正在等待请求或队列锁的读取者，返回 `AdmissionPaused`，然后清空待接入请求。
+`admission.rs` 为共享控制会话管理接入租约：一个 Client 上传路由器为所有注册内容持有托管接入租约，多个低层 `accept_peer` 可共存，但两种模式不能同时运行。冲突返回 `ControlError::AdmissionConflict`，低层调用不会重新打开托管发布的接入开关；低层租约在接入/握手完成或取消时释放，托管租约在上传任务、阻塞读取和撤销宣告完成后释放。暂停通过独立通知唤醒正在等待请求或队列锁的读取者，返回 `AdmissionPaused`，然后清空待接入请求。
 
-`upload.rs` 只组织额度、握手 worker 和错误隔离；`upload_session.rs` 拥有单连接上下文、事件消费与文件上传协议。下载协议和共用控制消息辅助函数保留在 `peer_transfer.rs`。`publication.rs` 的私有运行器统一处理初始化、续租、停止及撤销，所有退出路径都先停止接入、等待任务与阻塞读取，再撤销宣告并释放租约、发布终态。源码和测试均保持扁平目录。
+`upload_router.rs` 持有 Client 读取者，按内容哈希分发。`upload_source.rs` 提供内部 Seed、可用块与读取接口，完整源和下载目标分别实现。`upload.rs` 只组织额度、握手 worker 和错误隔离；`upload_session.rs` 拥有单连接上下文、事件消费与文件上传协议。下载协议和共用控制消息辅助函数保留在 `peer_transfer.rs`。`publication.rs` 的私有运行器统一处理初始化、续租、停止及撤销，所有退出路径都先拒绝该内容的新请求、等待任务与阻塞读取，再撤销宣告并释放注册、发布终态。关闭一个内容不影响其他内容，最后一个注册退出后才关闭共享接入并释放托管租约。源码和测试均保持扁平目录。
 
-### 并发源文件读取
+### 完整源的并发读取
 
 ```rust
 let client = q2q::client::builder()
@@ -144,3 +147,23 @@ let client = q2q::client::builder()
 每次读取前后检查已打开文件的长度/修改时间，并校验该块的已认证叶子；缩短文件造成的提前 EOF 也作为 SourceChanged。路径被替换时继续使用原已打开文件，不重新按路径打开另一份内容。同步 `PreparedFile::read_verified_block(&self, index)` 本身不等待 SDK 的异步额度，自行创建线程的调用者需要管理并发。低层 serve_file 的 `Arc<Mutex<PreparedFile>>` 参数保持不变，仅在开始时短暂获取锁来克隆只读句柄，之后上传不持有该锁。
 
 这个改造消除了 SDK 的共享游标排队，不保证物理磁盘吞吐随连接数增长；磁盘、CPU 和系统文件缓存仍由各请求共享。
+
+
+## 边下载边共享
+
+默认不开启共享。普通下载显式返回独立上传句柄：
+
+```rust
+let (transfer, sharing) = client.download_shared(&seed, "download.bin").await?;
+let path = transfer.wait().await?;
+// 保留 sharing，完整文件下载完成后仍继续做种。
+sharing.close().await?;
+```
+
+`resume_download_shared` 先重新校验恢复记录，再共享已有块。VOD 使用 `client.open(&seed, "video.mp4").share(true).await?`，默认由 reader 持有上传句柄；`file.sharing()` 可观察上传，`file.take_sharing()` 可将句柄交给应用独立持有。关闭共享不取消下载或读取；取消或失败的未完成下载/reader 会终止共享，即使应用已取走上传句柄。完整下载在上传句柄关闭或 Drop 前继续做种。上传错误通过上传进度及 close 结果报告，不隐式取消下载。
+
+首个块完成根校验、数据与证明记录持久化，且上传路由就绪后，才向 Track 发送 add=[hash]、complete=[]。后续已提交块通过现有连接发送 Have，可用性通知可以合并，不为每个块请求 Track。所有块完成并最终同步成功后，再宣告为 complete。共享期间持续心跳与持有续期；关闭或来源错误撤销该内容哈希。
+
+下载源维护块到证明记录偏移的内存索引，恢复时仅从重新校验通过的记录重建。上传直接定位有界记录，读取数据后再次按 Seed 根校验字节与证明，不暴露稀疏空洞或未提交块。下载目标目前仍在同一目标锁下串行读写；完整源保留并发按偏移读取。两类来源共用 Client 的上传连接、磁盘读取和速率额度，不新增块缓存。
+
+`PublicationState::Publishing` 包括等待首个可共享块，`download_shared` 返回时不保证已经宣告。外部观察者需要确认可发现性时可查询 Track。来源或宣告失败进入 Failed，并由 close 返回原始错误；撤销失败时 Track 可能保留旧记录直到持有 TTL 到期，本地上传路由仍会关闭。

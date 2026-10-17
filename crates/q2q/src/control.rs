@@ -140,7 +140,7 @@ impl ControlSession {
   }
 
   /// Accept the next request for a specific content hash on this Punch Binding.
-  /// Concurrent caller-managed accepts are allowed. A managed publication on
+  /// Concurrent caller-managed accepts are allowed. A managed upload router on
   /// this session owns admission exclusively and returns AdmissionConflict.
   pub async fn accept_peer(&self, info_hash: [u8; 32]) -> Result<PeerSession, ControlError> {
     // Keep the lease through negotiation. A managed publisher must not pause
@@ -150,7 +150,7 @@ impl ControlSession {
     self.incoming_peer(info_hash).await?.accept().await
   }
 
-  pub(crate) fn claim_publication(&self) -> Result<crate::admission::AdmissionLease, ControlError> {
+  pub(crate) fn claim_uploads(&self) -> Result<crate::admission::AdmissionLease, ControlError> {
     self.admission.managed()
   }
 
@@ -170,6 +170,18 @@ impl ControlSession {
       let turn = self.turn.read().await.clone();
       tokio::select! {
         request = peer::incoming(&self.identity, punch, info_hash, turn) => return request,
+        _ = changed.changed() => {},
+      }
+    }
+  }
+
+  pub(crate) async fn incoming_any(&self) -> Result<peer::PendingPeer, ControlError> {
+    let mut changed = self.punch_changed.subscribe();
+    loop {
+      let punch = self.punch.read().await.clone();
+      let turn = self.turn.read().await.clone();
+      tokio::select! {
+        request = peer::incoming_any(&self.identity, punch, turn) => return request,
         _ = changed.changed() => {},
       }
     }
@@ -245,13 +257,23 @@ impl ControlSession {
     add: &[[u8; 32]],
     del: &[[u8; 32]],
   ) -> Result<u64, ControlError> {
+    self.update_holdings(add, del, add).await
+  }
+
+  pub(crate) async fn update_holdings(
+    self: &Arc<Self>,
+    add: &[[u8; 32]],
+    del: &[[u8; 32]],
+    complete: &[[u8; 32]],
+  ) -> Result<u64, ControlError> {
     let session = self.clone();
     let add = add.to_vec();
     let del = del.to_vec();
+    let complete = complete.to_vec();
     // Once submitted, a rotating announce must adopt its returned key even if
     // its caller is cancelled. The next query/withdrawal waits for this task's
     // auth lock rather than racing a server-side rotation it did not observe.
-    tokio::spawn(async move { session.update_files_inner(&add, &del).await })
+    tokio::spawn(async move { session.update_files_inner(&add, &del, &complete).await })
       .await
       .map_err(|e| ControlError::Protocol(format!("announcement task failed: {e}")))?
   }
@@ -260,6 +282,7 @@ impl ControlSession {
     &self,
     add: &[[u8; 32]],
     del: &[[u8; 32]],
+    complete: &[[u8; 32]],
   ) -> Result<u64, ControlError> {
     let mut auth = self.track_auth.lock().await;
     let hashes = |list: &[[u8; 32]]| {
@@ -273,7 +296,7 @@ impl ControlSession {
       token: self
         .identity
         .ticket(Audience::Track, q2q_track::state::now(), None),
-      complete: add.clone(),
+      complete: hashes(complete),
       add,
       del: hashes(del),
       ttl: SESSION_TTL,
@@ -372,7 +395,7 @@ async fn expect_success(
 
 #[derive(Debug)]
 pub enum ControlError {
-  /// A managed publication and caller-managed accept cannot own admission together.
+  /// Managed uploads and caller-managed accept cannot own admission together.
   AdmissionConflict,
   /// The standing channel stopped admitting new connections.
   AdmissionPaused,

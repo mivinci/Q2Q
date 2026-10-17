@@ -294,3 +294,7 @@ async fn completed_resume_uses_public_api_without_track() {
   assert_eq!(result, path);
   assert_eq!(std::fs::read(result).unwrap(), bytes);
 }
+
+pub(crate) fn make_receipts_read_only(store: &mut DownloadStore, path: &Path) {
+  store.journal = File::open(sidecar(path, ".q2q.resume")).unwrap();
+}

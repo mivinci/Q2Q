@@ -37,8 +37,8 @@ impl std::fmt::Display for TransferError {
       Self::Closed => f.write_str("peer transfer channel closed"),
       Self::Timeout => f.write_str("peer transfer timed out"),
       Self::Rejected(ms) => write!(f, "peer rejected request; retry after {ms} ms"),
-      Self::NoPeers => f.write_str("no complete peer is available"),
-      Self::AlreadyPublishing => f.write_str("this client already has an active publication"),
+      Self::NoPeers => f.write_str("no usable peer is available"),
+      Self::AlreadyPublishing => f.write_str("this content already has an active publication"),
     }
   }
 }

@@ -8,7 +8,7 @@ use q2q_core::peer_wire::MAX_CONTROL_BYTES;
 use q2q_core::seed::Seed;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 #[cfg(test)]
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -34,6 +34,7 @@ pub(crate) struct DownloadStore {
   destination: File,
   journal: File,
   failed: bool,
+  receipts: Vec<Option<u64>>,
 }
 
 #[cfg(test)]
@@ -133,6 +134,41 @@ impl DownloadStore {
     }
     Ok(bytes)
   }
+  pub(crate) fn upload_block(
+    &mut self,
+    index: usize,
+    seed: &Seed,
+  ) -> Result<(Vec<u8>, Proof), TransferError> {
+    if self.failed {
+      return Err(invalid("destination is unavailable for sharing"));
+    }
+    let offset = self
+      .receipts
+      .get(index)
+      .copied()
+      .flatten()
+      .ok_or_else(|| invalid("block has no committed receipt"))?;
+    let bytes = self.read_verified(index)?;
+    // All journal access is under Destination's lock. Appends seek to EOF;
+    // a failed proof read cannot redirect a later checkpoint write.
+    self.journal.seek(SeekFrom::Start(offset))?;
+    let line = read_record(&mut BufReader::new(&mut self.journal))?
+      .ok_or_else(|| invalid("missing committed receipt"))?;
+    let receipt: Receipt = serde_json::from_slice(&line).map_err(|e| invalid(e.to_string()))?;
+    if receipt.index != index
+      || !q2q_core::merkle::verify(
+        &bytes,
+        index,
+        seed.info.leaf_count(),
+        &receipt.proof,
+        &seed.info.root,
+      )
+    {
+      return Err(invalid("shared block or proof changed"));
+    }
+    Ok((bytes, receipt.proof))
+  }
+
   pub(crate) fn sync(&self) -> std::io::Result<()> {
     self.destination.sync_all()
   }
@@ -158,6 +194,7 @@ impl DownloadStore {
       .map_err(|e| invalid(format!("destination is locked: {e}")))?;
     // A stale receipt file must not be silently attached to a new destination.
     let mut journal = OpenOptions::new()
+      .read(true)
       .write(true)
       .create_new(true)
       .open(&journal_path)?;
@@ -177,6 +214,7 @@ impl DownloadStore {
       destination,
       journal,
       failed: false,
+      receipts: vec![None; seed.info.leaf_count()],
     })
   }
 
@@ -201,6 +239,7 @@ impl DownloadStore {
     let nonce: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
     let temporary_path = sidecar(path, &format!(".q2q.resume.{nonce}.tmp"));
     let file = OpenOptions::new()
+      .read(true)
       .write(true)
       .create_new(true)
       .open(&temporary_path)?;
@@ -208,6 +247,7 @@ impl DownloadStore {
     let mut journal = file;
     write_record(&mut journal, &header)?;
     let mut seen = vec![false; store.block_count()];
+    let mut receipts = vec![None; store.block_count()];
     while let Some(line) = read_record(&mut reader)? {
       let receipt: Receipt = serde_json::from_slice(&line).map_err(|e| invalid(e.to_string()))?;
       if receipt.index >= seen.len() || seen[receipt.index] {
@@ -215,7 +255,11 @@ impl DownloadStore {
       }
       seen[receipt.index] = true;
       match store.verify_existing(receipt.index, &receipt.proof, &seed.info.root) {
-        Ok(_) => write_record(&mut journal, &receipt)?,
+        Ok(_) => {
+          let offset = journal.stream_position()?;
+          write_record(&mut journal, &receipt)?;
+          receipts[receipt.index] = Some(offset);
+        }
         // Corrupt bytes or forged receipts are missing blocks, never verified.
         Err(StoreError::RootMismatch) => {}
         Err(error) => return Err(error.into()),
@@ -228,12 +272,17 @@ impl DownloadStore {
     drop(journal);
     std::fs::rename(&temporary.0, &journal_path)?;
     sync_parent(path)?;
-    let journal = OpenOptions::new().append(true).open(journal_path)?;
+    let mut journal = OpenOptions::new()
+      .read(true)
+      .append(true)
+      .open(journal_path)?;
+    journal.seek(SeekFrom::End(0))?;
     Ok(Self {
       store,
       destination,
       journal,
       failed: false,
+      receipts,
     })
   }
 
@@ -274,12 +323,15 @@ impl DownloadStore {
     // Durable bytes precede their receipt. An interrupted write has no receipt
     // and will simply be requested again after restart.
     self.destination.sync_data()?;
+    let offset = self.journal.seek(SeekFrom::End(0))?;
     write_record(&mut self.journal, &Receipt { index, proof })?;
     self.journal.sync_data()?;
+    // Publish the index only after both data and receipt are durable.
+    self.receipts[index] = Some(offset);
     Ok(())
   }
 }
 
 #[cfg(test)]
 #[path = "../tests/download_store.rs"]
-mod tests;
+pub(crate) mod tests;

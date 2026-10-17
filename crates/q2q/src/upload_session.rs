@@ -6,6 +6,7 @@ use crate::peer_transfer::{BLOCK_DEADLINE, IDLE, decode_bitfield, protocol, rece
 use crate::source_file::PreparedFile;
 use crate::task_scope::{TaskGuard, TaskScope};
 use crate::upload_progress::Connection;
+use crate::upload_source::UploadSource;
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use bytes::BytesMut;
 use q2q_core::block::PIECE_SIZE;
@@ -46,16 +47,20 @@ impl UploadContext {
   }
   async fn read_block(
     &self,
-    source: Arc<PreparedFile>,
+    source: Arc<dyn UploadSource>,
     index: usize,
   ) -> Result<(Vec<u8>, Proof), TransferError> {
     // Acquire before spawning: queued readers remain abortable async tasks,
     // rather than occupying Tokio blocking threads or retaining read slots.
-    let read = source.read_permit().await;
+    let read = source
+      .read_limit()
+      .acquire_owned()
+      .await
+      .expect("source read gate is never closed");
     let task = self.read_task(read);
     tokio::task::spawn_blocking(move || {
       let _task = task;
-      Ok::<_, TransferError>((source.read_verified_block(index)?, source.proof(index)?))
+      source.read_block(index)
     })
     .await?
   }
@@ -107,7 +112,7 @@ impl PeerSession {
 
   pub(crate) async fn serve_file_scoped(
     self,
-    source: Arc<PreparedFile>,
+    source: Arc<dyn UploadSource>,
     context: UploadContext,
   ) -> Result<(), TransferError> {
     // Poll both channel event queues even while pacing sends. In particular,
@@ -148,7 +153,7 @@ impl PeerSession {
 
   async fn serve_source(
     &self,
-    source: Arc<PreparedFile>,
+    source: Arc<dyn UploadSource>,
     context: UploadContext,
     incoming: &mut tokio::sync::mpsc::Receiver<Result<Control, TransferError>>,
   ) -> Result<(), TransferError> {
@@ -157,34 +162,53 @@ impl PeerSession {
     if &seed.info_hash() != self.info_hash() {
       return Err(protocol("source belongs to another session"));
     }
-    let mut full = vec![0xff; seed.info.leaf_count().div_ceil(8)];
-    if let Some(last) = full.last_mut() {
-      let remainder = seed.info.leaf_count() % 8;
-      if remainder != 0 {
-        *last &= 0xff << (8 - remainder);
-      }
+    let mut availability = source.availability();
+    let mut advertised = availability.borrow_and_update().clone();
+    if advertised.failed {
+      return Err(protocol("upload source is unavailable"));
     }
     send(
       &*self.control,
       Control::Bitfield {
-        bits: B64.encode(full),
+        bits: B64.encode(&advertised.bits),
       },
     )
     .await?;
+    let mut changing = availability.has_changed().is_ok();
     let message = tokio::time::timeout(IDLE, receive_upload(incoming))
       .await
       .map_err(|_| TransferError::Timeout)??;
     decode_bitfield(message, seed.info.leaf_count())?;
     let mut pending: Option<(usize, Vec<u8>, Proof)> = None;
     loop {
-      let control = tokio::time::timeout(IDLE, receive_upload(incoming))
-        .await
-        .map_err(|_| TransferError::Timeout)??;
+      let control = tokio::select! {
+        changed = availability.changed(), if changing => {
+          if changed.is_err() { changing = false; continue; }
+          let latest = availability.borrow_and_update().clone();
+          if latest.failed { return Err(protocol("upload source is unavailable")); }
+          for (byte_index, (before, after)) in advertised.bits.iter().zip(&latest.bits).enumerate() {
+            let mut added = *after & !*before;
+            while added != 0 {
+              let bit = added.leading_zeros() as usize;
+              let index = byte_index * 8 + bit;
+              send(&*self.control, Control::Have { block_index: index as u64 }).await?;
+              added &= !(0x80 >> bit);
+            }
+          }
+          advertised = latest;
+          continue;
+        }
+        result = tokio::time::timeout(IDLE, receive_upload(incoming)) => result.map_err(|_| TransferError::Timeout)??,
+      };
       match control {
         Control::Request { block_index, count } => {
           let index =
             usize::try_from(block_index).map_err(|_| protocol("block index overflows platform"))?;
-          if count != 1 || index >= seed.info.leaf_count() || pending.is_some() {
+          if count != 1
+            || index >= seed.info.leaf_count()
+            || pending.is_some()
+            || !availability.borrow().has(index)
+          {
             send(
               &*self.control,
               Control::Reject {
