@@ -30,6 +30,13 @@ export async function listPublications(fileId: string, userId: string): Promise<
   return results;
 }
 
+export async function listProjectPublications(projectId: string, userId: string): Promise<PublicationSummary[]> {
+  const { results } = await env.DB.prepare(`SELECT ${summaryColumns} FROM content_publication p
+    JOIN project_member m ON m.projectId = p.projectId WHERE p.projectId = ? AND m.userId = ?
+    ORDER BY p.createdAt DESC, p.id LIMIT 100`).bind(projectId, userId).all<PublicationSummary>();
+  return results;
+}
+
 export async function createPublication(fileId: string, userId: string, input: Record<string, unknown>) {
   if (typeof input.id !== 'string' || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(input.id)) error(400, 'publicationInvalid');
   const file = await requireFile(fileId, userId, true);

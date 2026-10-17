@@ -1970,6 +1970,7 @@ name = "q2q-wasm"
 version = "0.1.0"
 dependencies = [
  "q2q-core",
+ "serde_json",
  "wasm-bindgen",
 ]
 

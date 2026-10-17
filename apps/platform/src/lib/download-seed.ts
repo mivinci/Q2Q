@@ -1,8 +1,7 @@
-import init, { seed_with_source } from '@q2q/wasm';
-import wasmUrl from '@q2q/wasm/module.wasm?url';
-let initialized: ReturnType<typeof init> | undefined;
+import { seed_with_source } from '@q2q/wasm';
+import { initializeSeedCodec } from './seed-codec.js';
 export async function downloadSeed(bytes: Uint8Array, source: string, name: string) {
-  await (initialized ??= init({ module_or_path: wasmUrl }).catch((cause) => { initialized = undefined; throw cause; }));
+  await initializeSeedCodec();
   const seed = seed_with_source(bytes, source);
   const url = URL.createObjectURL(new Blob([new Uint8Array(seed).buffer], { type: 'application/octet-stream' }));
   const anchor = document.createElement('a');

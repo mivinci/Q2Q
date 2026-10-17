@@ -12,5 +12,5 @@ export const POST: RequestHandler = async ({ request, cookies, url }) => {
   });
   const returnTo = form.get('returnTo');
   // Only return to known local pages; never redirect to a supplied external URL.
-  redirect(303, returnTo === '/settings' || returnTo === '/login' || returnTo === '/storage' ? returnTo : '/library');
+  redirect(303, returnTo === '/settings' || returnTo === '/login' || returnTo === '/storage' || returnTo === '/seeds' ? returnTo : '/library');
 };

@@ -2,6 +2,34 @@
 use q2q_core::seed_builder::SeedBuilder as CoreBuilder;
 use wasm_bindgen::prelude::*;
 
+/// Inspection stays local to the caller; no source URL is ever fetched here.
+#[wasm_bindgen]
+pub fn decode_seed(bytes: &[u8]) -> Result<String, JsError> {
+  let seed = q2q_core::seed::Seed::parse(bytes)?;
+  seed.validate()?;
+  let hex = |value: &[u8]| {
+    value
+      .iter()
+      .map(|byte| format!("{byte:02x}"))
+      .collect::<String>()
+  };
+  Ok(
+    serde_json::json!({
+      "name": seed.info.name,
+      "size": seed.info.length.to_string(),
+      "blockSize": seed.info.block_size,
+      "blockCount": seed.info.leaf_count().to_string(),
+      "infoHash": hex(&seed.info_hash()),
+      "root": hex(&seed.info.root),
+      "inlineProof": seed.leaf_hashes.is_some(),
+      "tracks": seed.track_list,
+      "sources": seed.cdn_list,
+      "proofSources": seed.proof_list
+    })
+    .to_string(),
+  )
+}
+
 /// Source hints live outside info; changing them must preserve content identity.
 #[wasm_bindgen]
 pub fn seed_with_source(bytes: &[u8], source: String) -> Result<Vec<u8>, JsError> {

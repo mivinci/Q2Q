@@ -43,7 +43,7 @@
   </div>
   {#each publications as version (version.id)}
     <div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4">
-      <div class="min-w-0"><p class="text-sm">{text[({ creating: 'publicationCreating', published: 'publicationPublished', failed: 'publicationFailed', withdrawn: 'publicationWithdrawn' } as const)[version.status]]}</p><p class="mt-1 break-all font-mono text-xs text-muted-foreground">{version.id}</p></div>
+      <div class="min-w-0"><p class="text-sm">{text[({ creating: 'publicationCreating', published: 'publicationPublished', failed: 'publicationFailed', withdrawn: 'publicationWithdrawn' } as const)[version.status]]}</p><a href={`/seeds/${version.id}`} class="mt-1 block break-all font-mono text-xs text-primary underline-offset-4 hover:underline">{version.id}</a></div>
       {#if version.cleanupPending}<p class="text-xs text-muted-foreground">{text.publicationCleanup}</p>{/if}
       {#if canManage && version.status === 'published'}<DownloadGrantPanel publicationId={version.id} name={version.name} />{/if}
       {#if canManage && (version.status !== 'withdrawn' || version.cleanupPending)}
