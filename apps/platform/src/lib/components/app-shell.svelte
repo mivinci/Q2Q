@@ -65,8 +65,8 @@
             aria-label={text[item.label]} title={compact ? text[item.label] : undefined}
             style={`width: ${drawer ? '100%' : compact ? '48px' : '208px'};`}
             class={active
-              ? 'h-11 justify-start gap-3 transition-[width] duration-200 motion-reduce:transition-none bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent'
-              : 'h-11 justify-start gap-3 transition-[width] duration-200 motion-reduce:transition-none text-muted-foreground'}>
+              ? 'h-11 justify-start gap-3 px-[15px] transition-[width] duration-200 motion-reduce:transition-none bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent'
+              : 'h-11 justify-start gap-3 px-[15px] transition-[width] duration-200 motion-reduce:transition-none text-muted-foreground'}>
             <item.icon class="size-4 shrink-0" aria-hidden="true" /><span class={`sidebar-label text-xs ${compact ? 'label-hidden' : ''}`} aria-hidden="true">{text[item.label]}</span>
           </Button>
         {/each}
