@@ -11,11 +11,12 @@
 
 ## 平台与客户端技术方向
 
+- 平台代码放在 `apps/platform`，前端统一使用 TypeScript。跨项目公共编译选项放在根目录 `tsconfig.base.json`，各项目 extends；框架生成配置、路径和运行时类型保留在项目侧。
 - 开放平台使用 SvelteKit，部署到 Cloudflare Workers，优先使用 Cloudflare 配套服务；Track、Punch、STUN/TURN 等保留为独立的原生集群部署。
 - 桌面端使用 Tauri，Rust 应用层复用 q2q SDK，界面使用 Svelte。移动端框架待定，可以后续单独使用 Flutter；不因跨端 UI 而假设 SDK、文件访问和后台做种已跨端。
 - 平台 Web 与桌面 Svelte 界面统一采用 shadcn-svelte 和 Lucide；视觉尽量贴近 Apple 原生，主题支持浅色、深色及跟随系统，保存用户偏好，默认跟随系统。
 - 用户已确认平台界面原型，基准保存在 [apps/platform/design/README.md](../apps/platform/design/README.md)。实现须对照浅色、深色与窄屏版本；整体布局或视觉调整先与用户确认并同步基准。
-- 大致方案与待细化边界见 [platform-technical-plan.md](../todos/platform-technical-plan.md)。这些选型不表示平台或 GUI 已实现，不提前固定所有服务、目录和桥接接口。
+- 大致方案与待细化边界见 [platform-technical-plan.md](../todos/platform-technical-plan.md)。平台工程已初始化，业务接线和桌面 GUI 尚未实现；不提前固定所有服务、目录和桥接接口。
 
 ## crate 与协议归属
 

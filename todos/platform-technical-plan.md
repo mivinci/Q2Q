@@ -1,6 +1,6 @@
 # 平台与客户端技术方案
 
-状态：总体方案，尚未开始平台或 GUI 实现。产品目标见 [product-direction.md](product-direction.md)；本文记录技术选型、职责边界与后续拆解，不提前固定服务目录、接口字段或全部基础设施。
+状态：总体方案；平台工程已初始化，业务接线和桌面 GUI 尚未实现。产品目标见 [product-direction.md](product-direction.md)；本文记录技术选型、职责边界与后续拆解，不提前固定服务目录、接口字段或全部基础设施。
 
 ## 1. 已确定的方向
 
@@ -155,3 +155,22 @@ Rust SDK 的总进度及逐 Peer 字节用于客户端展示和故障分析。�
 - [Tauri 前端配置](https://v2.tauri.app/start/frontend/)
 - [Tauri 移动插件开发](https://v2.tauri.app/develop/plugins/develop-mobile/)
 - [flutter_rust_bridge 平台支持](https://cjycode.com/flutter_rust_bridge/guides/cross-platform/overview)
+
+
+## 平台工程初始化
+
+- 位置：`apps/platform`，通过官方 sv CLI 创建 TypeScript 最小项目，保留 design 中的已批准原型。
+- 使用根 npm workspace 和统一 lockfile；根 `tsconfig.base.json` 管理公共选项，平台同时 extends SvelteKit 的 `$app/tsconfig` 与该基类，项目路径及 Workers 类型留在平台侧。
+- 接入 Cloudflare adapter、Wrangler 本地预览与类型生成、Tailwind、shadcn-svelte Button、Lucide 和三态主题；系统字体和语义颜色对照已批准设计。
+- 初始页面为内容库空状态；账号、项目、上传、存储、节点管理及计量接线仍待实现，不展示示例数据为真实业务数据。
+- 推荐 Node 24（`.node-version`），最低 22.17；开发、检查、构建、预览和类型生成均提供根脚本。CI 仅检查/构建，不部署。
+
+
+初始化检查记录：
+
+- 根目录 `npm ci` 干净安装通过，沿用统一 lockfile。
+- `npm run platform:check`：0 错误、0 警告，确认框架配置和根公共配置均生效。
+- `npm run platform:build`：Cloudflare Worker 与静态资源构建通过；构建后再次 check 通过。平台关闭 JavaScript 源码检查，避免 Wrangler 对生成 Worker 的类型引用将编译产物当作源码诊断。
+- `npm run docs:build` 通过；设计基准文件未修改。
+- `git diff --check` 通过。未新增或运行行为测试，未部署到 Cloudflare，也未创建远端数据库/存储资源。
+- 安装审计仍提示既有文档依赖链（VitePress/Vite/esbuild、Mermaid/KaTeX）的问题；本轮没有升级文档技术栈。

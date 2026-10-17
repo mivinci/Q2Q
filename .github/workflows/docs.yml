@@ -13,6 +13,8 @@ on:
       - 'docs/**'
       - 'e2e/**'
       - 'package.json'
+      - 'package-lock.json'
+      - '.node-version'
       - '.github/workflows/docs.yml'
   pull_request:
     branches: [main]
@@ -20,6 +22,8 @@ on:
       - 'docs/**'
       - 'e2e/**'
       - 'package.json'
+      - 'package-lock.json'
+      - '.node-version'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -41,10 +45,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version-file: '.node-version'
 
       - name: 安装构建依赖
-        run: npm install
+        run: npm ci
 
       - name: 构建并自检
         # e2e 用 playwright 驱动 runner 自带的 Chrome，不额外下载浏览器
