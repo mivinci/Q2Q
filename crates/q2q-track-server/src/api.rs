@@ -22,8 +22,7 @@ use q2q_track::wire::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub const DEFAULT_LIMIT: usize = 10;
-pub const MAX_LIMIT: usize = 50;
+pub use q2q_track::wire::{DEFAULT_QUERY_LIMIT as DEFAULT_LIMIT, MAX_QUERY_LIMIT as MAX_LIMIT};
 pub const DEFAULT_HEARTBEAT_INTERVAL: u32 = 30;
 
 /// Where Track gets its Punch list and TURN secret from.
@@ -69,19 +68,19 @@ impl PunchList {
     Arc::new(PunchList(RwLock::new(list)))
   }
 
-  /// Swap in a new list. Kept separate from `get` so a reload cannot observe a
+  /// Swap in a new list. Kept separate from `snapshot` so a reload cannot observe a
   /// half-written list.
   pub fn replace(&self, list: Vec<PunchAssignment>) {
     *self.0.write() = list;
   }
 
-  pub fn get(&self, punch_id: &str) -> Option<PunchAssignment> {
+  pub fn snapshot(&self) -> HashMap<String, PunchAssignment> {
     self
       .0
       .read()
       .iter()
-      .find(|p| p.punch_id == punch_id)
-      .cloned()
+      .map(|p| (p.punch_id.clone(), p.clone()))
+      .collect()
   }
 
   /// Which Punch Server to hand to a peer that just announced. With one entry
@@ -420,46 +419,54 @@ async fn query<S: TrackState>(
     .map_err(state_failure)?;
 
   let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
-  let after = params.cursor.as_ref().map(|c| PeerId::unchecked(c.clone()));
-
-  // the list is read once per request, not cached by the client: which Punch
-  // Server a peer sits on is deployment state that can change underneath us
-  let punch_list = &app.punch;
-
-  let mut peers: Vec<PeerWire> = Vec::new();
-  let mut has_more = false;
-  for c in app
-    .state
-    .query(&hash, limit + 1, after.as_ref(), now)
-    .await
-    .map_err(state_failure)?
-  {
-    // a peer whose Punch Server is no longer listed cannot be reached, so it
-    // is dropped rather than handed out with an address nobody serves
-    let Some(punch) = punch_list.get(&c.punch_id) else {
-      continue;
-    };
-    if peers.len() == limit {
-      has_more = true;
-      break;
-    }
-    peers.push(PeerWire {
-      peer_id: c.peer_id.as_str().to_string(),
-      public_key: B64.encode(c.public_key),
-      punch: PunchWire {
-        punch_id: punch.punch_id.clone(),
-        url: punch.url.clone(),
-        public_key: B64.encode(&punch.public_key),
-      },
-      complete: c.complete,
-    });
+  // Resolve one Punch snapshot for the whole selection and response.
+  let punches: HashMap<_, _> = app.punch.snapshot();
+  let punch_ids = punches.keys().cloned().collect();
+  let mut entropy = [0; 32];
+  getrandom::fill(&mut entropy).map_err(|_| {
+    (
+      StatusCode::INTERNAL_SERVER_ERROR,
+      Json(ErrorBody {
+        code: "internal".into(),
+        detail: None,
+      }),
+    )
+  })?;
+  let selection = q2q_track::selection::Query {
+    info_hash: &hash,
+    requester: &peer,
+    limit,
+    cursor: params.cursor.as_deref(),
+    punch_ids: &punch_ids,
+    now,
   }
-
-  let next_cursor = if has_more {
-    peers.last().map(|p| p.peer_id.clone())
-  } else {
-    None
-  };
+  .select(
+    &*app.state,
+    q2q_core::identity::peer_id_from_public_key(&entropy),
+  )
+  .await
+  .map_err(|error| match error {
+    q2q_track::selection::SelectionError::State(error) => state_failure(error),
+    _ => fail("bad_request", Some("invalid query cursor or limit".into())),
+  })?;
+  let peers = selection
+    .peers
+    .into_iter()
+    .map(|c| {
+      let punch = &punches[&c.punch_id];
+      PeerWire {
+        peer_id: c.peer_id.to_string(),
+        public_key: B64.encode(c.public_key),
+        punch: PunchWire {
+          punch_id: punch.punch_id.clone(),
+          url: punch.url.clone(),
+          public_key: B64.encode(&punch.public_key),
+        },
+        complete: c.complete,
+      }
+    })
+    .collect();
+  let next_cursor = selection.next_cursor;
 
   Ok(Json(QueryResponse { peers, next_cursor }))
 }
@@ -685,7 +692,7 @@ mod tests {
     let state = Arc::new(MemoryState::new());
     let app = build(state.clone(), punch_list());
     let hash = "ab".repeat(32);
-    let (peer, key) = session_with(
+    let (holder, _) = session_with(
       &app,
       4,
       &[format!("sha256:{hash}")],
@@ -693,6 +700,7 @@ mod tests {
     )
     .await;
 
+    let (peer, key) = session_for(&app, 200).await;
     let app2 = build(state, punch_list());
     let req = Request::builder()
       .method("GET")
@@ -702,7 +710,7 @@ mod tests {
     let resp = app2.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json["peers"][0]["peer_id"], peer);
+    assert_eq!(json["peers"][0]["peer_id"], holder);
     // the address and key come from the live list, never from a snapshot
     assert_eq!(json["peers"][0]["punch"]["punch_id"], "punch-1");
     assert_eq!(
@@ -724,7 +732,9 @@ mod tests {
     let hash = "ab".repeat(32);
 
     let announce_app = build(state.clone(), punch_list_at("https://old.example.com"));
-    let (peer, key) = session_with(&announce_app, 3, &[format!("sha256:{hash}")], &[]).await;
+    let (_holder, _) = session_with(&announce_app, 3, &[format!("sha256:{hash}")], &[]).await;
+
+    let (peer, key) = session_for(&announce_app, 201).await;
 
     // same peer, but Track's list now points punch-1 somewhere else
     let app = build(state, punch_list_at("https://new.example.com"));
@@ -744,7 +754,9 @@ mod tests {
     let hash = "cd".repeat(32);
 
     let announce_app = build(state.clone(), punch_list());
-    let (peer, key) = session_with(&announce_app, 4, &[format!("sha256:{hash}")], &[]).await;
+    let (_holder, _) = session_with(&announce_app, 4, &[format!("sha256:{hash}")], &[]).await;
+
+    let (peer, key) = session_for(&announce_app, 202).await;
 
     // punch-1 is gone from the list: nobody can reach this peer any more
     let retired = PunchList::new(vec![PunchAssignment {
@@ -779,7 +791,9 @@ mod tests {
       public_key: vec![7u8; 32],
     }]);
     let announce_app = build(state.clone(), punch.clone());
-    let (peer, key) = session_with(&announce_app, 5, &[format!("sha256:{hash}")], &[]).await;
+    let (_holder, _) = session_with(&announce_app, 5, &[format!("sha256:{hash}")], &[]).await;
+
+    let (peer, key) = session_for(&announce_app, 203).await;
 
     // seq 必须逐次递增，所以每次查询都要带一个
     let query = |seq: u64| {
@@ -1029,6 +1043,8 @@ mod tests {
     let hash = "ab".repeat(32);
     let (peer, key) = session_with(&app_a, 19, &[format!("sha256:{hash}")], &[]).await;
 
+    let (holder, _) = session_with(&app_a, 20, &[format!("sha256:{hash}")], &[]).await;
+
     let req = Request::builder()
       .method("GET")
       .uri(authed_query(&hash, &peer, &key, 1))
@@ -1036,7 +1052,7 @@ mod tests {
       .unwrap();
     let resp = app_b.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(body_json(resp).await["peers"][0]["peer_id"], peer);
+    assert_eq!(body_json(resp).await["peers"][0]["peer_id"], holder);
 
     let ts = q2q_track::state::now();
     let mac = B64.encode(q2q_track::auth::mac_bytes(
@@ -1066,11 +1082,132 @@ mod tests {
     let mut conn = client.get_connection_manager().await.unwrap();
     let _: u64 = redis::cmd("DEL")
       .arg(format!("{prefix}online:{peer}"))
+      .arg(format!("{prefix}online:{holder}"))
       .arg(format!("{prefix}file:{hash}:members"))
       .arg(format!("{prefix}file:{hash}:meta"))
       .arg(format!("{prefix}holding-expiry"))
       .query_async(&mut conn)
       .await
       .unwrap();
+  }
+
+  #[tokio::test]
+  async fn query_limits_and_opaque_pagination_exclude_requester() {
+    let state = Arc::new(MemoryState::new());
+    let app = build(state.clone(), punch_list());
+    let hash = "12".repeat(32);
+    let hash_text = format!("sha256:{hash}");
+    let (peer, key) = session_with(&app, 220, std::slice::from_ref(&hash_text), &[]).await;
+    for seed in 1..=12 {
+      session_with(&app, seed, std::slice::from_ref(&hash_text), &[]).await;
+    }
+    let mut cursor = None;
+    let mut seen = std::collections::HashSet::new();
+    for seq in 1..=8 {
+      let mut uri = format!("{}&limit=2", authed_query(&hash, &peer, &key, seq));
+      if let Some(cursor) = &cursor {
+        uri.push_str(&format!("&cursor={cursor}"));
+      }
+      let response = app
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+      assert_eq!(response.status(), StatusCode::OK);
+      let json = body_json(response).await;
+      let peers = json["peers"].as_array().unwrap();
+      assert!(peers.len() <= 2);
+      for candidate in peers {
+        let id = candidate["peer_id"].as_str().unwrap().to_owned();
+        assert_ne!(id, peer);
+        assert!(seen.insert(id));
+      }
+      cursor = json["next_cursor"].as_str().map(str::to_owned);
+      if cursor.is_none() {
+        break;
+      }
+    }
+    assert_eq!(seen.len(), 12);
+    assert!(cursor.is_none());
+    for (seq, suffix, expected) in [(9, "", 10), (10, "&limit=0", 1), (11, "&limit=999999", 12)] {
+      let uri = format!("{}{suffix}", authed_query(&hash, &peer, &key, seq));
+      let response = app
+        .clone()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+      assert_eq!(
+        body_json(response).await["peers"].as_array().unwrap().len(),
+        expected
+      );
+    }
+    let uri = format!("{}&cursor=v1.bad", authed_query(&hash, &peer, &key, 12));
+    let response = app
+      .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+      .await
+      .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+  }
+
+  #[tokio::test]
+  async fn query_backfills_beyond_retired_punch_prefix() {
+    let state = Arc::new(MemoryState::new());
+    let app = build(state.clone(), punch_list());
+    let (requester, session_key) = session_for(&app, 250).await;
+    let now = q2q_track::state::now();
+    let mut holders: Vec<_> = (1u8..=90)
+      .map(|seed| {
+        let (key, id) = q2q_core::identity::keypair_from_seed(&[seed; 32]);
+        (id, q2q_core::identity::public_key_of(&key))
+      })
+      .collect();
+    holders.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+    // The first 80 sorted holders use a retired Punch; all 10 good peers must
+    // remain discoverable even when requesting only three candidates.
+    for (index, (id, key)) in holders.iter().enumerate() {
+      state
+        .announce(
+          q2q_track::state::OnlineRecord {
+            peer_id: id.clone(),
+            public_key: *key,
+            session_key: [1; 32],
+            last_seq: 0,
+            punch: PunchAssignment {
+              punch_id: if index < 80 { "retired" } else { "punch-1" }.into(),
+              url: "quic://unused".into(),
+              public_key: vec![7; 32],
+            },
+            expires_at: now + 600,
+          },
+          &[[0x34; 32]],
+          &[],
+          &[],
+          600,
+        )
+        .await
+        .unwrap();
+    }
+    // A legacy cursor fixes the scan before the invalid prefix, avoiding any
+    // dependence on the random starting position of a fresh request.
+    let legacy = holders[0].0.to_string();
+    let uri = format!(
+      "{}&limit=3&cursor={legacy}",
+      authed_query(&"34".repeat(32), &requester, &session_key, 1)
+    );
+    let response = app
+      .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+      .await
+      .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["peers"].as_array().unwrap().len(), 3);
+    assert!(json["next_cursor"].as_str().is_some());
+    assert!(
+      json["peers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|peer| peer["punch"]["punch_id"] == "punch-1")
+    );
   }
 }

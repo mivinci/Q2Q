@@ -24,6 +24,35 @@ struct TrackAuth {
   seq: u64,
 }
 
+/// Options for one Track query. Limits are upper bounds; cursors are opaque
+/// continuations returned by the same file/requester query.
+#[derive(Debug, Clone, Default)]
+pub struct QueryOptions {
+  pub limit: Option<usize>,
+  pub cursor: Option<String>,
+}
+impl QueryOptions {
+  fn apply(&self, url: &mut Url) -> Result<(), ControlError> {
+    if let Some(limit) = self.limit {
+      if !(1..=q2q_track::wire::MAX_QUERY_LIMIT).contains(&limit) {
+        return Err(ControlError::Protocol(
+          "query limit must be between 1 and 50".into(),
+        ));
+      }
+      url
+        .query_pairs_mut()
+        .append_pair("limit", &limit.to_string());
+    }
+    if let Some(cursor) = &self.cursor {
+      if cursor.len() > q2q_track::selection::MAX_CURSOR_BYTES {
+        return Err(ControlError::Protocol("query cursor is too long".into()));
+      }
+      url.query_pairs_mut().append_pair("cursor", cursor);
+    }
+    Ok(())
+  }
+}
+
 /// A shared control-plane presence with serialized Track session rotations.
 pub struct ControlSession {
   online: crate::online::Online,
@@ -221,11 +250,25 @@ impl ControlSession {
   /// Query the current Track index. The hash must be the 32 raw bytes of an
   /// info hash, not a caller-chosen filename.
   pub async fn query(&self, info_hash: &[u8; 32]) -> Result<QueryResponse, ControlError> {
+    self
+      .query_with_options(info_hash, QueryOptions::default())
+      .await
+  }
+
+  /// Request at most `limit` candidates, or continue a returned cursor.
+  /// Fresh queries rotate candidates; continuations retain the original walk.
+  pub async fn query_with_options(
+    &self,
+    info_hash: &[u8; 32],
+    options: QueryOptions,
+  ) -> Result<QueryResponse, ControlError> {
+    let hash = format!("sha256:{}", hex(info_hash));
+    let mut url = endpoint(&self.track_url, &["files", &hash, "peers"])?;
+    // Validate local options before consuming a session sequence number.
+    options.apply(&mut url)?;
     let mut auth = self.track_auth.lock().await;
     let seq = next_seq(&mut auth.seq)?;
     let now = q2q_track::state::now();
-    let hash = format!("sha256:{}", hex(info_hash));
-    let mut url = endpoint(&self.track_url, &["files", &hash, "peers"])?;
     url
       .query_pairs_mut()
       .append_pair("peer_id", self.peer_id.as_str())
@@ -457,3 +500,7 @@ impl std::error::Error for ControlError {
     }
   }
 }
+
+#[cfg(test)]
+#[path = "../tests/query.rs"]
+mod tests;

@@ -92,6 +92,9 @@ pub trait TrackState: Send + Sync {
     now: UnixSeconds,
   ) -> impl Future<Output = Result<(), StateError>> + Send;
 
+  /// Return live holders in ascending peer-ID order, strictly after `after`.
+  /// Both holding and online expiry must be checked; return at most `limit`.
+  /// Selection uses this ordered primitive for filtered, rotating pagination.
   fn query(
     &self,
     info_hash: &InfoHash,
@@ -236,17 +239,16 @@ impl TrackState for MemoryState {
     let empty = BTreeMap::new();
     let holders = data.files.get(&key(info_hash)).unwrap_or(&empty);
 
+    // Rotation and filtered backfill may read several pages. Seek directly to
+    // the lower bound instead of rescanning the full prefix on every batch.
+    let lower = after.map_or(std::ops::Bound::Unbounded, |peer| {
+      std::ops::Bound::Excluded(peer.as_str())
+    });
     Ok(
       holders
-        .values()
+        .range::<str, _>((lower, std::ops::Bound::Unbounded))
+        .map(|(_, holding)| holding)
         .filter(|h| h.expires_at > now)
-        .filter(|h| {
-          // cursor: only peers strictly after the last one handed out
-          match after {
-            Some(p) => h.peer_id.as_str() > p.as_str(),
-            None => true,
-          }
-        })
         .filter_map(|h| {
           let record = data
             .online

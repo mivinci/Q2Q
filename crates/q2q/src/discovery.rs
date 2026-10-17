@@ -15,6 +15,7 @@ pub(crate) struct Peers {
   pub(crate) session: Arc<ControlSession>,
   pub(crate) candidates: Vec<PeerWire>,
   pub(crate) concurrency: usize,
+  pub(crate) query_limit: usize,
 }
 impl Peers {
   pub(crate) async fn run(
@@ -61,7 +62,7 @@ impl Peers {
       candidates.retain(|peer| {
         peer.peer_id != self.session.peer_id().as_str() && seen.insert(peer.peer_id.clone())
       });
-      candidates.truncate(32);
+      candidates.truncate(self.query_limit);
       for target in &candidates {
         if active.len() >= self.concurrency {
           break;
@@ -129,7 +130,7 @@ impl Peers {
           if Instant::now() >= refresh {
             // Query errors do not cancel healthy connections. Keep existing
             // candidates and apply the same bounded retry schedule.
-            if let Ok(response) = self.session.query(&seed.info_hash()).await { candidates = response.peers; }
+            if let Ok(response) = self.session.query_with_options(&seed.info_hash(), crate::control::QueryOptions { limit: Some(self.query_limit), cursor: None }).await { candidates = response.peers; }
             retry.retain(|id, _| active.contains(id) || candidates.iter().any(|peer| peer.peer_id == *id));
             refresh = Instant::now() + Duration::from_secs(5);
           }

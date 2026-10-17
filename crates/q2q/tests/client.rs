@@ -193,3 +193,35 @@ async fn source_read_limit_is_independent_and_validated() {
   drop(held);
   assert_eq!(client.upload_reads.available_permits(), 1);
 }
+
+#[tokio::test]
+async fn peer_query_limit_defaults_to_spare_candidates_and_is_independent() {
+  let dir = tempfile::tempdir().unwrap();
+  let make = || {
+    builder()
+      .track_url("http://127.0.0.1:1")
+      .identity_file(dir.path().join("identity"))
+      .storage_dir(dir.path().join("storage"))
+  };
+  for count in [0, 51, usize::MAX] {
+    assert!(matches!(
+      make().peer_query_limit(count).build().await,
+      Err(BuildError::InvalidPeerQueryLimit)
+    ));
+  }
+  assert_eq!(make().build().await.unwrap().peer_query_limit, 8);
+  for concurrent in [1, 4, 16] {
+    let client = make().max_download_peers(concurrent).build().await.unwrap();
+    assert_eq!(client.peer_query_limit, concurrent * 2);
+  }
+  for limit in [1, 50] {
+    let client = make()
+      .max_download_peers(4)
+      .peer_query_limit(limit)
+      .build()
+      .await
+      .unwrap();
+    assert_eq!(client.peer_query_limit, limit);
+    assert_eq!(client.max_download_peers, 4);
+  }
+}
