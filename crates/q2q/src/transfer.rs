@@ -3,7 +3,9 @@
 use crate::control::ControlError;
 use crate::download_store::DownloadStore;
 use crate::peer::PeerSession;
+pub use crate::progress::{TransferProgress, TransferState};
 use crate::publication::{PrepareError, PreparedFile};
+use crate::scheduler::WorkQueue;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use bytes::BytesMut;
@@ -12,9 +14,12 @@ use q2q_core::file::StoreError;
 use q2q_core::merkle::{self, Proof};
 use q2q_core::peer_wire::{Control, MAX_BLOCKS, Piece, WireError};
 use q2q_core::seed::Seed;
+use std::collections::HashSet;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
 
@@ -79,12 +84,53 @@ convert!(tokio::task::JoinError, Task);
 /// destination remains unverified and `wait` never reports it as complete.
 pub struct Transfer {
   pub(crate) task: Option<JoinHandle<Result<PathBuf, TransferError>>>,
+  pub(crate) progress: watch::Sender<TransferProgress>,
 }
 impl Transfer {
+  pub(crate) fn start(
+    progress: watch::Sender<TransferProgress>,
+    operation: impl Future<Output = Result<PathBuf, TransferError>> + Send + 'static,
+  ) -> Self {
+    let updates = progress.clone();
+    let task = tokio::spawn(async move {
+      let result = operation.await;
+      crate::progress::finish(
+        &updates,
+        if result.is_ok() {
+          TransferState::Completed
+        } else {
+          TransferState::Failed
+        },
+      );
+      result
+    });
+    Self {
+      task: Some(task),
+      progress,
+    }
+  }
+
+  /// Latest snapshot; byte counts include only verified, persisted blocks.
+  pub fn progress(&self) -> TransferProgress {
+    *self.progress.borrow()
+  }
+
+  /// Coalesced snapshots. Slow consumers observe the latest value without
+  /// buffering every block event. A terminal state is published before wait returns.
+  pub fn subscribe_progress(&self) -> watch::Receiver<TransferProgress> {
+    self.progress.subscribe()
+  }
+
   pub async fn wait(mut self) -> Result<PathBuf, TransferError> {
-    let result = self.task.as_mut().expect("transfer task exists").await?;
+    let result = self.task.as_mut().expect("transfer task exists").await;
     self.task.take();
-    result
+    match result {
+      Ok(result) => result,
+      Err(error) => {
+        crate::progress::finish(&self.progress, TransferState::Failed);
+        Err(error.into())
+      }
+    }
   }
   pub fn cancel(self) {
     drop(self);
@@ -94,6 +140,7 @@ impl Drop for Transfer {
   fn drop(&mut self) {
     if let Some(task) = &self.task {
       task.abort();
+      crate::progress::finish(&self.progress, TransferState::Cancelled);
     }
   }
 }
@@ -337,14 +384,26 @@ impl PeerSession {
     seed: &Seed,
     store: Arc<Mutex<DownloadStore>>,
   ) -> Result<(), TransferError> {
-    if &seed.info_hash() != self.info_hash() {
-      return Err(protocol("seed belongs to another session"));
-    }
-    let count = seed.info.leaf_count();
     let bits = store
       .lock()
       .map_err(|_| protocol("destination lock poisoned"))?
       .verified_bitfield();
+    let progress = crate::progress::channel(seed, &bits);
+    let queue = WorkQueue::new(seed, &bits, progress);
+    self.download_scheduled(seed, store, queue).await
+  }
+
+  pub(crate) async fn download_scheduled(
+    self,
+    seed: &Seed,
+    store: Arc<Mutex<DownloadStore>>,
+    queue: Arc<WorkQueue>,
+  ) -> Result<(), TransferError> {
+    if &seed.info_hash() != self.info_hash() {
+      return Err(protocol("seed belongs to another session"));
+    }
+    let count = seed.info.leaf_count();
+    let bits = queue.bitfield();
     send(
       &*self.control,
       Control::Bitfield {
@@ -356,16 +415,12 @@ impl PeerSession {
     if (0..count).any(|i| available[i / 8] & (1 << (7 - i % 8)) == 0) {
       return Err(protocol("peer does not hold the complete file"));
     }
-    for index in 0..count {
-      let length = {
-        let store = store
-          .lock()
-          .map_err(|_| protocol("destination lock poisoned"))?;
-        if store.state(index)? == q2q_core::block::BlockState::Verified {
-          continue;
-        }
-        store.block_len(index)?
-      };
+    let _active = crate::progress::ActivePeer::new(queue.progress.clone());
+    let mut completed = HashSet::new();
+    while let Some(lease) = queue.claim().await {
+      let index = lease.index;
+      let length =
+        crate::progress::block_len(seed.info.length, seed.info.block_size, index) as usize;
       send(
         &*self.control,
         Control::Request {
@@ -374,7 +429,7 @@ impl PeerSession {
         },
       )
       .await?;
-      let (bytes, proof) = self.receive_block(index, length).await?;
+      let (bytes, proof) = self.receive_block(index, length, &completed).await?;
       let root = seed.info.root;
       // Reject untrusted data before it can overwrite the destination.
       if !merkle::verify(&bytes, index, count, &proof, &root) {
@@ -385,9 +440,12 @@ impl PeerSession {
         let mut store = destination
           .lock()
           .map_err(|_| protocol("destination lock poisoned"))?;
-        store.commit(index, &bytes, proof, &root)
+        store.commit(index, &bytes, proof, &root)?;
+        lease.commit();
+        Ok::<_, TransferError>(())
       })
       .await??;
+      completed.insert(index as u64);
       send(
         &*self.control,
         Control::Have {
@@ -419,7 +477,7 @@ impl PeerSession {
             count: 0,
           } => return Ok(()),
           // A proof retry may already have been queued before BlockDone.
-          Control::Proof { block_index, .. } if block_index < count as u64 => {}
+          Control::Proof { block_index, .. } if completed.contains(&block_index) => {}
           _ => return Err(protocol("expected transfer end acknowledgement")),
         }
       }
@@ -432,6 +490,7 @@ impl PeerSession {
     &self,
     index: usize,
     length: usize,
+    completed: &HashSet<u64>,
   ) -> Result<(Vec<u8>, Proof), TransferError> {
     let mut assembly = Assembly::new(length);
     let mut proof = None;
@@ -443,7 +502,7 @@ impl PeerSession {
         tokio::select! {
           control = receive(&*self.control) => match control? {
             Control::Proof { block_index, count: 1, proof: received } if block_index == index as u64 => proof = Some(received),
-            Control::Proof { block_index, .. } if block_index < index as u64 => {},
+            Control::Proof { block_index, .. } if completed.contains(&block_index) => {},
             Control::Reject { retry_after, .. } => return Err(TransferError::Rejected(retry_after)),
             Control::Have { .. } => {},
             _ => return Err(protocol("unexpected download control message")),
@@ -452,7 +511,7 @@ impl PeerSession {
             Some(DataChannelEvent::OnMessage(message)) => {
               if message.is_string { return Err(protocol("piece must be binary")); }
               let piece = Piece::decode(&message.data)?;
-              if piece.block_index < index as u64 { continue; }
+              if completed.contains(&piece.block_index) { continue; }
               if piece.block_index != index as u64 { return Err(protocol("unsolicited block")); }
               if assembly.insert(piece.piece_offset, piece.data)? {
                 idle.as_mut().reset(tokio::time::Instant::now() + RETRY_DELAY);
@@ -649,7 +708,12 @@ mod tests {
       std::future::pending::<Result<PathBuf, TransferError>>().await
     });
     started.await.unwrap();
-    let transfer = Transfer { task: Some(task) };
+    let prepared_dir = tempfile::tempdir().unwrap();
+    let prepared = source(prepared_dir.path(), b"test");
+    let transfer = Transfer {
+      task: Some(task),
+      progress: crate::progress::channel(prepared.seed(), &[]),
+    };
     assert!(
       tokio::time::timeout(Duration::from_millis(10), transfer.wait())
         .await
@@ -862,6 +926,569 @@ mod tests {
         assert_eq!(std::fs::read(destination).unwrap(), bytes);
       }
     }
+  }
+
+  // Real WebRTC peers with observable requests and an explicit end handshake.
+  async fn observed_source(
+    upload: PeerSession,
+    mut prepared: PreparedFile,
+    counts: Arc<Mutex<Vec<usize>>>,
+    first_request: Option<Arc<tokio::sync::Barrier>>,
+  ) {
+    let count = prepared.seed().info.leaf_count();
+    let mut bits = vec![0xff; count.div_ceil(8)];
+    if !count.is_multiple_of(8) {
+      *bits.last_mut().unwrap() &= 0xff << (8 - count % 8);
+    }
+    send(
+      &*upload.control,
+      Control::Bitfield {
+        bits: B64.encode(bits),
+      },
+    )
+    .await
+    .unwrap();
+    receive_bitfield(&*upload.control, count).await.unwrap();
+    let mut first = first_request;
+    loop {
+      match receive(&*upload.control).await.unwrap() {
+        Control::Request {
+          block_index,
+          count: 1,
+        } => {
+          if let Some(barrier) = first.take() {
+            barrier.wait().await;
+          }
+          let index = block_index as usize;
+          counts.lock().unwrap()[index] += 1;
+          let bytes = prepared.read_verified_block(index).unwrap();
+          send(
+            &*upload.control,
+            Control::Proof {
+              block_index,
+              count: 1,
+              proof: prepared.proof(index).unwrap(),
+            },
+          )
+          .await
+          .unwrap();
+          send_pieces(
+            &*upload.data,
+            block_index,
+            &bytes,
+            &[(0, bytes.len() as u32)],
+          )
+          .await
+          .unwrap();
+        }
+        Control::PieceNack {
+          block_index,
+          piece_offset,
+          length,
+        } => {
+          let bytes = prepared.read_verified_block(block_index as usize).unwrap();
+          let ranges: Vec<_> = piece_offset.into_iter().zip(length).collect();
+          send_pieces(&*upload.data, block_index, &bytes, &ranges)
+            .await
+            .unwrap();
+        }
+        Control::RequestProof {
+          block_index,
+          count: 1,
+        } => {
+          send(
+            &*upload.control,
+            Control::Proof {
+              block_index,
+              count: 1,
+              proof: prepared.proof(block_index as usize).unwrap(),
+            },
+          )
+          .await
+          .unwrap();
+        }
+        Control::Have { .. } | Control::BlockDone { .. } => {}
+        Control::Cancel { block_index, count } => {
+          send(&*upload.control, Control::Cancel { block_index, count })
+            .await
+            .unwrap();
+          assert!(matches!(
+            receive(&*upload.control).await,
+            Err(TransferError::Closed)
+          ));
+          return;
+        }
+        message => panic!("unexpected source message: {message:?}"),
+      }
+    }
+  }
+
+  #[tokio::test]
+  async fn parallel_peers_request_disjoint_blocks_and_publish_durable_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = vec![37; 3 * 262144 + 19];
+    let prepared = source(dir.path(), &bytes);
+    let seed = prepared.seed().clone();
+    let path = dir.path().join("download.bin");
+    let store = create_destination(&seed, &path).await.unwrap();
+    let progress = crate::progress::channel(&seed, &[]);
+    let observed = progress.subscribe();
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let counts = Arc::new(Mutex::new(vec![0; seed.info.leaf_count()]));
+    let mut targets = Vec::new();
+    let mut servers = tokio::task::JoinSet::new();
+    for _ in 0..2 {
+      let (download, upload) = crate::peer::test_pair(seed.info_hash()).await;
+      targets.push(download);
+      let prepared =
+        PreparedFile::open(dir.path().join("source.bin"), "http://localhost".into()).unwrap();
+      servers.spawn(observed_source(
+        upload,
+        prepared,
+        counts.clone(),
+        Some(barrier.clone()),
+      ));
+    }
+    let output = path.clone();
+    let transfer = Transfer::start(progress.clone(), async move {
+      crate::scheduler::download(targets, seed, store, 2, progress, |peer| async { Ok(peer) })
+        .await?;
+      sync_destination(&output).await?;
+      Ok(output)
+    });
+    let mut updates = transfer.subscribe_progress();
+    let monitor = tokio::spawn(async move {
+      let mut previous = 0;
+      let mut maximum_active = 0;
+      loop {
+        let current = *updates.borrow_and_update();
+        assert!(current.verified_bytes >= previous);
+        assert!(current.verified_bytes <= current.total_bytes);
+        previous = current.verified_bytes;
+        maximum_active = maximum_active.max(current.active_peers);
+        if current.state == TransferState::Completed {
+          return maximum_active;
+        }
+        updates.changed().await.unwrap();
+      }
+    });
+    assert_eq!(
+      tokio::time::timeout(Duration::from_secs(15), transfer.wait())
+        .await
+        .unwrap()
+        .unwrap(),
+      path
+    );
+    assert_eq!(monitor.await.unwrap(), 2);
+    while let Some(result) = servers.join_next().await {
+      result.unwrap();
+    }
+    assert_eq!(*counts.lock().unwrap(), vec![1; 4]);
+    assert_eq!(observed.borrow().state, TransferState::Completed);
+    assert_eq!(observed.borrow().verified_bytes, bytes.len() as u64);
+    assert_eq!(observed.borrow().active_peers, 0);
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+  }
+
+  #[tokio::test]
+  async fn failed_peer_requeues_earlier_block_and_late_pieces_are_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = vec![64; 262144 + 23];
+    let prepared = source(dir.path(), &bytes);
+    let seed = prepared.seed().clone();
+    let path = dir.path().join("download.bin");
+    let store = create_destination(&seed, &path).await.unwrap();
+    let progress = crate::progress::channel(&seed, &[]);
+    let (bad_download, bad) = crate::peer::test_pair(seed.info_hash()).await;
+    let (good_download, good) = crate::peer::test_pair(seed.info_hash()).await;
+    let (claimed, bad_claimed) = tokio::sync::oneshot::channel();
+    let (completed, good_completed) = tokio::sync::oneshot::channel();
+    let bad_proof = prepared.proof(0).unwrap();
+    let bad_bytes = vec![255; 262144];
+    let bad_server = async move {
+      send(
+        &*bad.control,
+        Control::Bitfield {
+          bits: B64.encode([0xc0]),
+        },
+      )
+      .await
+      .unwrap();
+      receive_bitfield(&*bad.control, 2).await.unwrap();
+      assert!(matches!(
+        receive(&*bad.control).await.unwrap(),
+        Control::Request { block_index: 0, .. }
+      ));
+      claimed.send(()).unwrap();
+      good_completed.await.unwrap();
+      send(
+        &*bad.control,
+        Control::Proof {
+          block_index: 0,
+          count: 1,
+          proof: bad_proof,
+        },
+      )
+      .await
+      .unwrap();
+      send_pieces(&*bad.data, 0, &bad_bytes, &[(0, bad_bytes.len() as u32)])
+        .await
+        .unwrap();
+      assert!(matches!(
+        receive(&*bad.control).await,
+        Err(TransferError::Closed)
+      ));
+    };
+    let good_bytes = bytes.clone();
+    let good_server = async move {
+      send(
+        &*good.control,
+        Control::Bitfield {
+          bits: B64.encode([0xc0]),
+        },
+      )
+      .await
+      .unwrap();
+      receive_bitfield(&*good.control, 2).await.unwrap();
+      for index in [1, 0] {
+        assert!(
+          matches!(receive(&*good.control).await.unwrap(), Control::Request { block_index, .. } if block_index == index)
+        );
+        if index == 0 {
+          // Late duplicates from block 1 arrive after the requeued block 0 request.
+          send(
+            &*good.control,
+            Control::Proof {
+              block_index: 1,
+              count: 1,
+              proof: prepared.proof(1).unwrap(),
+            },
+          )
+          .await
+          .unwrap();
+          send_pieces(&*good.data, 1, &good_bytes[262144..], &[(0, 23)])
+            .await
+            .unwrap();
+        }
+        let block = if index == 0 {
+          &good_bytes[..262144]
+        } else {
+          &good_bytes[262144..]
+        };
+        send(
+          &*good.control,
+          Control::Proof {
+            block_index: index,
+            count: 1,
+            proof: prepared.proof(index as usize).unwrap(),
+          },
+        )
+        .await
+        .unwrap();
+        send_pieces(&*good.data, index, block, &[(0, block.len() as u32)])
+          .await
+          .unwrap();
+        assert!(matches!(
+          receive(&*good.control).await.unwrap(),
+          Control::Have { .. }
+        ));
+        assert!(matches!(
+          receive(&*good.control).await.unwrap(),
+          Control::BlockDone { .. }
+        ));
+      }
+      let end = receive(&*good.control).await.unwrap();
+      send(&*good.control, end).await.unwrap();
+      assert!(matches!(
+        receive(&*good.control).await,
+        Err(TransferError::Closed)
+      ));
+    };
+    // Signal completion of block 1 through progress, after its durable commit.
+    let mut updates = progress.subscribe();
+    let notify_good = async move {
+      loop {
+        if updates.borrow_and_update().verified_blocks == 1 {
+          completed.send(()).unwrap();
+          break;
+        }
+        updates.changed().await.unwrap();
+      }
+    };
+    let received = crate::scheduler::download(
+      vec![(bad_download, None), (good_download, Some(bad_claimed))],
+      seed,
+      store.clone(),
+      2,
+      progress.clone(),
+      |(peer, gate)| async move {
+        if let Some(gate) = gate {
+          gate.await.unwrap();
+        }
+        Ok(peer)
+      },
+    );
+    let (result, (), (), ()) = tokio::time::timeout(Duration::from_secs(15), async {
+      tokio::join!(received, bad_server, good_server, notify_good)
+    })
+    .await
+    .unwrap();
+    result.unwrap();
+    assert!(destination_complete(&store).unwrap());
+    assert_eq!(progress.borrow().verified_blocks, 2);
+    assert_eq!(progress.borrow().verified_bytes, bytes.len() as u64);
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+  }
+
+  #[tokio::test]
+  async fn restored_transfer_only_requests_corrupt_blocks_and_preserves_progress() {
+    use std::io::{Seek, SeekFrom, Write};
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = vec![61; 262144 + 23];
+    let prepared = source(dir.path(), &bytes);
+    let seed = prepared.seed().clone();
+    let path = dir.path().join("download.bin");
+    let mut store = crate::download_store::DownloadStore::create(&seed, &path).unwrap();
+    for index in 0..2 {
+      let start = index * 262144;
+      store
+        .commit(
+          index,
+          &bytes[start..(start + 262144).min(bytes.len())],
+          prepared.proof(index).unwrap(),
+          &seed.info.root,
+        )
+        .unwrap();
+    }
+    drop(store);
+    let mut disk = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    disk.seek(SeekFrom::Start(12)).unwrap();
+    disk.write_all(&[255]).unwrap();
+    drop(disk);
+    let restored = crate::transfer::open_destination(&seed, &path, true)
+      .await
+      .unwrap();
+    let bits = restored.lock().unwrap().verified_bitfield();
+    let progress = crate::progress::channel(&seed, &bits);
+    assert_eq!(progress.borrow().verified_bytes, 23);
+    assert_eq!(progress.borrow().verified_blocks, 1);
+    let (download, upload) = crate::peer::test_pair(seed.info_hash()).await;
+    let counts = Arc::new(Mutex::new(vec![0; 2]));
+    let observed_counts = counts.clone();
+    let received = crate::scheduler::download(
+      vec![download],
+      seed,
+      restored,
+      2,
+      progress.clone(),
+      |peer| async { Ok(peer) },
+    );
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+      tokio::join!(
+        received,
+        observed_source(upload, prepared, observed_counts, None)
+      )
+    })
+    .await
+    .unwrap();
+    result.unwrap();
+    assert_eq!(*counts.lock().unwrap(), vec![1, 0]);
+    assert_eq!(progress.borrow().verified_bytes, bytes.len() as u64);
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+  }
+
+  #[tokio::test]
+  async fn cancellation_aborts_all_workers_and_respects_connection_limit() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Connecting(Arc<AtomicUsize>);
+    impl Drop for Connecting {
+      fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+      }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let prepared = source(dir.path(), b"payload");
+    let seed = prepared.seed().clone();
+    let path = dir.path().join("download.bin");
+    let store = create_destination(&seed, &path).await.unwrap();
+    let retained_path = path.clone();
+    let progress = crate::progress::channel(&seed, &[]);
+    let observed = progress.subscribe();
+    let live = Arc::new(AtomicUsize::new(0));
+    let count = live.clone();
+    let transfer = Transfer::start(progress.clone(), async move {
+      crate::scheduler::download((0..10).collect(), seed, store, 2, progress, move |_| {
+        let count = count.clone();
+        async move {
+          let _connecting = Connecting(count.clone());
+          count.fetch_add(1, Ordering::SeqCst);
+          std::future::pending::<Result<PeerSession, TransferError>>().await
+        }
+      })
+      .await?;
+      Ok(path)
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+      while live.load(Ordering::SeqCst) < 2 {
+        tokio::task::yield_now().await;
+      }
+    })
+    .await
+    .unwrap();
+    assert_eq!(live.load(Ordering::SeqCst), 2);
+    transfer.cancel();
+    assert_eq!(observed.borrow().state, TransferState::Cancelled);
+    tokio::time::timeout(Duration::from_secs(1), async {
+      while live.load(Ordering::SeqCst) != 0 {
+        tokio::task::yield_now().await;
+      }
+    })
+    .await
+    .unwrap();
+    assert_eq!(observed.borrow().verified_bytes, 0);
+    tokio::time::timeout(Duration::from_secs(1), async {
+      loop {
+        if crate::download_store::DownloadStore::resume(prepared.seed(), &retained_path).is_ok() {
+          break;
+        }
+        tokio::task::yield_now().await;
+      }
+    })
+    .await
+    .unwrap();
+  }
+
+  #[tokio::test]
+  async fn successful_download_cancels_a_stalled_connection_attempt() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Dropped(Arc<AtomicBool>);
+    impl Drop for Dropped {
+      fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+      }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let prepared = source(dir.path(), b"payload");
+    let seed = prepared.seed().clone();
+    let path = dir.path().join("download.bin");
+    let store = create_destination(&seed, &path).await.unwrap();
+    let progress = crate::progress::channel(&seed, &[]);
+    let (download, upload) = crate::peer::test_pair(seed.info_hash()).await;
+    let dropped = Arc::new(AtomicBool::new(false));
+    let flag = dropped.clone();
+    let ready = watch::channel(false).0;
+    let received = crate::scheduler::download(
+      vec![Some(download), None],
+      seed,
+      store,
+      2,
+      progress,
+      move |peer| {
+        let ready = ready.clone();
+        let flag = flag.clone();
+        async move {
+          if let Some(peer) = peer {
+            let mut started = ready.subscribe();
+            while !*started.borrow_and_update() {
+              started.changed().await.unwrap();
+            }
+            Ok(peer)
+          } else {
+            let _dropped = Dropped(flag);
+            ready.send_modify(|value| *value = true);
+            std::future::pending::<Result<PeerSession, TransferError>>().await
+          }
+        }
+      },
+    );
+    let (result, served) = tokio::time::timeout(Duration::from_secs(10), async {
+      tokio::join!(received, upload.serve_file(Arc::new(Mutex::new(prepared))))
+    })
+    .await
+    .unwrap();
+    result.unwrap();
+    served.unwrap();
+    assert!(dropped.load(Ordering::SeqCst));
+    assert_eq!(std::fs::read(path).unwrap(), b"payload");
+  }
+
+  #[tokio::test]
+  async fn cancellation_closes_a_peer_holding_an_unfinished_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let prepared = source(dir.path(), b"payload");
+    let seed = prepared.seed().clone();
+    let path = dir.path().join("download.bin");
+    let store = create_destination(&seed, &path).await.unwrap();
+    let progress = crate::progress::channel(&seed, &[]);
+    let observed = progress.subscribe();
+    let (download, upload) = crate::peer::test_pair(seed.info_hash()).await;
+    let (ready, started) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+      send(
+        &*upload.control,
+        Control::Bitfield {
+          bits: B64.encode([0x80]),
+        },
+      )
+      .await
+      .unwrap();
+      receive_bitfield(&*upload.control, 1).await.unwrap();
+      assert!(matches!(
+        receive(&*upload.control).await.unwrap(),
+        Control::Request { .. }
+      ));
+      ready.send(()).unwrap();
+      assert!(matches!(
+        receive(&*upload.control).await,
+        Err(TransferError::Closed)
+      ));
+    });
+    let destination = path.clone();
+    let transfer = Transfer::start(progress.clone(), async move {
+      crate::scheduler::download(vec![download], seed, store, 1, progress, |peer| async {
+        Ok(peer)
+      })
+      .await?;
+      Ok(destination)
+    });
+    tokio::time::timeout(Duration::from_secs(5), started)
+      .await
+      .unwrap()
+      .unwrap();
+    assert_eq!(transfer.progress().active_peers, 1);
+    transfer.cancel();
+    tokio::time::timeout(Duration::from_secs(5), server)
+      .await
+      .unwrap()
+      .unwrap();
+    assert_eq!(observed.borrow().state, TransferState::Cancelled);
+    assert_eq!(observed.borrow().active_peers, 0);
+    assert_eq!(observed.borrow().verified_bytes, 0);
+    let restored = crate::download_store::DownloadStore::resume(prepared.seed(), &path).unwrap();
+    assert_eq!(restored.verified_bitfield(), vec![0]);
+  }
+
+  #[tokio::test]
+  async fn all_peers_failing_publishes_failure_and_keeps_resumable_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let prepared = source(dir.path(), b"payload");
+    let seed = prepared.seed().clone();
+    let path = dir.path().join("download.bin");
+    let store = create_destination(&seed, &path).await.unwrap();
+    let progress = crate::progress::channel(&seed, &[]);
+    let observed = progress.subscribe();
+    let destination = path.clone();
+    let transfer = Transfer::start(progress.clone(), async move {
+      crate::scheduler::download(vec![0, 1, 2], seed, store, 2, progress, |_| async {
+        Err(TransferError::Closed)
+      })
+      .await?;
+      Ok(destination)
+    });
+    assert!(matches!(transfer.wait().await, Err(TransferError::Closed)));
+    assert_eq!(observed.borrow().state, TransferState::Failed);
+    assert_eq!(observed.borrow().verified_bytes, 0);
+    assert!(crate::download_store::DownloadStore::resume(prepared.seed(), &path).is_ok());
   }
 
   #[tokio::test]

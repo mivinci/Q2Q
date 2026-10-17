@@ -8,7 +8,9 @@ mod download_store;
 mod identity;
 mod peer;
 mod peer_identity;
+mod progress;
 mod punch_transport;
+mod scheduler;
 pub mod transfer;
 mod webrtc_transport;
 

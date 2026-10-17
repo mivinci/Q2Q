@@ -34,7 +34,7 @@ publication.close().await?;
 - `q2q-core`：身份、种子、Merkle、block 与本地文件能力，以及网络无关的 `peer_auth` 签名输入和 `peer_wire` 消息编码。
 - `q2q-track::wire`：Track 的 REST 请求/响应类型。`q2q-track` 的 Redis 实现由可选的 `redis` feature 隔离，SDK 使用默认配置时不引入 Redis。
 - `q2q-punch::message`：Punch 的 RPC 与信令消息、签名和 MAC 校验。`q2q-punch::signal` 保留连接状态机，协议类型从 `message` 引用。
-- `q2q`：应用入口与客户端生命周期；使用 `webrtc-rs/webrtc` 的异步 `PeerConnection`。控制消息和证明走可靠有序通道，1024 字节 piece 走不可靠无序通道；封装 Track/Punch 会话、上传和下载，后续加入多 Peer 调度和 CDN 回退。
+- `q2q`：应用入口与客户端生命周期；使用 `webrtc-rs/webrtc` 的异步 `PeerConnection`。控制消息和证明走可靠有序通道，1024 字节 piece 走不可靠无序通道；封装 Track/Punch 会话、上传、并行下载与进度通知，后续加入 CDN 回退。
 - 平台适配：原生 Rust 先落地；文件/密钥存储和 WebRTC 留出适配边界，再支持浏览器。
 
 ## 阶段
@@ -53,7 +53,7 @@ SDK 的高层 API 不要求应用直接发送 `announce`、`join` 或 `piece` �
 
 第二阶段已实现首个完整路径：本地准备 → 宣告 → Track 查询 → Punch 同意与信令 → WebRTC 建连与双向身份确认 → bitfield → block 请求与证明 → piece 传输与缺片重传 → Merkle 校验 → 完成。`Client` 复用同一控制会话，可同时发布和下载；文件宣告导致的 Track 会话密钥轮换与查询、心跳串行处理。Punch 的完整推送消息由独立接收任务排队，避免 select 取消正在读取的 QUIC 流而丢失 candidate。后台任务维护在线状态与文件索引租约。
 
-当前范围：每个 Client 一个活跃发布文件，每个发布句柄一次服务一个下载 Peer；下载按 Track 当前页中的完整持有者依次尝试，Peer 建连、传输或内容校验失败后切换下一个节点，保留本次任务中已验证的 block；每个节点最多尝试一次，建连上限 45 秒，仍使用一个 block 的在途窗口，最多 65536 个 block（默认块大小对应 16 GiB）。普通 `download` 拒绝覆盖已有目标；显式 `resume_download` 可恢复本版本创建的目标和检查点。多 Peer 并行取块、磁力链 info 拉取、进度事件、自动重连与 CDN 回退尚待实现。低层 `PeerSession::serve_file` / `download_file` 可用于自行管理调度。
+当前范围：每个 Client 一个活跃发布文件，每个发布句柄一次服务一个下载 Peer；下载从 Track 当前页选取去重后的完整持有者，默认最多 4 个并行连接（`max_download_peers` 可设为 1–16）；每个节点最多尝试一次，建连上限 45 秒，每个连接一个 block 的在途窗口；Peer 建连、传输或校验失败后回收未完成的块，交给健康节点或新的候选者，最多 65536 个 block（默认块大小对应 16 GiB）。普通 `download` 拒绝覆盖已有目标；显式 `resume_download` 可恢复本版本创建的目标和检查点。并行调度、续传与进度通知已接入；磁力链 info 拉取、Track 分页/重新查询、自动重连与 CDN 回退尚待实现。低层 `PeerSession::serve_file` / `download_file` 可用于自行管理调度。
 
 ### 当前 Peer 消息编码
 
@@ -61,7 +61,7 @@ SDK 的高层 API 不要求应用直接发送 `announce`、`join` 或 `piece` �
 
 控制消息为 JSON 文本 `{"v":1,"message":{"type":"request","block_index":0,"count":1}}`，上限 16 KiB；当前支持 bitfield、have、request、request_proof、proof、piece_nack、block_done、cancel、reject。bitfield 使用 base64，block 0 对应首字节最高位，未用低位为零。证明使用 `merkle::Proof` 字段，走可靠通道。
 
-每条数据消息是二进制：`Q2QP` 四字节魔数、版本 1（u8）、block_index（u64 大端）、piece_offset（u32 大端，block 内字节偏移、1024 对齐），随后为 1–1024 字节数据。无额外长度前缀。下载缺片超时后发送 piece_nack 的 offset/length 区间，最多三轮；整个 block 有固定截止时间，数据或证明不匹配立即失败。只在校验通过后发送 have / block_done，上传端保留至多一个 block 供重传。
+每条数据消息是二进制：`Q2QP` 四字节魔数、版本 1（u8）、block_index（u64 大端）、piece_offset（u32 大端，block 内字节偏移、1024 对齐），随后为 1–1024 字节数据。无额外长度前缀。下载缺片超时后发送 piece_nack 的 offset/length 区间，最多三轮；整个 block 有固定截止时间，数据或证明不匹配时淘汰当前 Peer，未完成块可交给其他节点重试。只在校验通过后发送 have / block_done，上传端保留至多一个 block 供重传。
 
 ### 已实现的身份确认
 
@@ -73,10 +73,9 @@ SDK 的高层 API 不要求应用直接发送 `announce`、`join` 或 `piece` �
 
 已接入同一任务内的块级恢复：所有候选节点共用目标文件与已校验状态，更换节点不会清空目标或重复请求已校验块；网络/协议/无效证明错误可换节点，磁盘写入和持久化失败直接返回。所有候选失败时返回最后一次错误，保留未完成目标。候选范围是本次 Track 查询的当前页，不会无限重试或自动重新查询。数据先独立验证 Merkle 证明，再写入磁盘并复核。
 
-跨进程恢复已接入，见下节；下一步加入多 Peer 并行调度与进度事件。
+跨进程恢复、多 Peer 并行调度与进度通知已接入，见下节。
 
-传输结束使用可靠控制通道的 `cancel { block_index: 0, count: 0 }` 作为会话结束标记：接收端在所有 `block_done` 后发送，上传端回显确认并等待连接关闭，下载端收到确认后才释放连接。这样最后一个块的确认不会因提前关闭 RTC 丢失，也支持只补齐部分块的上传会话；空文件采用相同结束握手。
-
+传输结束使用可靠控制通道的 `cancel { block_index: 0, count: 0 }` 作为会话结束标记：接收端在所有 `block_done` 后发送，上传端回显确认并等待连接关闭，下载端收到确认后才释放连接。这样最后一个块的确认不会因提前关闭 RTC 丢失，也支持只补齐部分块的上传会话；低层已建立的空文件会话采用相同结束握手；高层无需取块时不新建 Peer 连接。
 
 ### 第三阶段：跨进程断点续传
 
@@ -93,3 +92,38 @@ let path = transfer.wait().await?;
 - 重新验证后，检查点通过临时文件和原子 rename 压缩，仅保留有效证明；替换前同步临时文件，Unix 上也同步目录。校验完整的目标可在不连接 Track/Punch 的情况下完成。
 - 下载持有目标文件的操作系统排他锁；同一目标的并发续传会立即报错。取消任务后，已经开始的阻塞磁盘操作可能完成，锁在该操作结束前继续持有，随后可再次恢复。
 - 目标文件和 `.q2q.resume` 需一起保存；完成后仍保留检查点，以便再次校验。删除或移动文件时，应用负责一并处理检查点。正常错误路径清理压缩临时文件；进程被强制终止时可能留下带随机后缀的 `.tmp` 文件，不影响下一次恢复。
+
+
+### 第三阶段：多 Peer 并行取块与进度通知
+
+```rust
+let receiver = q2q::client::builder()
+    .track_url("https://track.example.net")
+    .identity_file("./receiver-identity")
+    .storage_dir("./receiver-data")
+    .max_download_peers(4) // 默认 4，范围 1–16
+    .build().await?;
+let transfer = receiver.download(&seed, "video.mp4").await?;
+let initial = transfer.progress();
+let mut updates = transfer.subscribe_progress();
+let reporter = tokio::spawn(async move {
+    loop {
+        let p = *updates.borrow_and_update();
+        println!("{} / {} bytes; {} peers; {:?}",
+            p.verified_bytes, p.total_bytes, p.active_peers, p.state);
+        if p.state != q2q::client::TransferState::Downloading { break; }
+        if updates.changed().await.is_err() { break; }
+    }
+});
+transfer.wait().await?;
+reporter.await?;
+```
+
+- 所有 Peer 共用块队列，每个 block 同时只有一个任务持有。失败或取消会归还未完成的块，空闲 Peer 会等待其他在途块完成或归还；任务完成后不再等待慢速的建连尝试。
+- 校验和检查点写入统一串行执行，持久化成功后才完成块租约、增长进度并发送 have/block_done。任何磁盘/检查点失败都会阻止排队任务继续写入，避免在半条失败记录之后追加新证明。内存中的在途数据受连接数和块大小限制；一个坏节点不会导致已验证块重下。
+- 重新分配可能使同一连接先请求较高索引、再请求较低索引；接收端按该连接已完成的块集合忽略迟到的旧 piece/proof，不把它们当成新请求的数据。
+- `TransferProgress` 包含 `total_bytes`、`verified_bytes`、`total_blocks`、`verified_blocks`、`active_peers` 和 `state`。初始进度包含续传时重新验证的块。下载到内存但尚未校验/持久化的字节不计入进度。
+- `progress()` 获取当前快照，`subscribe_progress()` 返回 Tokio watch 接收器；通知可合并，慢消费者不阻塞下载。`Downloading`、`Completed`、`Failed`、`Cancelled` 表示生命周期；成功状态在最终同步目标文件后发布。取消会终止所有网络任务，已开始的阻塞写入仍可能完成，清理期间快照可继续更新。
+- 本项验收覆盖双 Peer 同时请求、块请求无重复、坏节点块回收、较低索引重试时的迟到数据、并发上限、取消释放目标锁、所有节点失败、续传初始进度、空文件及离线完成。
+
+下一项：CDN 按 block 回退；继续使用相同的根校验与持久化入口，不能将 HTTP 成功响应直接视为可信内容。

@@ -3,7 +3,7 @@
 pub use crate::control::{ControlError, ControlSession};
 pub use crate::peer::PeerSession;
 pub use crate::publication::Publication;
-pub use crate::transfer::{Transfer, TransferError};
+pub use crate::transfer::{Transfer, TransferError, TransferProgress, TransferState};
 
 use crate::identity::Identity;
 use crate::publication::{PrepareError, PreparedFile};
@@ -25,6 +25,7 @@ pub struct Builder {
   track_url: Option<String>,
   identity_file: Option<PathBuf>,
   storage_dir: Option<PathBuf>,
+  max_download_peers: Option<usize>,
 }
 
 impl Builder {
@@ -49,9 +50,19 @@ impl Builder {
     self
   }
 
+  /// Maximum concurrent download connections, from 1 to 16 (default 4).
+  pub fn max_download_peers(mut self, count: usize) -> Self {
+    self.max_download_peers = Some(count);
+    self
+  }
+
   /// Validate the configuration and load or create the persistent identity.
   /// No connection to Track or Punch is opened yet.
   pub async fn build(self) -> Result<Client, BuildError> {
+    let max_download_peers = self.max_download_peers.unwrap_or(4);
+    if !(1..=16).contains(&max_download_peers) {
+      return Err(BuildError::InvalidDownloadPeers);
+    }
     let track_url = self.track_url.ok_or(BuildError::Missing("track_url"))?;
     let track_url = Url::parse(&track_url).map_err(BuildError::InvalidTrackUrl)?;
     if !matches!(track_url.scheme(), "http" | "https") || track_url.host_str().is_none() {
@@ -76,6 +87,7 @@ impl Builder {
       identity,
       session: OnceCell::new(),
       publishing: Arc::new(AtomicBool::new(false)),
+      max_download_peers,
     })
   }
 }
@@ -87,6 +99,7 @@ pub struct Client {
   identity: Identity,
   session: OnceCell<Arc<ControlSession>>,
   publishing: Arc<AtomicBool>,
+  max_download_peers: usize,
 }
 
 impl Client {
@@ -116,7 +129,7 @@ impl Client {
     Publication::start(prepared, session, active).await
   }
 
-  /// Download from complete peers in Track order, switching on peer failure.
+  /// Download from complete peers concurrently, reassigning failed blocks.
   /// `wait` succeeds only after every block has
   /// passed verification; existing destination files are never overwritten.
   pub async fn download(
@@ -150,16 +163,22 @@ impl Client {
     } else {
       None
     };
+    let bits = match &initial_store {
+      Some(store) => store
+        .lock()
+        .map_err(|_| TransferError::Protocol("destination lock poisoned".into()))?
+        .verified_bitfield(),
+      None => Vec::new(),
+    };
+    let progress = crate::progress::channel(seed, &bits);
     if let Some(store) = &initial_store
       && crate::transfer::destination_complete(store)?
     {
-      let task = tokio::spawn(async move {
-        // Retain the destination lock through the final sync.
+      return Ok(Transfer::start(progress, async move {
         let _store = initial_store;
         crate::transfer::sync_destination(&path).await?;
         Ok(path)
-      });
-      return Ok(Transfer { task: Some(task) });
+      }));
     }
     if !resume && tokio::fs::try_exists(&path).await? {
       return Err(
@@ -173,67 +192,54 @@ impl Client {
     let session = self.connect().await?;
     let seed = seed.clone();
     let candidates = session.query(&seed.info_hash()).await?;
+    let mut seen = std::collections::HashSet::new();
     let targets: Vec<_> = candidates
       .peers
       .into_iter()
-      .filter(|peer| peer.complete && peer.peer_id != self.peer_id().as_str())
+      .filter(|peer| {
+        peer.complete
+          && peer.peer_id != self.peer_id().as_str()
+          && seen.insert(peer.peer_id.clone())
+      })
       .collect();
     if targets.is_empty() {
       return Err(TransferError::NoPeers);
     }
-    let task = tokio::spawn(async move {
+    let concurrency = self.max_download_peers;
+    let updates = progress.clone();
+    Ok(Transfer::start(progress, async move {
       let download = async {
-        let mut store = initial_store;
-        let mut last_error = TransferError::NoPeers;
-        for target in targets {
-          let peer = match tokio::time::timeout(
-            std::time::Duration::from_secs(45),
-            session.dial_peer(&target, seed.info_hash()),
-          )
-          .await
-          {
-            Ok(Ok(peer)) => peer,
-            Ok(Err(error)) => {
-              last_error = error.into();
-              continue;
+        let store = match initial_store {
+          Some(store) => store,
+          None => crate::transfer::create_destination(&seed, &path).await?,
+        };
+        let dialing = session.clone();
+        let info_hash = seed.info_hash();
+        crate::scheduler::download(
+          targets,
+          seed,
+          store.clone(),
+          concurrency,
+          updates,
+          move |target| {
+            let session = dialing.clone();
+            async move {
+              session
+                .dial_peer(&target, info_hash)
+                .await
+                .map_err(Into::into)
             }
-            Err(_) => {
-              last_error = TransferError::Timeout;
-              continue;
-            }
-          };
-          let destination = match &store {
-            Some(store) => Arc::clone(store),
-            None => {
-              let destination = crate::transfer::create_destination(&seed, &path).await?;
-              store = Some(destination.clone());
-              destination
-            }
-          };
-          match peer.download_into(&seed, destination).await {
-            Ok(()) => {
-              crate::transfer::sync_destination(&path).await?;
-              return Ok(path);
-            }
-            Err(error) if error.peer_retryable() => {
-              if crate::transfer::destination_complete(store.as_ref().expect("destination exists"))?
-              {
-                crate::transfer::sync_destination(&path).await?;
-                return Ok(path);
-              }
-              last_error = error;
-            }
-            Err(error) => return Err(error),
-          }
-        }
-        Err(last_error)
+          },
+        )
+        .await?;
+        crate::transfer::sync_destination(&path).await?;
+        Ok(path)
       };
       tokio::select! {
         result = download => result,
         result = crate::publication::keep_online(&session) => Err(TransferError::Control(result)),
       }
-    });
-    Ok(Transfer { task: Some(task) })
+    }))
   }
 
   /// Prepare a local file for seeding without announcing it to the network.
@@ -268,6 +274,7 @@ pub enum BuildError {
   Missing(&'static str),
   InvalidTrackUrl(url::ParseError),
   UnsupportedTrackUrl,
+  InvalidDownloadPeers,
   Storage(io::Error),
   Identity(crate::identity::IdentityError),
   IdentityTask(tokio::task::JoinError),
@@ -278,6 +285,7 @@ impl fmt::Display for BuildError {
     match self {
       Self::Missing(field) => write!(f, "missing client setting: {field}"),
       Self::InvalidTrackUrl(e) => write!(f, "invalid Track URL: {e}"),
+      Self::InvalidDownloadPeers => f.write_str("max_download_peers must be between 1 and 16"),
       Self::UnsupportedTrackUrl => f.write_str("Track URL must be HTTP or HTTPS with a host"),
       Self::Storage(e) => write!(f, "could not prepare client storage: {e}"),
       Self::Identity(e) => write!(f, "could not load client identity: {e}"),
@@ -301,6 +309,42 @@ impl std::error::Error for BuildError {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[tokio::test]
+  async fn download_concurrency_is_bounded_and_defaults_to_four() {
+    let dir = tempfile::tempdir().unwrap();
+    for count in [0, 17, usize::MAX] {
+      assert!(matches!(
+        builder().max_download_peers(count).build().await,
+        Err(BuildError::InvalidDownloadPeers)
+      ));
+    }
+    let make = || {
+      builder()
+        .track_url("http://127.0.0.1:1")
+        .identity_file(dir.path().join("identity"))
+        .storage_dir(dir.path().join("storage"))
+    };
+    assert_eq!(make().build().await.unwrap().max_download_peers, 4);
+    assert_eq!(
+      make()
+        .max_download_peers(1)
+        .build()
+        .await
+        .unwrap()
+        .max_download_peers,
+      1
+    );
+    assert_eq!(
+      make()
+        .max_download_peers(16)
+        .build()
+        .await
+        .unwrap()
+        .max_download_peers,
+      16
+    );
+  }
 
   #[tokio::test]
   async fn identity_survives_rebuilding_the_client() {
