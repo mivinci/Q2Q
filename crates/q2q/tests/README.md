@@ -3,7 +3,7 @@
 All SDK test cases and fixtures live in this flat directory.
 
 - `sdk.rs`: Cargo integration target using only the public `q2q` API.
-- `client.rs`, `download_store.rs`, `transfer.rs`, `scheduler.rs`, `cdn.rs`, `reader.rs`, `online.rs`, `peer_identity.rs`, `punch_transport.rs`, `webrtc_transport.rs`, `signal_router.rs`, `upload.rs`, `upload_rate.rs`, `upload_progress.rs`, `upload_session.rs`, `admission.rs`: unit test modules loaded from their source modules through `#[cfg(test)]` and `#[path]`, preserving access to private implementation details.
+- `client.rs`, `download_store.rs`, `transfer.rs`, `scheduler.rs`, `cdn.rs`, `reader.rs`, `online.rs`, `peer_identity.rs`, `punch_transport.rs`, `webrtc_transport.rs`, `signal_router.rs`, `upload.rs`, `upload_rate.rs`, `upload_progress.rs`, `upload_session.rs`, `admission.rs`, `source_file.rs`: unit test modules loaded from their source modules through `#[cfg(test)]` and `#[path]`, preserving access to private implementation details.
 - `peer.rs`: authenticated local WebRTC pair fixture, compiled only for unit tests.
 - `destination.rs`: private storage and fault-injection fixtures.
 - `http.rs`: shared local HTTP fixture for unit and integration tests.
@@ -24,4 +24,4 @@ cargo test -p q2q --lib
 Q2Q_TEST_TRACK_URL=http://127.0.0.1:18086 cargo test -p q2q --test local_upload -- --ignored --nocapture
 ```
 
-It covers concurrent handshakes and downloads under a shared 256 KiB/s upload budget, Busy admission and slot reuse, idle VOD capacity, publication shutdown and republishing, source-change failure and withdrawal, publication snapshots, send accounting and final watch updates after close/Drop. It also verifies that low-level accepts cannot take over managed admission. No Redis or external deployment is required.
+It covers concurrent handshakes and downloads under a shared 256 KiB/s upload budget, Busy admission and slot reuse, independent VOD seeks and idle VOD capacity, publication shutdown and republishing, source-change failure and withdrawal, publication snapshots, send accounting and final watch updates after close/Drop. It also verifies that low-level accepts cannot take over managed admission. No Redis or external deployment is required.

@@ -44,12 +44,41 @@ impl UploadContext {
       progress: None,
     }
   }
-  pub(crate) fn disk_task(&self) -> UploadDiskTask {
+  async fn read_block(
+    &self,
+    source: Arc<PreparedFile>,
+    index: usize,
+  ) -> Result<(Vec<u8>, Proof), TransferError> {
+    // Acquire before spawning: queued readers remain abortable async tasks,
+    // rather than occupying Tokio blocking threads or retaining read slots.
+    let read = source.read_permit().await;
+    let task = self.read_task(read);
+    tokio::task::spawn_blocking(move || {
+      let _task = task;
+      Ok::<_, TransferError>((source.read_verified_block(index)?, source.proof(index)?))
+    })
+    .await?
+  }
+
+  pub(crate) fn read_task(&self, read: OwnedSemaphorePermit) -> UploadReadTask {
+    UploadReadTask {
+      _read: read,
+      _disk: self.disk_task(),
+    }
+  }
+
+  fn disk_task(&self) -> UploadDiskTask {
     UploadDiskTask {
       _task: self.scope.enter(),
       _permit: self.permit.clone(),
     }
   }
+}
+pub(crate) struct UploadReadTask {
+  // A blocking read is not abortable. Both budgets must outlive it, and read
+  // capacity must be released before the final task guard wakes shutdown.
+  _read: OwnedSemaphorePermit,
+  _disk: UploadDiskTask,
 }
 pub(crate) struct UploadDiskTask {
   // Release the slot before the final task guard wakes shutdown waiters.
@@ -59,7 +88,18 @@ pub(crate) struct UploadDiskTask {
 
 impl PeerSession {
   /// Serve a prepared source until the downloader confirms the end of this session.
+  /// Snapshots the supplied handle once; replacing it later does not change
+  /// the file being served by this connection.
   pub async fn serve_file(self, source: Arc<Mutex<PreparedFile>>) -> Result<(), TransferError> {
+    // Preserve the low-level API, but hold its caller-owned mutex only long
+    // enough to snapshot cheap Arc-backed immutable handles, never for I/O.
+    let source = tokio::task::spawn_blocking(move || {
+      source
+        .lock()
+        .map(|source| Arc::new(source.clone()))
+        .map_err(|_| protocol("source lock poisoned"))
+    })
+    .await??;
     self
       .serve_file_scoped(source, UploadContext::unmanaged())
       .await
@@ -67,7 +107,7 @@ impl PeerSession {
 
   pub(crate) async fn serve_file_scoped(
     self,
-    source: Arc<Mutex<PreparedFile>>,
+    source: Arc<PreparedFile>,
     context: UploadContext,
   ) -> Result<(), TransferError> {
     // Poll both channel event queues even while pacing sends. In particular,
@@ -108,21 +148,12 @@ impl PeerSession {
 
   async fn serve_source(
     &self,
-    source: Arc<Mutex<PreparedFile>>,
+    source: Arc<PreparedFile>,
     context: UploadContext,
     incoming: &mut tokio::sync::mpsc::Receiver<Result<Control, TransferError>>,
   ) -> Result<(), TransferError> {
-    let snapshot = source.clone();
-    let task = context.disk_task();
-    let seed = tokio::task::spawn_blocking(move || {
-      let _task = task;
-      let source = snapshot
-        .lock()
-        .map_err(|_| protocol("source lock poisoned"))?;
-      Ok::<_, TransferError>(source.seed().clone())
-    })
-    .await??;
-    check_seed(&seed)?;
+    let seed = source.seed();
+    check_seed(seed)?;
     if &seed.info_hash() != self.info_hash() {
       return Err(protocol("source belongs to another session"));
     }
@@ -168,16 +199,7 @@ impl PeerSession {
           if let Some(progress) = &context.progress {
             progress.state(crate::upload_progress::UploadConnectionState::Sending);
           }
-          let source = source.clone();
-          let task = context.disk_task();
-          let (bytes, proof) = tokio::task::spawn_blocking(move || {
-            let _task = task;
-            let mut source = source
-              .lock()
-              .map_err(|_| protocol("source lock poisoned"))?;
-            Ok::<_, TransferError>((source.read_verified_block(index)?, source.proof(index)?))
-          })
-          .await??;
+          let (bytes, proof) = context.read_block(source.clone(), index).await?;
           send(
             &*self.control,
             Control::Proof {

@@ -8,7 +8,7 @@ The diagram groups runtime responsibilities. Arrows represent calls or data inte
 
 ```mermaid
 flowchart TB
-    Client["Client<br/>client.rs"] --> Pub["Publication<br/>publication.rs / source_file.rs"]
+    Client["Client<br/>client.rs"] --> Pub["Publication<br/>publication.rs"]
     Client --> Handles["Transfer / VerifiedFile<br/>transfer.rs / reader.rs"]
     Handles --> Download["Download orchestration<br/>download.rs"]
     Download --> Workers["Peer pool / CDN workers<br/>scheduler.rs / cdn.rs"]
@@ -19,6 +19,8 @@ flowchart TB
     Session --> Rate["Shared rate budget<br/>upload_rate.rs"]
     Upload --> Stats["Upload progress<br/>upload_progress.rs"]
     Session --> Stats
+    Session --> Reads["max_upload_reads"]
+    Reads --> Source["PreparedFile / ProofTree<br/>source_file.rs"]
     Workers --> Dest["Verification and commit<br/>destination.rs"]
     Handles -->|"Verified reads"| Dest
     Dest --> Store["Disk and receipts<br/>download_store.rs"]
@@ -70,7 +72,7 @@ The SDK supports fixed files and VOD with a single read cursor. Each Client has 
 
 One reader owns the standing Punch channel. Connect requests enter a bounded admission queue; other signals are routed by `connection_id` into independent bounded mailboxes. Each upload task negotiates and transfers independently. Remote disconnects, timeouts and protocol failures end that task; source read failures or changed content stop the entire publication and withdraw its announcement.
 
-Upload tasks share the prepared file and Merkle tree. The source lock covers reads and verification, and is released before network I/O. `Publication::close()` stops admission and waits for upload tasks and in-flight blocking reads before withdrawing. Drop triggers the same asynchronous cleanup. Requests arriving while publication is closed are rejected; buffered admission requests do not carry into the next publication.
+Upload tasks share a read-only file handle, Seed and Merkle tree. Unix/Windows use absolute-offset reads without a shared cursor mutex around reads and verification; a separate budget bounds concurrent source reads. `Publication::close()` stops admission and waits for upload tasks and in-flight blocking reads before withdrawing. Drop triggers the same asynchronous cleanup. Requests arriving while publication is closed are rejected; buffered admission requests do not carry into the next publication.
 
 Callers using `ControlSession::accept_peer` / `PeerSession::serve_file` manage their own tasks and concurrency budget. Connection capacity does not limit total upload bandwidth.
 
@@ -124,3 +126,21 @@ Byte counters follow the rate-limit accounting: encoded piece bytes, including t
 `admission.rs` owns admission leases for the shared control session. One managed publication owns admission exclusively; multiple low-level `accept_peer` calls may coexist, but the two modes cannot overlap. Conflicts return `ControlError::AdmissionConflict`, and low-level accepts cannot reopen a managed publisher’s gate. Manual leases last through acceptance/negotiation or cancellation; managed leases remain until upload tasks, blocking reads and withdrawal finish. An independent pause notification wakes readers waiting for requests or the queue lock with `AdmissionPaused` before buffered requests are drained.
 
 `upload.rs` organizes capacity, handshake workers and error isolation. `upload_session.rs` owns per-connection resources, event consumption and upload protocol handling. Download protocol and shared control-message helpers remain in `peer_transfer.rs`. A private runner in `publication.rs` unifies startup, renewal, stop and withdrawal. Every exit stops admission, waits for workers and blocking reads, withdraws, releases leases and then publishes the terminal snapshot. Source and test directories remain flat.
+
+### Concurrent source reads
+
+```rust
+let client = q2q::client::builder()
+    // ... Track, identity and storage settings ...
+    .max_upload_peers(8)
+    .max_upload_reads(4) // default 4, range 1–16
+    .build().await?;
+```
+
+Receivers can read different blocks concurrently, including arbitrary VOD seeks. Requests for the same block still read and verify independently; no block cache was added. Unix uses read_at and Windows uses seek_read with an absolute offset on every call. Windows may update the file cursor, but uploads never depend on that cursor. Other platforms retain a locked seek/read fallback.
+
+`max_upload_reads` is independent of connection capacity and rate limits. Sources prepared by the same Client share the budget; PreparedFile clones share the original open file, metadata and proof tree. SDK uploads acquire capacity before spawn_blocking, so queued jobs remain cancelable. Started jobs retain capacity through reads, length/modification-time checks, leaf verification and proof generation. Network sends and acknowledgement waits hold no read slot. close/Drop still waits for in-flight reads to finish and release both read and connection capacity before shutdown completes.
+
+Every read checks the open file’s length and modification time before and after I/O and verifies the committed block leaf. Premature EOF caused by truncation is SourceChanged. Replacing the path does not replace the original open source. The synchronous `PreparedFile::read_verified_block(&self, index)` does not acquire the SDK async budget; callers creating their own threads manage concurrency themselves. The low-level serve_file parameter remains `Arc<Mutex<PreparedFile>>`; it briefly locks once to clone the immutable handle and performs no upload I/O under that lock.
+
+This removes SDK cursor serialization, not physical disk or CPU contention. Throughput is not guaranteed to scale with receiver count.

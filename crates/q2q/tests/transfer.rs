@@ -248,7 +248,7 @@ async fn dropped_piece_is_requested_again_and_corrupt_data_never_completes() {
 // Real WebRTC peers with observable requests and an explicit end handshake.
 async fn observed_source(
   upload: PeerSession,
-  mut prepared: PreparedFile,
+  prepared: PreparedFile,
   counts: Arc<Mutex<Vec<usize>>>,
   first_request: Option<Arc<tokio::sync::Barrier>>,
 ) {

@@ -31,6 +31,7 @@ pub struct Builder {
   storage_dir: Option<PathBuf>,
   max_download_peers: Option<usize>,
   max_upload_peers: Option<usize>,
+  max_upload_reads: Option<usize>,
   upload_rate_limit: Option<u64>,
 }
 
@@ -69,6 +70,14 @@ impl Builder {
     self
   }
 
+  /// Maximum in-flight source reads and hash checks, 1–16 (default 4).
+  /// Shared by SDK uploads of sources prepared by this client. Independent
+  /// of upload connections; waiting occurs before spawn_blocking.
+  pub fn max_upload_reads(mut self, count: usize) -> Self {
+    self.max_upload_reads = Some(count);
+    self
+  }
+
   /// Total encoded piece bytes per second across managed uploads. Unset means
   /// unlimited; zero is invalid. Includes retransmits and the piece header,
   /// excludes control messages and WebRTC/transport overhead.
@@ -82,6 +91,10 @@ impl Builder {
   pub async fn build(self) -> Result<Client, BuildError> {
     if self.upload_rate_limit == Some(0) {
       return Err(BuildError::InvalidUploadRate);
+    }
+    let max_upload_reads = self.max_upload_reads.unwrap_or(4);
+    if !(1..=16).contains(&max_upload_reads) {
+      return Err(BuildError::InvalidUploadReads);
     }
     let max_upload_peers = self.max_upload_peers.unwrap_or(4);
     if !(1..=16).contains(&max_upload_peers) {
@@ -117,6 +130,7 @@ impl Builder {
       publishing: Arc::new(AtomicBool::new(false)),
       max_download_peers,
       uploads: Arc::new(Semaphore::new(max_upload_peers)),
+      upload_reads: Arc::new(Semaphore::new(max_upload_reads)),
       upload_rate: self
         .upload_rate_limit
         .map(|rate| Arc::new(crate::upload_rate::UploadRate::new(rate))),
@@ -133,6 +147,7 @@ pub struct Client {
   publishing: Arc<AtomicBool>,
   max_download_peers: usize,
   uploads: Arc<Semaphore>,
+  upload_reads: Arc<Semaphore>,
   upload_rate: Option<Arc<crate::upload_rate::UploadRate>>,
 }
 
@@ -222,9 +237,12 @@ impl Client {
   pub async fn prepare_file(&self, path: impl Into<PathBuf>) -> Result<PreparedFile, PrepareError> {
     let path = path.into();
     let track_url = self.track_url.to_string();
-    tokio::task::spawn_blocking(move || PreparedFile::open(path, track_url))
-      .await
-      .map_err(PrepareError::Task)?
+    let reads = self.upload_reads.clone();
+    tokio::task::spawn_blocking(move || {
+      PreparedFile::open(path, track_url).map(|source| source.with_read_limit(reads))
+    })
+    .await
+    .map_err(PrepareError::Task)?
   }
 
   pub fn peer_id(&self) -> &PeerId {
@@ -251,6 +269,7 @@ pub enum BuildError {
   UnsupportedTrackUrl,
   InvalidDownloadPeers,
   InvalidUploadPeers,
+  InvalidUploadReads,
   InvalidUploadRate,
   Storage(io::Error),
   Identity(crate::identity::IdentityError),
@@ -263,6 +282,7 @@ impl fmt::Display for BuildError {
       Self::Missing(field) => write!(f, "missing client setting: {field}"),
       Self::InvalidTrackUrl(e) => write!(f, "invalid Track URL: {e}"),
       Self::InvalidUploadRate => f.write_str("upload_rate_limit must be greater than zero"),
+      Self::InvalidUploadReads => f.write_str("max_upload_reads must be between 1 and 16"),
       Self::InvalidUploadPeers => f.write_str("max_upload_peers must be between 1 and 16"),
       Self::InvalidDownloadPeers => f.write_str("max_download_peers must be between 1 and 16"),
       Self::UnsupportedTrackUrl => f.write_str("Track URL must be HTTP or HTTPS with a host"),

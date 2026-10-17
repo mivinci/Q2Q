@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart TB
-    Client["Client<br/>client.rs"] --> Pub["Publication<br/>publication.rs / source_file.rs"]
+    Client["Client<br/>client.rs"] --> Pub["Publication<br/>publication.rs"]
     Client --> Handles["Transfer / VerifiedFile<br/>transfer.rs / reader.rs"]
     Handles --> Download["下载编排<br/>download.rs"]
     Download --> Workers["Peer 连接池 / CDN workers<br/>scheduler.rs / cdn.rs"]
@@ -19,6 +19,8 @@ flowchart TB
     Session --> Rate["共享速率预算<br/>upload_rate.rs"]
     Upload --> Stats["上传进度<br/>upload_progress.rs"]
     Session --> Stats
+    Session --> Reads["max_upload_reads"]
+    Reads --> Source["PreparedFile / ProofTree<br/>source_file.rs"]
     Workers --> Dest["校验与提交<br/>destination.rs"]
     Handles -->|"已验证读取"| Dest
     Dest --> Store["磁盘与检查点<br/>download_store.rs"]
@@ -70,7 +72,7 @@ Drop 下载或读取句柄会取消网络任务。已经开始的阻塞磁盘操
 
 Punch 常驻信道只有一个读取者。Connect 进入有界接入队列，其余信令按 `connection_id` 分发到独立有界邮箱；每个上传任务自行完成握手与传输。远端断开、超时或协议错误只结束对应任务；源文件读取失败或内容变化会终止整个发布并撤销宣告。
 
-所有上传任务共享已准备的源文件和 Merkle 树，锁只覆盖读取与校验，网络发送不持锁。`Publication::close()` 停止接入并等待全部上传任务和在途阻塞读取，再撤销宣告；Drop 触发相同的异步清理。发布关闭期间的新请求被拒绝，待接入队列不会留给下一次发布。
+所有上传任务共享只读源文件句柄、Seed 与 Merkle 树。Unix/Windows 按绝对偏移读取，不用共享游标锁串行化读取和校验；源读取并发由独立额度限制。`Publication::close()` 停止接入并等待全部上传任务和在途阻塞读取，再撤销宣告；Drop 触发相同的异步清理。发布关闭期间的新请求被拒绝，待接入队列不会留给下一次发布。
 
 低层 `ControlSession::accept_peer` / `PeerSession::serve_file` 调用者自行管理上传任务和并发额度。连接额度不是总上传速率限制。
 
@@ -124,3 +126,21 @@ loop {
 `admission.rs` 为共享控制会话管理接入租约：一个托管发布独占接入，多个低层 `accept_peer` 可共存，但两种模式不能同时运行。冲突返回 `ControlError::AdmissionConflict`，低层调用不会重新打开托管发布的接入开关；低层租约在接入/握手完成或取消时释放，托管租约在上传任务、阻塞读取和撤销宣告完成后释放。暂停通过独立通知唤醒正在等待请求或队列锁的读取者，返回 `AdmissionPaused`，然后清空待接入请求。
 
 `upload.rs` 只组织额度、握手 worker 和错误隔离；`upload_session.rs` 拥有单连接上下文、事件消费与文件上传协议。下载协议和共用控制消息辅助函数保留在 `peer_transfer.rs`。`publication.rs` 的私有运行器统一处理初始化、续租、停止及撤销，所有退出路径都先停止接入、等待任务与阻塞读取，再撤销宣告并释放租约、发布终态。源码和测试均保持扁平目录。
+
+### 并发源文件读取
+
+```rust
+let client = q2q::client::builder()
+    // ... Track、身份和存储配置 ...
+    .max_upload_peers(8)
+    .max_upload_reads(4) // 默认 4，范围 1–16
+    .build().await?;
+```
+
+多个下载方可以同时读取不同块，包括 VOD 的任意位置跳转；同一块仍会独立读取和验证，没有新增内存块缓存。Unix 使用 read_at，Windows 使用 seek_read，每次读取都带绝对偏移，不依赖其他请求留下的游标位置。Windows API 可能更新文件游标，但上传路径不使用该游标；其他平台保留加锁 seek/read 的兼容回退。
+
+`max_upload_reads` 与连接数、速率限制分别配置。同一个 Client 准备的源文件共用读取额度，克隆 PreparedFile 也共享原文件、元数据和证明树。SDK 在 spawn_blocking 前等待额度，排队任务可以取消；开始的阻塞任务在读取、长度/修改时间检查、叶子校验和证明生成结束后才释放额度。网络发送与等待下载方确认不占读取名额。close/Drop 继续等待在途读取真正结束，归还读取和连接额度后才完成关闭。
+
+每次读取前后检查已打开文件的长度/修改时间，并校验该块的已认证叶子；缩短文件造成的提前 EOF 也作为 SourceChanged。路径被替换时继续使用原已打开文件，不重新按路径打开另一份内容。同步 `PreparedFile::read_verified_block(&self, index)` 本身不等待 SDK 的异步额度，自行创建线程的调用者需要管理并发。低层 serve_file 的 `Arc<Mutex<PreparedFile>>` 参数保持不变，仅在开始时短暂获取锁来克隆只读句柄，之后上传不持有该锁。
+
+这个改造消除了 SDK 的共享游标排队，不保证物理磁盘吞吐随连接数增长；磁盘、CPU 和系统文件缓存仍由各请求共享。

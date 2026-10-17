@@ -6,7 +6,7 @@ use crate::task_scope::TaskScope;
 use crate::upload_progress::{Outcome, Progress, UploadConnectionState};
 use crate::upload_session::UploadContext;
 use q2q_punch::message::RejectReason;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -36,7 +36,7 @@ impl UploadPool {
     &mut self,
     session: &Arc<ControlSession>,
     hash: [u8; 32],
-    source: Arc<Mutex<PreparedFile>>,
+    source: Arc<PreparedFile>,
   ) -> Result<(), TransferError> {
     loop {
       tokio::select! {

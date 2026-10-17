@@ -12,6 +12,7 @@ async fn client(root: &Path, name: &str, track: &str) -> Client {
     .identity_file(root.join(format!("{name}.identity")))
     .storage_dir(root.join(name))
     .max_upload_peers(2)
+    .max_upload_reads(2)
     .upload_rate_limit(256 * 1024)
     .build()
     .await
@@ -177,6 +178,26 @@ async fn scenario() {
   right.unwrap();
   assert_eq!(a_file.progress().verified_blocks, 1);
   assert_eq!(b_file.progress().verified_blocks, 1);
+  // Two VOD readers jump independently across different blocks, including the
+  // short tail block. Neither connection shares or mutates a source cursor.
+  for (left, right) in [(7, 3), (2, 6), (8, 4), (1, 5)] {
+    a_file
+      .seek(std::io::SeekFrom::Start(left * 262144))
+      .await
+      .unwrap();
+    b_file
+      .seek(std::io::SeekFrom::Start(right * 262144))
+      .await
+      .unwrap();
+    let (a_read, b_read) = tokio::join!(
+      a_file.read_exact(&mut first_a),
+      b_file.read_exact(&mut first_b)
+    );
+    a_read.unwrap();
+    b_read.unwrap();
+    assert_eq!(first_a[0], bytes[left as usize * 262144]);
+    assert_eq!(first_b[0], bytes[right as usize * 262144]);
+  }
   assert!(matches!(
     c_session.dial_peer(&target, hash).await,
     Err(ControlError::Busy)
@@ -191,8 +212,14 @@ async fn scenario() {
   assert!(snapshot.connections.is_empty());
   assert_eq!(snapshot.cancelled_connections, 2);
   assert_eq!(snapshot.completed_connections, 2);
-  a_file.seek(std::io::SeekFrom::Start(262144)).await.unwrap();
-  b_file.seek(std::io::SeekFrom::Start(262144)).await.unwrap();
+  a_file
+    .seek(std::io::SeekFrom::Start(6 * 262144))
+    .await
+    .unwrap();
+  b_file
+    .seek(std::io::SeekFrom::Start(7 * 262144))
+    .await
+    .unwrap();
   let (left, right) = tokio::join!(a_file.read(&mut first_a), b_file.read(&mut first_b));
   assert!(left.is_err() && right.is_err());
   drop(a_file);

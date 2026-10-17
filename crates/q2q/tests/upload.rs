@@ -14,7 +14,8 @@ async fn stop_retains_upload_slot_until_blocking_read_finishes() {
     None,
     None,
   );
-  let disk = context.disk_task();
+  let reads = Arc::new(Semaphore::new(1));
+  let disk = context.read_task(reads.clone().acquire_owned().await.unwrap());
   let (ready, started) = tokio::sync::oneshot::channel();
   let (release, waiting) = std::sync::mpsc::channel();
   pool.workers.spawn(async move {
@@ -36,11 +37,13 @@ async fn stop_retains_upload_slot_until_blocking_read_finishes() {
       .is_err()
   );
   assert_eq!(permits.available_permits(), 0);
+  assert_eq!(reads.available_permits(), 0);
   release.send(()).unwrap();
   tokio::time::timeout(Duration::from_secs(1), stop)
     .await
     .unwrap();
   assert_eq!(permits.available_permits(), 1);
+  assert_eq!(reads.available_permits(), 1);
 }
 
 #[tokio::test]

@@ -72,3 +72,6 @@
 - 工作区 all-features：305 项通过，SDK 84 项；Redis 集成测试未重跑。
 - 本地 Track/Punch 两次通过：并发/限速/公平/统计、关闭与源变化、两种接入所有权冲突，以及取消低层等待后成功重新发布。
 - 全工作区 Clippy（all-targets/all-features、拒绝警告）、fmt、diff 检查和中英文文档构建通过；transport 架构图和 wire 页浏览器检查通过。
+
+
+源读取后续改为共享只读 PreparedFile、独立读取额度及按偏移 I/O，见 [positional-source-reads.md](./positional-source-reads.md)。上传协议继续通过 UploadContext 维护阻塞任务生命周期；上传池不承担磁盘调度。
