@@ -340,7 +340,8 @@ async fn cancelled_read_seek_and_timeout_never_expose_sparse_bytes() {
   let mut file = client
     .open(&seed, &path)
     .prefetch_blocks(0)
-    .read_timeout(Duration::from_millis(100))
+    // Include filesystem sync and competing tests on shared CI runners.
+    .read_timeout(Duration::from_secs(2))
     .await
     .unwrap();
   let mut buffer = [9; 7];

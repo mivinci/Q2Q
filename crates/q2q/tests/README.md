@@ -3,7 +3,7 @@
 All SDK test cases and fixtures live in this flat directory.
 
 - `sdk.rs`: Cargo integration target using only the public `q2q` API.
-- `client.rs`, `download_store.rs`, `transfer.rs`, `scheduler.rs`, `cdn.rs`, `reader.rs`, `online.rs`, `peer_identity.rs`, `punch_transport.rs`, `webrtc_transport.rs`, `signal_router.rs`, `upload.rs`, `upload_rate.rs`, `upload_progress.rs`, `upload_session.rs`, `admission.rs`, `source_file.rs`: unit test modules loaded from their source modules through `#[cfg(test)]` and `#[path]`, preserving access to private implementation details.
+- `client.rs`, `download_store.rs`, `transfer.rs`, `scheduler.rs`, `cdn.rs`, `reader.rs`, `online.rs`, `peer_identity.rs`, `punch_transport.rs`, `webrtc_transport.rs`, `signal_router.rs`, `upload.rs`, `upload_rate.rs`, `upload_progress.rs`, `upload_session.rs`, `admission.rs`, `source_file.rs`, `upload_source.rs`: unit test modules loaded from their source modules through `#[cfg(test)]` and `#[path]`, preserving access to private implementation details.
 - `peer.rs`: authenticated local WebRTC pair fixture, compiled only for unit tests.
 - `destination.rs`: private storage and fault-injection fixtures.
 - `http.rs`: shared local HTTP fixture for unit and integration tests.
@@ -18,10 +18,22 @@ cargo test -p q2q --lib
 
 ## Local Track/Punch regression
 
-`local_upload.rs` is an explicit, ignored integration target. Start local Track/Punch with a memory store, a reachable Punch address and permissive local TLS settings. Use a fresh Track instance to avoid its per-IP announce rate limit:
+`local_upload.rs` is an explicit, ignored integration target. Start local Track/Punch with a memory store, a reachable Punch address and permissive local TLS settings. Use fresh Track and Punch instances between scenarios to reset their per-IP announce/join rate limits:
 
 ```sh
 Q2Q_TEST_TRACK_URL=http://127.0.0.1:18086 cargo test -p q2q --test local_upload -- --ignored --nocapture
 ```
 
 It covers concurrent handshakes and downloads under a shared 256 KiB/s upload budget, Busy admission and slot reuse, independent VOD seeks and idle VOD capacity, publication shutdown and republishing, source-change failure and withdrawal, publication snapshots, send accounting and final watch updates after close/Drop. It also verifies that low-level accepts cannot take over managed admission. No Redis or external deployment is required.
+
+
+`local_sharing.rs` is another explicit ignored integration target. Run each case with freshly started local Track/Punch:
+
+```sh
+Q2Q_TEST_TRACK_URL=http://127.0.0.1:18086 cargo test -p q2q --test local_sharing three_nodes -- --ignored --nocapture
+Q2Q_TEST_TRACK_URL=http://127.0.0.1:18086 cargo test -p q2q --test local_sharing multiple_contents -- --ignored --nocapture
+Q2Q_TEST_TRACK_URL=http://127.0.0.1:18086 cargo test -p q2q --test local_sharing existing_vod -- --ignored --nocapture
+Q2Q_TEST_TRACK_URL=http://127.0.0.1:18086 cargo test -p q2q --test local_sharing closing_sharing -- --ignored --nocapture
+```
+
+These cover A→B→C partial relay on one connection, partial/complete announcements, continued seeding after download completion, multiple content routes, duplicate-hash rejection, VOD sharing and cancellation, discovering a later partial source without reopening the reader, closing sharing independently of downloads, and ordinary transfer cancellation withdrawal. Unit tests cover committed-proof indexing and recovery, uncommitted-block exclusion, source tampering, Have updates and bounds, availability-aware exclusive leases and blocking-read cleanup.

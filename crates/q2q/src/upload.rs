@@ -1,10 +1,9 @@
 //! Bounded upload admission, independent sessions and complete shutdown.
-use crate::control::ControlSession;
 use crate::error::TransferError;
-use crate::source_file::PreparedFile;
 use crate::task_scope::TaskScope;
 use crate::upload_progress::{Outcome, Progress, UploadConnectionState};
 use crate::upload_session::UploadContext;
+use crate::upload_source::UploadSource;
 use q2q_punch::message::RejectReason;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,9 +33,8 @@ impl UploadPool {
   }
   pub(crate) async fn run(
     &mut self,
-    session: &Arc<ControlSession>,
-    hash: [u8; 32],
-    source: Arc<PreparedFile>,
+    incoming: &mut tokio::sync::mpsc::Receiver<crate::peer::PendingPeer>,
+    source: Arc<dyn UploadSource>,
   ) -> Result<(), TransferError> {
     loop {
       tokio::select! {
@@ -47,11 +45,8 @@ impl UploadPool {
             Err(error) => return Err(error),
           }
         }
-        request = session.incoming_peer(hash) => {
-          let request = match request {
-            Ok(request) => request,
-            Err(_) => { tokio::time::sleep(Duration::from_millis(100)).await; continue; }
-          };
+        request = incoming.recv() => {
+          let request = request.ok_or_else(|| TransferError::Protocol("upload router stopped".into()))?;
           // Reserve before Accept, so handshake and idle connections count too.
           // The session retains this permit through any detached blocking read.
           let permit = match self.permits.clone().try_acquire_owned() {

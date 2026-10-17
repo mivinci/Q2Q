@@ -75,3 +75,6 @@
 
 
 源读取后续改为共享只读 PreparedFile、独立读取额度及按偏移 I/O，见 [positional-source-reads.md](./positional-source-reads.md)。上传协议继续通过 UploadContext 维护阻塞任务生命周期；上传池不承担磁盘调度。
+
+
+部分文件共享将来源抽象收敛到 upload_source.rs，按内容分发收敛到 upload_router.rs，动态候选与退避集中在 discovery.rs；scheduler.rs 保留单 Peer 执行。设计及验收见 [partial-peer-sharing.md](./partial-peer-sharing.md)。

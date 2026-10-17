@@ -6,7 +6,7 @@ Scheduling determines which blocks are needed, which sources may claim them and 
 
 ```mermaid
 flowchart TB
-    D["download.rs<br/>Full-file or windowed mode"] --> P["scheduler.rs<br/>Bounded peer pool"]
+    D["download.rs<br/>Full-file or windowed mode"] --> P["discovery.rs / scheduler.rs<br/>Bounded peer pool"]
     D --> C["CDN workers"]
     subgraph Q["block_queue.rs: atomic updates under one lock"]
         Policy["download_policy.rs<br/>Window, source eligibility, deadlines"]
@@ -31,7 +31,7 @@ flowchart TB
 
 - **Policy** performs no network I/O. It tracks the window, source availability, urgent deadlines and source errors.
 - **Queue** tracks pending, leased and completed blocks. Policy and block state change atomically under the same lock; network and disk I/O do not hold that queue lock.
-- **Execution** starts, cancels and joins workers. `scheduler.rs` implements the peer pool; `download.rs` organizes CDN workers.
+- **Execution** starts, cancels and joins workers. `discovery.rs` manages refreshed candidates and bounded connections; `scheduler.rs` runs each peer; `download.rs` organizes CDN workers.
 - **Destination** retains the lease through verification and durability, preventing two sources from writing the same block during a handoff.
 
 ## From fetch to completion
@@ -60,7 +60,7 @@ Disk-write or receipt-write failure stops the transfer and prevents later queued
 | --- | --- | --- |
 | Initial demand | All unverified blocks | First read/seek establishes the window |
 | Order | Sequential missing blocks, failures returned to the front | Current block, then forward prefetch |
-| Peer retries | Try current candidates and replace failed workers | Shared pool; later windows may reconnect known candidates |
+| Peer retries | Refresh candidates and retry after cooldown | Refreshed pool; windows may reconnect known candidates |
 | CDN activation | Candidates exhausted or control plane failed | No peers, or current read block exceeds its peer budget |
 | Queue handoff | Join peer/disk work, then create a CDN queue from verified bits | Peer and CDN share one queue |
 | Mirror failures | Wait for that mirror's workers to retire before the next mirror | Try mirrors for the current block |
@@ -68,7 +68,7 @@ Disk-write or receipt-write failure stops the transfer and prevents later queued
 
 `max_download_peers` defaults to 4, with a range of 1–16. It bounds peer concurrency and CDN worker count separately. VOD can run both source classes concurrently, so it is not a combined connection limit. Each worker holds at most one block; there is no adaptive byte budget.
 
-Discovery has a 15-second deadline and peer connection attempts a 45-second deadline. Sources must hold the complete file. Rarest-first selection, endgame duplicate requests, partial-holder selection and adaptive throughput scheduling are not implemented.
+Discovery has a 15-second deadline and peer connection attempts a 45-second deadline. Sources may hold part of the file: each connection claims only blocks present in its initial Bitfield or later Have messages. A connection with no useful work waits at most three seconds before yielding its slot. Candidates refresh every five seconds, including while existing workers run, and retries use a five-second cooldown. The SDK keeps at most 32 candidates from the current Track page. Full downloads stop after ten seconds without progress once no connections remain; VOD keeps discovery active until completion or cancellation, while application reads retain read_timeout. Rarest-first, endgame duplicate requests and adaptive throughput scheduling are not implemented.
 
 ## VOD read window
 

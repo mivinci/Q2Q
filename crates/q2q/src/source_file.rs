@@ -12,7 +12,9 @@ use std::{
   io::{Seek, SeekFrom},
   sync::Mutex,
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+#[cfg(test)]
+use tokio::sync::OwnedSemaphorePermit;
+use tokio::sync::Semaphore;
 
 /// A locally prepared source. Use `Client::publish_file` to announce and serve it.
 /// Clones share the same opened file, immutable metadata, proof tree and read budget.
@@ -143,6 +145,11 @@ impl PreparedFile {
     self
   }
 
+  pub(crate) fn read_limit(&self) -> Arc<Semaphore> {
+    self.reads.clone()
+  }
+
+  #[cfg(test)]
   pub(crate) async fn read_permit(&self) -> OwnedSemaphorePermit {
     self
       .reads

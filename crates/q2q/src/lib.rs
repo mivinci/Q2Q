@@ -8,6 +8,7 @@ mod block_queue;
 mod cdn;
 mod control;
 mod destination;
+mod discovery;
 mod download;
 mod download_policy;
 mod download_store;
@@ -28,7 +29,9 @@ pub mod transfer;
 mod upload;
 mod upload_progress;
 mod upload_rate;
+mod upload_router;
 mod upload_session;
+mod upload_source;
 mod webrtc_transport;
 
 pub mod client;

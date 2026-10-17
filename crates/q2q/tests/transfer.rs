@@ -834,3 +834,15 @@ async fn changed_source_withdraws_upload_and_empty_content_completes() {
     }
   }
 }
+
+#[test]
+fn have_updates_are_idempotent_and_reject_out_of_range_indexes() {
+  let available = Mutex::new(vec![0x80, 0]);
+  record_have(&available, 9, 8).unwrap();
+  record_have(&available, 9, 8).unwrap();
+  assert_eq!(*available.lock().unwrap(), vec![0x80, 0x80]);
+  for index in [9, 10, u64::MAX] {
+    assert!(record_have(&available, 9, index).is_err());
+  }
+  assert_eq!(*available.lock().unwrap(), vec![0x80, 0x80]);
+}

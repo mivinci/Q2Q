@@ -212,6 +212,27 @@ impl WorkQueue {
     bits
   }
 
+  pub(crate) fn claim_available(self: &Arc<Self>, bits: &[u8]) -> Option<BlockLease> {
+    let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+    if state.policy.fatal().is_some() {
+      return None;
+    }
+    let position = state.pending.iter().position(|index| {
+      bits
+        .get(*index / 8)
+        .is_some_and(|byte| byte & (1 << (7 - *index % 8)) != 0)
+        && state.policy.eligible(*index, SourceKind::Peer)
+    })?;
+    let index = state.pending.remove(position)?;
+    state.leased[index] = true;
+    Some(BlockLease {
+      index,
+      queue: self.clone(),
+      committed: false,
+    })
+  }
+
+  #[cfg(test)]
   pub(crate) async fn claim(self: &Arc<Self>) -> Option<BlockLease> {
     self.claim_from(SourceKind::Peer).await
   }
