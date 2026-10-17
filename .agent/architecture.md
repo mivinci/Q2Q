@@ -9,6 +9,13 @@
 - 平台规划支持用户自带 S3 Bucket 或使用套餐内的平台存储，套餐以网络能力与存储规模为主要维度；具体配额和价格未确定。**这些是产品方向，不表示账号、托管平台、存储接入及计费功能已经实现**。
 - 产品讨论和后续参考见 [product-direction.md](../todos/product-direction.md)。直播规划见 [live-streaming.md](../todos/live-streaming.md)，不要因为首页提到直播就自行优先启动该规划。
 
+## 平台与客户端技术方向
+
+- 开放平台使用 SvelteKit，部署到 Cloudflare Workers，优先使用 Cloudflare 配套服务；Track、Punch、STUN/TURN 等保留为独立的原生集群部署。
+- 桌面端使用 Tauri，Rust 应用层复用 q2q SDK，界面使用 Svelte。移动端框架待定，可以后续单独使用 Flutter；不因跨端 UI 而假设 SDK、文件访问和后台做种已跨端。
+- 平台 Web 与桌面 Svelte 界面统一采用 shadcn-svelte 和 Lucide；视觉尽量贴近 Apple 原生，主题支持浅色、深色及跟随系统，保存用户偏好，默认跟随系统。
+- 大致方案与待细化边界见 [platform-technical-plan.md](../todos/platform-technical-plan.md)。这些选型不表示平台或 GUI 已实现，不提前固定所有服务、目录和桥接接口。
+
 ## crate 与协议归属
 
 - `q2q`：客户端 SDK，公共构建入口使用 **`q2q::client::builder()`**。
