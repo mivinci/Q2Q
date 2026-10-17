@@ -1,4 +1,9 @@
 import type { Handle } from '@sveltejs/kit/hooks';
+import { env } from 'cloudflare:workers';
+import { building } from '$app/env';
+import { svelteKitHandler } from 'better-auth/svelte-kit';
+import { error } from '@sveltejs/kit';
+import { createAuth } from '#lib/server/auth.js';
 import { localeCookie, resolveLocale } from '#lib/i18n.js';
 
 export const handle: Handle = async ({ event, resolve }) => {
@@ -6,9 +11,26 @@ export const handle: Handle = async ({ event, resolve }) => {
   event.locals.locale = resolveLocale(
     event.cookies.get(localeCookie), event.request.headers.get('accept-language') ?? ''
   );
-  const response = await resolve(event, {
+  const auth = building ? null : createAuth(env);
+  event.locals.authReady = auth !== null;
+  event.locals.user = null;
+  if (auth) {
+    const session = await auth.api.getSession({ headers: event.request.headers });
+    if (session) {
+      // Only expose the display identity; session tokens stay in the auth boundary.
+      event.locals.user = { id: session.user.id, name: session.user.name, image: session.user.image ?? null };
+    }
+  } else if (event.url.pathname.startsWith('/api/auth/')) {
+    error(503, 'Authentication is not configured');
+  }
+  const resolvePage: typeof resolve = (request) => resolve(request, {
     transformPageChunk: ({ html }) => html.replace('%q2q.locale%', event.locals.locale)
   });
+  const result = auth
+    ? await svelteKitHandler({ event, resolve: resolvePage, auth, building })
+    : await resolvePage(event);
+  const response = new Response(result.body, result);
+  response.headers.set('Cache-Control', 'private, no-store');
   response.headers.set('Content-Language', event.locals.locale);
   // HTML depends on both the explicit preference and browser language.
   response.headers.append('Vary', 'Cookie, Accept-Language');

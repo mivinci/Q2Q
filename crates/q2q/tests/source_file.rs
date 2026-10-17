@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn prepared_seed_preserves_the_existing_file_identity_and_sources() {
+  let directory = tempfile::tempdir().unwrap();
+  let path = directory.path().join("identity.bin");
+  let bytes = vec![37; DEFAULT_BLOCK_SIZE as usize * 3 + 5];
+  std::fs::write(&path, &bytes).unwrap();
+  let prepared = PreparedFile::open(path, "https://track.example".into()).unwrap();
+  let leaves: Vec<_> = bytes
+    .chunks(DEFAULT_BLOCK_SIZE as usize)
+    .map(merkle::leaf_hash)
+    .collect();
+  let mut info = q2q_core::seed::Info::new(bytes.len() as u64, merkle::root(&leaves));
+  info.name = Some("identity.bin".into());
+  let mut expected = Seed::new(info);
+  expected.track_list.push("https://track.example".into());
+  expected.leaf_hashes = Some(leaves);
+  assert_eq!(prepared.seed().encode(), expected.encode());
+  assert_eq!(prepared.seed().info_hash(), expected.info_hash());
+}
+
+#[test]
 fn positional_reads_are_shared_and_verify_every_block() {
   let directory = tempfile::tempdir().unwrap();
   let path = directory.path().join("source");

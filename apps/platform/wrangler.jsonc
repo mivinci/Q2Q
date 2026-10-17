@@ -1,15 +1,31 @@
 {
-	"$schema": "../../node_modules/wrangler/config-schema.json",
-	"name": "q2q-platform",
-	"compatibility_date": "2026-10-18",
-	"compatibility_flags": [
-		"nodejs_als"
-	],
-	"main": ".svelte-kit/cloudflare/_worker.js",
-	"assets": {
-		"binding": "ASSETS",
-		"directory": ".svelte-kit/cloudflare"
-	},
-	"workers_dev": true,
-	"preview_urls": true
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "q2q-platform",
+  "compatibility_date": "2026-10-17",
+  "compatibility_flags": [
+    "nodejs_als"
+  ],
+  "main": ".svelte-kit/cloudflare/_worker.js",
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".svelte-kit/cloudflare"
+  },
+  "workers_dev": true,
+  "preview_urls": true,
+  "queues": { "producers": [{ "binding": "PROCESSING_QUEUE", "queue": "q2q-seed-processing" }] },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "q2q-platform",
+      "database_id": "local-q2q-platform",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "STORAGE",
+      "bucket_name": "q2q-platform-storage",
+      "remote": false
+    }
+  ]
 }

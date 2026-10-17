@@ -17,12 +17,13 @@
 - 平台 Web 与桌面 Svelte 界面统一采用 shadcn-svelte 和 Lucide；视觉尽量贴近 Apple 原生，主题支持浅色、深色及跟随系统，保存用户偏好，默认跟随系统。
 - 平台支持国际化，当前提供简体中文和英文；文案集中维护，语言切换保存偏好，服务端首屏与客户端使用一致语言。
 - 用户已确认平台界面原型，基准保存在 [apps/platform/design/README.md](../apps/platform/design/README.md)。实现须对照浅色、深色与窄屏版本；整体布局或视觉调整先与用户确认并同步基准。
-- 大致方案与待细化边界见 [platform-technical-plan.md](../todos/platform-technical-plan.md)。平台工程已初始化，业务接线和桌面 GUI 尚未实现；不提前固定所有服务、目录和桥接接口。
+- 大致方案与待细化边界见 [platform-technical-plan.md](../todos/platform-technical-plan.md)。平台工程已初始化，GitHub 登录及 D1 项目基础已接线（需配置 OAuth App）；项目存储与分片上传已接线（已通过 R2 的 S3 接口与真实浏览器上传验证，其他供应商待验证）；内容发布和桌面 GUI 尚未实现；不提前固定所有服务、目录和桥接接口。
 
 ## crate 与协议归属
 
 - `q2q`：客户端 SDK，公共构建入口使用 **`q2q::client::builder()`**。
 - `q2q-core`：内容身份、Seed、Merkle、块/文件基础能力及 Peer 数据面协议等双方共用的领域能力。
+- 增量种子构建放在 `q2q-core::seed_builder`，SDK 的本地文件准备复用它。`q2q-wasm` 同时提供 `@q2q/wasm` 工作区包；业务代码通过包导出使用绑定，不导入 Cargo target。S3 读取、平台队列任务和凭据不进入 core。平台后台处理已接线并完成本地验证，尚未上线，见 [种子处理方案](../todos/platform-seed-processing.md)。
 - `q2q-track` / `q2q-punch`：各服务的协议类型与可复用逻辑，尽量保持网络/系统无关；服务进程的 HTTP/QUIC、配置与运行时接线放在对应 `*-server` crate。
 - 协议属于哪个组件，就优先放在该组件的库中；不因为“客户端和服务端共用”就一律搬进 core，也不默认另建 `q2q-protocol`。
 - Redis 状态实现放在 `q2q-track`，用 **`redis` feature** 隔离，不另起平行实现 crate。

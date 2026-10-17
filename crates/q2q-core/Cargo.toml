@@ -5,10 +5,15 @@ edition = "2021"
 description = "Q2Q 网络无关的核心：身份、种子、Merkle 证明与本地存储"
 license = "MIT"
 
+[features]
+default = ["storage", "random"]
+storage = []
+random = ["dep:getrandom"]
+
 [dependencies]
 base64 = "0.23.1"
 ed25519-dalek = "3.0.0"
-getrandom = "0.4.3"
+getrandom = { version = "0.4.3", optional = true }
 hmac = "0.13.0"
 parking_lot = "0.12.5"
 percent-encoding = "2.3.2"

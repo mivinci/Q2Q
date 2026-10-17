@@ -461,6 +461,7 @@ impl std::error::Error for TicketError {}
 
 /// Generate a key pair from the system CSPRNG. The caller owns persistence;
 /// the private key never leaves the device.
+#[cfg(feature = "random")]
 pub fn generate_keypair() -> Result<(SigningKey, PeerId), getrandom::Error> {
   let mut seed = [0u8; 32];
   getrandom::fill(&mut seed)?;

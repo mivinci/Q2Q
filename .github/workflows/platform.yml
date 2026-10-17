@@ -4,7 +4,14 @@ on:
   push:
     branches: [main]
     paths:
+      - 'crates/q2q-core/**'
+      - 'crates/q2q-wasm/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
       - 'apps/platform/**'
+      - 'docs/public/logo-light.svg'
+      - 'docs/public/logo-dark.svg'
+      - 'docs/public/favicon.svg'
       - 'package.json'
       - 'package-lock.json'
       - 'tsconfig.base.json'
@@ -13,7 +20,14 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - 'crates/q2q-core/**'
+      - 'crates/q2q-wasm/**'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
       - 'apps/platform/**'
+      - 'docs/public/logo-light.svg'
+      - 'docs/public/logo-dark.svg'
+      - 'docs/public/favicon.svg'
       - 'package.json'
       - 'package-lock.json'
       - 'tsconfig.base.json'
@@ -36,5 +50,11 @@ jobs:
           node-version-file: '.node-version'
           cache: npm
       - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
       - run: npm run platform:check
+      - run: npm run platform:check:processing
       - run: npm run platform:build

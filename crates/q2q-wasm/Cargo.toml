@@ -1,0 +1,13 @@
+[package]
+name = "q2q-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "Thin WebAssembly bindings for Q2Q content preparation"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+q2q-core = { path = "../q2q-core", default-features = false }
+wasm-bindgen = "0.2"

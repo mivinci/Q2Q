@@ -5,20 +5,25 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "npm run types && vite build",
-    "preview": "wrangler dev .svelte-kit/cloudflare/_worker.js --port 4173",
+    "dev:workers": "wrangler dev -c wrangler.jsonc -c wrangler.processing.jsonc --ip localhost --port 5173",
+    "build": "npm run wasm:build --prefix ../.. && npm run types && vite build && wrangler deploy --dry-run -c wrangler.processing.jsonc --outdir .wrangler/processing-build",
+    "preview": "wrangler dev -c wrangler.jsonc -c wrangler.processing.jsonc --port 4173",
+    "check:processing": "node --experimental-strip-types scripts/check-processing.mjs",
     "prepare": "svelte-kit sync",
-    "check": "npm run types && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check": "npm run wasm:build --prefix ../.. && npm run types && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "npm run types && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "types": "wrangler types"
+    "types": "wrangler types",
+    "db:migrate": "wrangler d1 migrations apply DB --local"
   },
   "devDependencies": {
+    "@internationalized/date": "^3.12.4",
     "@lucide/svelte": "^1.59.0",
     "@sveltejs/adapter-cloudflare": "^8.0.0",
     "@sveltejs/kit": "^3.0.0",
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
     "@tailwindcss/vite": "^4.3.0",
     "@types/node": "^24.19.2",
+    "bits-ui": "^2.19.5",
     "cn": "^0.5.0",
     "shadcn-svelte": "^1.7.0",
     "svelte": "^5.57.1",
@@ -35,6 +40,10 @@
     "#lib/*": "./src/lib/*"
   },
   "dependencies": {
+    "@q2q/wasm": "*",
+    "aws4fetch": "^1.0.20",
+    "better-auth": "^1.7.10",
+    "fast-xml-parser": "^5.11.2",
     "mode-watcher": "^1.1.0"
   }
 }

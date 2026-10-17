@@ -6,6 +6,7 @@
 </script>
 
 <form method="POST" action="/language" aria-label={messages[page.data.locale].language} class="flex gap-1">
+  <input type="hidden" name="returnTo" value={page.url.pathname} />
   {#each options as option}
     <Button type="submit" name="locale" value={option.value} variant="ghost" size="sm"
       aria-pressed={page.data.locale === option.value}

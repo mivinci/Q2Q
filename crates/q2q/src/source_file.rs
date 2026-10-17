@@ -1,6 +1,7 @@
 //! Immutable local source preparation and upload-time integrity checks.
 use q2q_core::merkle::{self, Hash, Proof, ProofTree};
-use q2q_core::seed::{DEFAULT_BLOCK_SIZE, Info, Seed};
+use q2q_core::seed::{DEFAULT_BLOCK_SIZE, Seed};
+use q2q_core::seed_builder::SeedBuilder;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, Read};
@@ -45,19 +46,17 @@ impl PreparedFile {
     let length = before.len();
     let block_size = DEFAULT_BLOCK_SIZE as usize;
     let block_count = length.div_ceil(DEFAULT_BLOCK_SIZE as u64);
-    let block_count = usize::try_from(block_count).map_err(|_| PrepareError::TooManyBlocks)?;
-    let mut leaves = Vec::new();
-    leaves
-      .try_reserve_exact(block_count)
-      .map_err(|_| PrepareError::TooManyBlocks)?;
+    let mut builder = SeedBuilder::new(length).map_err(|_| PrepareError::TooManyBlocks)?;
     let mut buffer = vec![0u8; block_size];
     for index in 0..block_count {
-      let start = index as u64 * DEFAULT_BLOCK_SIZE as u64;
+      let start = index * DEFAULT_BLOCK_SIZE as u64;
       let bytes = (length - start).min(DEFAULT_BLOCK_SIZE as u64) as usize;
       file
         .read_exact(&mut buffer[..bytes])
         .map_err(PrepareError::Io)?;
-      leaves.push(merkle::leaf_hash(&buffer[..bytes]));
+      builder
+        .update(&buffer[..bytes])
+        .map_err(|_| PrepareError::TooManyBlocks)?;
     }
     let after = file.metadata().map_err(PrepareError::Io)?;
     if after.len() != length
@@ -66,12 +65,15 @@ impl PreparedFile {
       return Err(PrepareError::SourceChanged);
     }
 
-    let tree = ProofTree::new(&leaves);
-    let mut info = Info::new(length, tree.root());
-    info.name = Some(name);
-    let mut seed = Seed::new(info);
+    let mut seed = builder.finish().map_err(|_| PrepareError::TooManyBlocks)?;
+    seed.info.name = Some(name);
+    let tree = ProofTree::new(
+      seed
+        .leaf_hashes
+        .as_ref()
+        .expect("builder returns leaf hashes"),
+    );
     seed.track_list.push(track_url);
-    seed.leaf_hashes = Some(leaves);
     Ok(Self {
       path,
       file: Arc::new(file),
