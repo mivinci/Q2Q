@@ -101,12 +101,20 @@ pub(crate) async fn start_with_store(
     None => Destination::open(&seed, &path, false).await?,
   };
   let mut guard = crate::destination::DownloadGuard::new(store.clone());
-  Ok(Transfer::start(progress, async move {
+  let peers = crate::download_progress::Progress::new();
+  let peer_updates = peers.clone();
+  Ok(Transfer::observed(progress, peers, async move {
     let activity = crate::scheduler::TaskScope::new();
     let p2p = match discovery {
       Ok((session, targets)) => {
         let bits = store.bitfield().await?;
-        let queue = WorkQueue::scoped(&seed, &bits, updates.clone(), activity.clone());
+        let queue = WorkQueue::observed(
+          &seed,
+          &bits,
+          updates.clone(),
+          activity.clone(),
+          peer_updates,
+        );
         let attempt = crate::discovery::Peers {
           session: session.clone(),
           candidates: targets,
@@ -146,6 +154,7 @@ pub(crate) struct ReadSession {
 }
 impl Drop for ReadSession {
   fn drop(&mut self) {
+    self.queue.peers.close();
     self.driver.abort();
     progress::finish(&self.queue.progress, TransferState::Cancelled);
   }
@@ -170,40 +179,49 @@ pub(crate) async fn open(
   let task_seed = seed.clone();
   let finishing = store.clone();
   let mut guard = crate::destination::DownloadGuard::new(store.clone());
+  let observations = queue.peers.clone();
   let driver = tokio::spawn(async move {
-    let mut tasks = JoinSet::new();
-    let q = task_queue.clone();
-    let s = task_seed.clone();
-    let disk = destination.clone();
-    tasks.spawn(async move {
-      let outcome = peers(dial, peer_id, s, disk, q.clone(), concurrency, query_limit).await;
-      if let Err(error) = outcome {
-        if error.peer_retryable() || matches!(error, TransferError::NoPeers) {
-          q.peer_status(true, None);
-        } else {
-          q.fail(error);
+    let operation = async move {
+      let mut tasks = JoinSet::new();
+      let q = task_queue.clone();
+      let s = task_seed.clone();
+      let disk = destination.clone();
+      tasks.spawn(async move {
+        let outcome = peers(dial, peer_id, s, disk, q.clone(), concurrency, query_limit).await;
+        if let Err(error) = outcome {
+          if error.peer_retryable() || matches!(error, TransferError::NoPeers) {
+            q.peer_status(true, None);
+          } else {
+            q.fail(error);
+          }
+        }
+      });
+      let q = task_queue.clone();
+      tasks.spawn(async move {
+        cdn_window(task_seed, destination, q, concurrency).await;
+      });
+      while let Some(result) = tasks.join_next().await {
+        if let Err(error) = result {
+          task_queue.fail(error.into());
+          return;
         }
       }
-    });
-    let q = task_queue.clone();
-    tasks.spawn(async move {
-      cdn_window(task_seed, destination, q, concurrency).await;
-    });
-    while let Some(result) = tasks.join_next().await {
-      if let Err(error) = result {
-        task_queue.fail(error.into());
-        return;
-      }
-    }
-    if task_queue.complete() {
-      match finishing.finish().await {
-        Ok(()) => {
-          guard.finish();
-          progress::finish(&task_queue.progress, TransferState::Completed);
+      if task_queue.complete() {
+        match finishing.finish().await {
+          Ok(()) => {
+            guard.finish();
+            task_queue.peers.close();
+            progress::finish(&task_queue.progress, TransferState::Completed);
+          }
+          Err(error) => task_queue.fail(error),
         }
-        Err(error) => task_queue.fail(error),
       }
+    };
+    tokio::select! {
+      _ = operation => {},
+      _ = observations.coalesce() => unreachable!("coalescing loop does not end"),
     }
+    observations.close();
   });
   Ok(ReadSession {
     seed,

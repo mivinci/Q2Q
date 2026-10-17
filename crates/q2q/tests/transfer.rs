@@ -30,6 +30,7 @@ async fn cancelling_wait_does_not_detach_a_background_download() {
   let transfer = Transfer {
     task: Some(task),
     progress: crate::progress::channel(prepared.seed(), &[]),
+    peers: crate::download_progress::Progress::new(),
   };
   assert!(
     tokio::time::timeout(Duration::from_millis(10), transfer.wait())
@@ -181,9 +182,14 @@ async fn dropped_piece_is_requested_again_and_corrupt_data_never_completes() {
       if corrupt {
         bytes[0] ^= 1;
       }
-      send_pieces(&*upload.data, 0, &bytes, &[(0, 1024), (2048, 1029)])
-        .await
-        .unwrap();
+      send_pieces(
+        &*upload.data,
+        0,
+        &bytes,
+        &[(0, 1024), (0, 1024), (2048, 1029)],
+      )
+      .await
+      .unwrap();
       match tokio::time::timeout(Duration::from_secs(5), receive(&*upload.control))
         .await
         .unwrap()
@@ -232,7 +238,22 @@ async fn dropped_piece_is_requested_again_and_corrupt_data_never_completes() {
       }
     };
     let destination = directory.path().join("download.bin");
-    let (received, ()) = tokio::join!(download.download_file(seed, &destination), upload);
+    let store = Destination::open(&seed, &destination, false).await.unwrap();
+    let queue = WorkQueue::new(&seed, &[], crate::progress::channel(&seed, &[]));
+    let observation = queue.peers.connection(download.peer_id().clone());
+    let observed = queue.peers.clone();
+    let receiving =
+      crate::scheduler::download_peer_observed(download, &seed, store, queue, observation.clone());
+    let (received, ()) = tokio::join!(receiving, upload);
+    let row = observed.snapshot().pop().unwrap();
+    assert!(row.received_bytes >= bytes.len() as u64);
+    assert_eq!(
+      row.verified_bytes,
+      if corrupt { 0 } else { bytes.len() as u64 }
+    );
+    assert!(row.connection_id.is_some());
+    drop(observation);
+    assert!(observed.snapshot().is_empty());
     if corrupt {
       assert!(matches!(
         received,

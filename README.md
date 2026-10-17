@@ -33,6 +33,18 @@ and STUN/TURN (hole punching); those are operated by whoever runs the network,
 while the trust placed in them is kept minimal: a fully malicious Track or Punch
 cannot alter content, only eavesdrop or refuse service.
 
+## Command-line client
+
+```sh
+cargo install --path crates/q2q-cli --locked
+q2q --track https://track.example.net publish ./model.bin --seed ./model.q2q
+q2q --data-dir ./receiver-state download ./model.q2q --output ./received.bin
+```
+
+Keep the publisher running and send the seed to the recipient. Use separate state
+directories for simultaneous clients. See the [CLI guide](docs/en/guide/cli.md) for
+configuration, progress and explicit resume.
+
 ## Development
 
 ```sh

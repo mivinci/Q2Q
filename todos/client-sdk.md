@@ -176,3 +176,11 @@ let n = file.read(&mut buffer).await?;
 ## 实现架构整理
 
 文件传输与 VOD 合并后，按 [SDK 架构整理](sdk-architecture.md) 完成存储入口、队列策略、下载执行层、协议和共享会话生命周期的拆分；直播继续按独立方案推进。
+
+
+## 下载逐 Peer 观测
+
+Transfer 与 VerifiedFile 新增独立的 `peer_progress()` / `subscribe_peer_progress()`，
+保留 TransferProgress 的 Copy 及汇总语义。公开逐尝试身份、状态、接收量与已验证持久化量，
+CLI 据此显示逐 Peer 速率。接口边界见[数据面文档](../docs/zh/guide/transport.md#下载逐-peer-观测)，
+实施及验证记录见 [client-cli.md](client-cli.md)。

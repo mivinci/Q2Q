@@ -26,7 +26,10 @@ async fn public_cold_start_and_resume_use_exact_ranges_with_unavailable_track() 
   let path = dir.path().join("download.bin");
   let transfer = client.download(&seed, &path).await.unwrap();
   let updates = transfer.subscribe_progress();
+  let peers = transfer.subscribe_peer_progress();
+  assert!(transfer.peer_progress().is_empty());
   transfer.wait().await.unwrap();
+  assert!(peers.borrow().is_empty());
   assert_eq!(std::fs::read(&path).unwrap(), bytes);
   assert_eq!(updates.borrow().state, TransferState::Completed);
   assert_eq!(updates.borrow().verified_bytes, bytes.len() as u64);

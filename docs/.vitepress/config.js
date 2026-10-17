@@ -18,7 +18,10 @@ const sidebar = (prefix, t) => [
   {
     text: t.intro,
     collapsed: false,
-    items: [{ text: t.overview, link: `${prefix}guide/what-is-q2q` }],
+    items: [
+      { text: t.overview, link: `${prefix}guide/what-is-q2q` },
+      { text: t.cli, link: `${prefix}guide/cli` },
+    ],
   },
   {
     text: t.planes,
@@ -45,6 +48,7 @@ const sidebar = (prefix, t) => [
 const en = {
   intro: 'Introduction',
   overview: 'What is Q2Q?',
+  cli: 'Command-line client',
   planes: 'Control Plane',
   deploy: 'Deploy',
   data: 'Data Plane',
@@ -58,6 +62,7 @@ const en = {
 const zh = {
   intro: '介绍',
   overview: 'Q2Q 是什么？',
+  cli: '命令行客户端',
   planes: '控制面',
   deploy: '部署',
   data: '数据面',

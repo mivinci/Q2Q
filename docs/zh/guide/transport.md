@@ -26,6 +26,8 @@ flowchart TB
     Reads --> Source["UploadSource<br/>upload_source.rs"]
     Source --> Prepared["PreparedFile / ProofTree<br/>source_file.rs"]
     Source --> Dest
+    Workers --> DownloadStats["下载活跃连接观测<br/>download_progress.rs"]
+    Handles --> DownloadStats
     Workers --> Dest["校验与提交<br/>destination.rs"]
     Handles -->|"已验证读取"| Dest
     Dest --> Store["磁盘与检查点<br/>download_store.rs"]
@@ -70,6 +72,44 @@ flowchart TB
 Drop 下载或读取句柄会取消网络任务。已经开始的阻塞磁盘操作可以完成，目标锁在操作结束前继续持有。每块证明保存在 `.q2q.resume`，恢复时重新读取并验证磁盘内容，完整文件可离线恢复。
 
 当前支持固定文件的下载和单游标 VOD。每个 Client 可同时注册最多 32 个不同内容哈希，每个发布句柄可同时服务多个下载 Peer（`max_upload_peers` 默认 4，范围 1–16）；候选来自当前 Track 页，每五秒刷新，暂不分页。最多 65,536 个 block，默认块大小对应 16 GiB。部分文件共享由应用显式开启；直播索引和浏览器适配尚未实现。
+
+## 下载逐 Peer 观测
+
+`Transfer` 和 `VerifiedFile` 通过独立接口提供有界的活跃 Peer 快照；
+现有 `TransferProgress` 保留 `Copy` 与汇总字段语义。
+
+```rust
+let peers = transfer.peer_progress();
+let mut updates = transfer.subscribe_peer_progress();
+loop {
+    let snapshot = updates.borrow_and_update().clone();
+    for peer in snapshot {
+        println!("{} {:?}: {} received, {} verified",
+            peer.peer_id, peer.state, peer.received_bytes, peer.verified_bytes);
+    }
+    if updates.changed().await.is_err() { break; }
+}
+```
+
+订阅应与 `transfer.wait()` 并行使用；取消 wait 会丢弃传输并清空活跃尝试。
+watch 通知允许合并，提供当前快照而非完整连接事件历史。跨 await 或可能阻塞的输出前先克隆借用值；
+消费句柄前保留订阅，可在结束后读取最终空快照。
+
+`DownloadPeerProgress` 包含 `attempt_id`、`peer_id`、认证成功后才有的
+`connection_id`、`state`、`received_bytes` 和 `verified_bytes`。
+编号在单个句柄内唯一，重连重新计数。状态为 `Connecting`（Punch/ICE/身份建立）、
+`Handshaking`（认证后交换位图）、`Idle`、`Receiving`、`Verifying`（含持久化等待）
+和 `Finishing`。Connecting 时的 Peer ID 来自候选，尚未认证。
+列表包含建连中的尝试；`active_peers` 仍沿用已完成数据协议握手的连接计数。
+
+接收量统计当前块通过格式与范围检查的 piece payload，包括一致的重复片段；
+不含协议头、控制消息、被拒绝/忽略的旧块或 CDN 流量。后续证明校验失败不会抹掉已接收量。
+已验证量仅在通过根校验并完成数据及证明记录持久化后增加；恢复块和 CDN 提交不归属 Peer。
+取消后的阻塞提交可以继续完成，但不会因此保留网络连接行，晚到结果不能重建记录或更新后一次尝试。
+
+`download_progress.rs` 管理逐连接计数；piece 到达只更新内存，字节通知每 100 毫秒合并，
+新建订阅同步最新计数，拓扑及状态变化立即通知。只保留受下载并发上限约束的活跃尝试，终态列表为空。
+应用通过同一尝试的接收量增量计算速率，重连重置基线。这是 payload 速率，不是网卡吞吐、质量评分或交付确认。
 
 ## 并发上传
 

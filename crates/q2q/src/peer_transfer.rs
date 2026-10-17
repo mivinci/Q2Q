@@ -64,6 +64,7 @@ impl PeerSession {
     completed: &HashSet<u64>,
     available: &std::sync::Mutex<Vec<u8>>,
     count: usize,
+    observation: Option<&crate::download_progress::Connection>,
   ) -> Result<(Vec<u8>, Proof), TransferError> {
     let mut assembly = Assembly::new(length);
     let mut proof = None;
@@ -97,7 +98,9 @@ impl PeerSession {
             let piece = Piece::decode(&message.data)?;
             if completed.contains(&piece.block_index) { continue; }
             if piece.block_index != index as u64 { return Err(protocol("unsolicited block")); }
-            if assembly.insert(piece.piece_offset, piece.data)? {
+            let fresh = assembly.insert(piece.piece_offset, piece.data)?;
+            if let Some(observation) = observation { observation.received(piece.data.len()); }
+            if fresh {
               retries = 0;
               let now = tokio::time::Instant::now();
               idle.as_mut().reset(pacing_until.max(now + RETRY_DELAY));
@@ -256,6 +259,7 @@ pub(crate) struct PeerDownload {
   completed: HashSet<u64>,
   available: std::sync::Mutex<Vec<u8>>,
   count: usize,
+  observation: Option<Arc<crate::download_progress::Connection>>,
 }
 impl PeerSession {
   pub(crate) async fn begin_download(
@@ -280,6 +284,7 @@ impl PeerSession {
       completed: HashSet::new(),
       available: std::sync::Mutex::new(available),
       count,
+      observation: None,
     })
   }
 }
@@ -296,6 +301,9 @@ fn record_have(
   Ok(())
 }
 impl PeerDownload {
+  pub(crate) fn observe(&mut self, observation: Arc<crate::download_progress::Connection>) {
+    self.observation = Some(observation);
+  }
   pub(crate) fn available(&self) -> Vec<u8> {
     self
       .available
@@ -331,7 +339,14 @@ impl PeerDownload {
     .await?;
     self
       .session
-      .receive_block(index, length, &self.completed, &self.available, self.count)
+      .receive_block(
+        index,
+        length,
+        &self.completed,
+        &self.available,
+        self.count,
+        self.observation.as_deref(),
+      )
       .await
   }
   pub(crate) async fn acknowledge(&mut self, index: usize) -> Result<(), TransferError> {

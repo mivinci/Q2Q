@@ -11,6 +11,7 @@ mod destination;
 mod discovery;
 mod download;
 mod download_policy;
+mod download_progress;
 mod download_store;
 mod error;
 mod identity;

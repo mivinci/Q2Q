@@ -48,3 +48,10 @@ cargo test -p q2q source_read_workloads -- --ignored --nocapture
 ```
 
 It compares the uncached read path with the managed cache/coalescing path for 128 requests from eight workers, using hotspot, distinct, deterministic seek and growing-destination workloads. Timings are informational; deterministic read-call counts and sharing/limit behavior are asserted. It does not measure physical disk reads, cold storage or network throughput.
+
+
+`download_progress.rs` covers per-attempt identity/counter isolation, reconnects,
+coalesced byte notifications, cancellation/terminal cleanup, durable attribution
+and exclusion of failed proof/checkpoint, CDN and resumed data. The real WebRTC
+piece retry/corruption test checks receive versus verified counts; local upload
+regression also checks public VOD Peer snapshots and cleanup.

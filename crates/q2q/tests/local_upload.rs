@@ -178,6 +178,16 @@ async fn scenario() {
   right.unwrap();
   assert_eq!(a_file.progress().verified_blocks, 1);
   assert_eq!(b_file.progress().verified_blocks, 1);
+  for file in [&a_file, &b_file] {
+    let peers = file.peer_progress();
+    assert_eq!(peers.len(), 1);
+    assert_eq!(peers[0].peer_id, *publisher.peer_id());
+    assert!(peers[0].connection_id.is_some());
+    assert!(peers[0].received_bytes >= 262144);
+    assert_eq!(peers[0].verified_bytes, 262144);
+  }
+  let a_peer_updates = a_file.subscribe_peer_progress();
+  let b_peer_updates = b_file.subscribe_peer_progress();
   // Two VOD readers jump independently across different blocks, including the
   // short tail block. Neither connection shares or mutates a source cursor.
   for (left, right) in [(7, 3), (2, 6), (8, 4), (1, 5)] {
@@ -224,6 +234,8 @@ async fn scenario() {
   assert!(left.is_err() && right.is_err());
   drop(a_file);
   drop(b_file);
+  assert!(a_peer_updates.borrow().is_empty());
+  assert!(b_peer_updates.borrow().is_empty());
 
   // Keep a low-level accept future alive across a conflicting publish call.
   // Polling it through a borrowed timeout proves that it owns admission and
