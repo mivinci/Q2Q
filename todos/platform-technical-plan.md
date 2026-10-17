@@ -92,6 +92,8 @@ SDK 继续保持独立于 Tauri 的库，现有 CLI 继续可用。需要补充�
 
 ## 6. 界面组件、图标与主题
 
+用户已确认的平台界面基准及原型见 [apps/platform/design/README.md](../apps/platform/design/README.md)。后续实现先对照该版本，避免偏离已批准的布局和视觉。
+
 适用于平台 Web 界面与 Tauri 的 Svelte 前端；未来移动端的具体组件实现随框架选型确定。
 
 - **UI 组件统一使用 shadcn-svelte**，通过共享的设计变量与组件样式形成一致体验。
