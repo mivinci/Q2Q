@@ -88,10 +88,7 @@ async fn leaf_tree(
         return Err(error("leaf table requires HTTP 200"));
       }
       let bytes = exact_body(response, seed.info.leaf_count() * 32).await?;
-      let leaves: Vec<Hash> = bytes
-        .chunks_exact(32)
-        .map(|b| b.try_into().expect("32-byte chunk"))
-        .collect();
+      let leaves: Vec<Hash> = bytes.as_chunks::<32>().0.to_vec();
       let tree = ProofTree::new(&leaves);
       if tree.root() != seed.info.root {
         return Err(error("downloaded leaf table does not match root"));
