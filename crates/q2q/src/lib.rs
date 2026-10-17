@@ -3,16 +3,25 @@
 //! The SDK prepares a persistent identity, publishes local files and downloads
 //! verified blocks through authenticated WebRTC peer sessions.
 
+mod block_queue;
 mod cdn;
 mod control;
+mod destination;
+mod download;
+mod download_policy;
 mod download_store;
+mod error;
 mod identity;
+mod online;
 mod peer;
 mod peer_identity;
+mod peer_transfer;
 mod progress;
 mod punch_transport;
 mod reader;
 mod scheduler;
+mod source_file;
+mod task_scope;
 pub mod transfer;
 mod webrtc_transport;
 
@@ -29,3 +38,7 @@ pub mod protocol {
 #[cfg(test)]
 #[path = "../tests/http.rs"]
 mod test_http;
+
+#[cfg(test)]
+#[path = "../tests/destination.rs"]
+mod test_destination;

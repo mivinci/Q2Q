@@ -1,5 +1,7 @@
 use super::*;
 use crate::test_http::*;
+use crate::{block_queue::WorkQueue, download::cdn_window as cdn, progress};
+use std::sync::{Arc, Mutex};
 
 #[tokio::test]
 async fn demand_seek_discards_old_pending_but_retains_inflight() {
@@ -31,7 +33,11 @@ async fn urgent_fallback_releases_only_its_peer_lease() {
   let other = queue.claim().await.unwrap();
   assert_eq!((slow.index, other.index), (0, 1));
   queue.cdn_status(Ok(()));
-  let guarded = queue.guard_peer(0, std::future::pending::<Result<(), TransferError>>());
+  let guarded = crate::scheduler::guard_peer(
+    &queue,
+    0,
+    std::future::pending::<Result<(), TransferError>>(),
+  );
   assert!(matches!(guarded.await, Err(TransferError::Timeout)));
   // A CDN worker must still wait until the old owner releases the block.
   assert!(
@@ -60,9 +66,10 @@ async fn healthy_p2p_window_does_not_fetch_cdn_metadata() {
   let mut seed = prepared.seed().clone();
   let server = Server::start(|_| panic!("healthy P2P must not contact CDN")).await;
   seed.cdn_list = vec![server.url.clone()];
-  let store = transfer::open_destination(&seed, &dir.path().join("destination"), false)
-    .await
-    .unwrap();
+  let store =
+    crate::test_destination::open_destination(&seed, &dir.path().join("destination"), false)
+      .await
+      .unwrap();
   let queue = WorkQueue::demand(&seed, &[], progress::channel(&seed, &[]));
   let (download, upload) = crate::peer::test_pair(seed.info_hash()).await;
   let upload = tokio::spawn(async move { upload.serve_file(Arc::new(Mutex::new(prepared))).await });
@@ -115,9 +122,10 @@ async fn actual_peer_fallback_keeps_other_peer_alive() {
   let served = bytes.clone();
   let server = Server::start(move |request| range_reply(&request, &served)).await;
   seed.cdn_list = vec![server.url.clone()];
-  let store = transfer::open_destination(&seed, &dir.path().join("destination"), false)
-    .await
-    .unwrap();
+  let store =
+    crate::test_destination::open_destination(&seed, &dir.path().join("destination"), false)
+      .await
+      .unwrap();
   let queue = WorkQueue::demand(&seed, &[], progress::channel(&seed, &[]));
   let (slow_download, slow_upload) = crate::peer::test_pair(seed.info_hash()).await;
   let (good_download, good_upload) = crate::peer::test_pair(seed.info_hash()).await;

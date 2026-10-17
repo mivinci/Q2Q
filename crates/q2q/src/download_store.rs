@@ -1,6 +1,6 @@
 //! Root-bound, crash-recoverable block receipts for SDK downloads.
 
-use crate::transfer::TransferError;
+use crate::error::TransferError;
 use q2q_core::block::PIECE_SIZE;
 use q2q_core::file::{FileStore, StoreError};
 use q2q_core::merkle::{Hash, Proof};
@@ -9,6 +9,7 @@ use q2q_core::seed::Seed;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(test)]
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 
@@ -35,12 +36,14 @@ pub(crate) struct DownloadStore {
   failed: bool,
 }
 
+#[cfg(test)]
 impl Deref for DownloadStore {
   type Target = FileStore;
   fn deref(&self) -> &FileStore {
     &self.store
   }
 }
+#[cfg(test)]
 impl DerefMut for DownloadStore {
   fn deref_mut(&mut self) -> &mut FileStore {
     &mut self.store
@@ -103,6 +106,37 @@ impl Drop for Temporary {
 }
 
 impl DownloadStore {
+  pub(crate) fn verified_bitfield(&self) -> Vec<u8> {
+    self.store.verified_bitfield()
+  }
+  pub(crate) fn complete(&self) -> Result<bool, TransferError> {
+    for index in 0..self.store.block_count() {
+      if self.store.state(index)? != q2q_core::block::BlockState::Verified {
+        return Ok(false);
+      }
+    }
+    Ok(true)
+  }
+  pub(crate) fn read_verified(&self, index: usize) -> Result<Vec<u8>, TransferError> {
+    if self.store.state(index)? != q2q_core::block::BlockState::Verified {
+      return Err(std::io::Error::other("block is not verified").into());
+    }
+    let bytes = self.store.read_block(index)?;
+    if self.store.cache().leaf(index) != Some(&q2q_core::merkle::leaf_hash(&bytes)) {
+      return Err(
+        std::io::Error::new(
+          std::io::ErrorKind::InvalidData,
+          "verified destination block changed",
+        )
+        .into(),
+      );
+    }
+    Ok(bytes)
+  }
+  pub(crate) fn sync(&self) -> std::io::Result<()> {
+    self.destination.sync_all()
+  }
+
   pub(crate) fn create(seed: &Seed, path: &Path) -> Result<Self, TransferError> {
     let journal_path = sidecar(path, ".q2q.resume");
     if journal_path.try_exists()? {

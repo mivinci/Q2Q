@@ -8,7 +8,7 @@ pub use crate::publication::Publication;
 pub use crate::transfer::{Transfer, TransferError, TransferProgress, TransferState};
 
 use crate::identity::Identity;
-use crate::publication::{PrepareError, PreparedFile};
+use crate::source_file::{PrepareError, PreparedFile};
 use q2q_core::identity::PeerId;
 use std::fmt;
 use std::io;
@@ -142,7 +142,7 @@ impl Client {
   pub async fn publish_file(&self, path: impl Into<PathBuf>) -> Result<Publication, TransferError> {
     let active = crate::publication::ActivePublication::acquire(self.publishing.clone())?;
     let prepared = self.prepare_file(path).await?;
-    crate::transfer::check_seed(prepared.seed())?;
+    crate::destination::check_seed(prepared.seed())?;
     let session = self.connect().await?;
     Publication::start(prepared, session, active).await
   }
@@ -175,124 +175,7 @@ impl Client {
     path: PathBuf,
     resume: bool,
   ) -> Result<Transfer, TransferError> {
-    crate::transfer::check_seed(seed)?;
-    let initial_store = if resume {
-      Some(crate::transfer::open_destination(seed, &path, true).await?)
-    } else {
-      None
-    };
-    let bits = match &initial_store {
-      Some(store) => store
-        .lock()
-        .map_err(|_| TransferError::Protocol("destination lock poisoned".into()))?
-        .verified_bitfield(),
-      None => Vec::new(),
-    };
-    let progress = crate::progress::channel(seed, &bits);
-    if let Some(store) = &initial_store
-      && crate::transfer::destination_complete(store)?
-    {
-      return Ok(Transfer::start(progress, async move {
-        let _store = initial_store;
-        crate::transfer::sync_destination(&path).await?;
-        Ok(path)
-      }));
-    }
-    if !resume && tokio::fs::try_exists(&path).await? {
-      return Err(
-        std::io::Error::new(
-          std::io::ErrorKind::AlreadyExists,
-          "download destination already exists",
-        )
-        .into(),
-      );
-    }
-    if seed.info.length == 0 {
-      let seed = seed.clone();
-      return Ok(Transfer::start(progress, async move {
-        let _store = crate::transfer::create_destination(&seed, &path).await?;
-        crate::transfer::sync_destination(&path).await?;
-        Ok(path)
-      }));
-    }
-    // A failed control plane must not prevent CDN-only cold start. Bound the
-    // complete discovery path, including Punch Binding setup, before fallback.
-    let discovery = tokio::time::timeout(std::time::Duration::from_secs(15), async {
-      let session = self.connect().await?;
-      let candidates = session.query(&seed.info_hash()).await?;
-      let mut seen = std::collections::HashSet::new();
-      let targets: Vec<_> = candidates
-        .peers
-        .into_iter()
-        .filter(|peer| {
-          peer.complete
-            && peer.peer_id != self.peer_id().as_str()
-            && seen.insert(peer.peer_id.clone())
-        })
-        .collect();
-      if targets.is_empty() {
-        return Err(TransferError::NoPeers);
-      }
-      Ok((session, targets))
-    })
-    .await
-    .map_err(|_| TransferError::Timeout)
-    .and_then(|result| result);
-    let discovery = match discovery {
-      Err(error) if seed.cdn_list.is_empty() => return Err(error),
-      result => result,
-    };
-    let seed = seed.clone();
-    let concurrency = self.max_download_peers;
-    let updates = progress.clone();
-    Ok(Transfer::start(progress, async move {
-      let store = match initial_store {
-        Some(store) => store,
-        None => crate::transfer::create_destination(&seed, &path).await?,
-      };
-      let activity = crate::scheduler::TaskScope::new();
-      let p2p = match discovery {
-        Ok((session, targets)) => {
-          let dialing = session.clone();
-          let info_hash = seed.info_hash();
-          let attempt = crate::scheduler::download_scoped(
-            targets,
-            seed.clone(),
-            store.clone(),
-            concurrency,
-            updates.clone(),
-            move |target| {
-              let session = dialing.clone();
-              async move {
-                session
-                  .dial_peer(&target, info_hash)
-                  .await
-                  .map_err(Into::into)
-              }
-            },
-            activity.clone(),
-          );
-          tokio::select! {
-            result = attempt => result,
-            result = crate::publication::keep_online(&session) => Err(TransferError::Control(result)),
-          }
-        }
-        Err(error) => Err(error),
-      };
-      if let Err(error) = p2p {
-        if seed.cdn_list.is_empty()
-          || !(error.peer_retryable() || matches!(error, TransferError::NoPeers))
-        {
-          return Err(error);
-        }
-        // Workers can be cancelled while blocking writes remain queued. Wait
-        // for both before snapshotting state for a new source phase.
-        activity.idle().await;
-        crate::cdn::download(seed, store.clone(), concurrency, updates).await?;
-      }
-      crate::transfer::sync_destination(&path).await?;
-      Ok(path)
-    }))
+    crate::download::start(self, seed, path, resume, self.max_download_peers).await
   }
 
   /// Prepare a local file for seeding without announcing it to the network.
