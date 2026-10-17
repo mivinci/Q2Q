@@ -33,14 +33,14 @@ fn node_hash(left: &Hash, right: &Hash) -> Hash {
 }
 
 /// A node the verifier needs but does not have. `level` counts from the leaves.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Node {
   pub level: u32,
   pub index: u64,
   pub hash: Hash,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Proof {
   /// Leaf hashes of the covered blocks. Carrying them lets the receiver cache
   /// the range and degrade later blocks in it to a table lookup.

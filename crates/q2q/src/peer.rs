@@ -4,7 +4,7 @@ use crate::control::ControlError;
 use crate::identity::Identity;
 use crate::peer_identity::PeerIdentity;
 use crate::punch_transport::{PunchBinding, PunchEphemeral};
-use crate::webrtc_transport::{RtcConnection, RtcEvent};
+use crate::webrtc_transport::{PeerChannels, RtcConnection, RtcEvent};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use q2q_core::identity::{Audience, PeerId, TicketBody};
@@ -22,14 +22,15 @@ const ACCEPT_TIMEOUT: Duration = Duration::from_secs(10);
 const OFFER_TIMEOUT: Duration = Duration::from_secs(10);
 const ICE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// A connected WebRTC peer whose identity was verified on this DTLS channel.
-/// Application data remains private until the block protocol is attached.
+/// A WebRTC peer whose identity was verified on this DTLS channel. File
+/// operations use separate reliable control and unreliable piece channels.
 pub struct PeerSession {
   peer_id: PeerId,
   info_hash: [u8; 32],
   connection_id: String,
   rtc: RtcConnection,
-  _channel: Arc<dyn DataChannel>,
+  pub(crate) control: Arc<dyn DataChannel>,
+  pub(crate) data: Arc<dyn DataChannel>,
 }
 
 impl PeerSession {
@@ -148,13 +149,7 @@ pub(crate) async fn dial(
       .await
       .map_err(ControlError::Transport)?;
   }
-  negotiate(
-    &mut rtc,
-    &channel,
-    &connection_id,
-    Some(data_channel.clone()),
-  )
-  .await?;
+  let channels = negotiate(&mut rtc, &channel, &connection_id, Some(data_channel)).await?;
   PeerIdentity {
     local: identity,
     remote_key: target_key,
@@ -162,14 +157,15 @@ pub(crate) async fn dial(
     info_hash,
     connection_id: &connection_id,
   }
-  .authenticate(&rtc, data_channel.as_ref())
+  .authenticate(&rtc, channels.control.as_ref())
   .await?;
   Ok(PeerSession {
     peer_id: target_id,
     info_hash,
     connection_id,
     rtc,
-    _channel: data_channel,
+    control: channels.control,
+    data: channels.data,
   })
 }
 
@@ -265,14 +261,15 @@ pub(crate) async fn accept(
       info_hash,
       connection_id: &connect.connection_id,
     }
-    .authenticate(&rtc, data_channel.as_ref())
+    .authenticate(&rtc, data_channel.control.as_ref())
     .await?;
     return Ok(PeerSession {
       peer_id: initiator,
       info_hash,
       connection_id: connect.connection_id,
       rtc,
-      _channel: data_channel,
+      control: data_channel.control,
+      data: data_channel.data,
     });
   }
 }
@@ -404,10 +401,15 @@ async fn negotiate(
   rtc: &mut RtcConnection,
   signal: &impl SignalChannel,
   connection_id: &str,
-  mut channel: Option<Arc<dyn DataChannel>>,
-) -> Result<Arc<dyn DataChannel>, ControlError> {
+  channels: Option<PeerChannels>,
+) -> Result<PeerChannels, ControlError> {
+  let (mut control, mut data) = match channels {
+    Some(channels) => (Some(channels.control), Some(channels.data)),
+    None => (None, Some(rtc.data_channel())),
+  };
   let mut connected = false;
-  let mut open = false;
+  let mut control_open = false;
+  let mut data_open = false;
   tokio::time::timeout(ICE_TIMEOUT, async {
     loop {
       tokio::select! {
@@ -435,10 +437,16 @@ async fn negotiate(
             signal.signal(&outbound).await?;
           }
           Some(RtcEvent::Channel(inbound)) => {
-            if channel.is_some() {
+            let label = inbound.label().await.map_err(|e| ControlError::Transport(e.to_string()))?;
+            let slot = match label.as_str() {
+              "q2q-control" => &mut control,
+              "q2q-data" => &mut data,
+              _ => return Err(ControlError::Protocol("unexpected data channel label".into())),
+            };
+            if slot.is_some() {
               return Err(ControlError::Protocol("unexpected additional data channel".into()));
             }
-            channel = Some(inbound);
+            *slot = Some(inbound);
           }
           Some(RtcEvent::State(RTCPeerConnectionState::Connected)) => connected = true,
           Some(RtcEvent::State(RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed)) => {
@@ -448,22 +456,144 @@ async fn negotiate(
           _ => {}
         },
         event = async {
-          match &channel {
+          match &control {
             Some(channel) => channel.poll().await,
             None => std::future::pending().await,
           }
-        }, if !open => match event {
-          Some(DataChannelEvent::OnOpen) => open = true,
+        }, if !control_open => match event {
+          Some(DataChannelEvent::OnOpen) => control_open = true,
+          Some(DataChannelEvent::OnMessage(_)) => return Err(ControlError::Authentication("received data before channel open".into())),
+          Some(DataChannelEvent::OnClose) | None => return Err(ControlError::Transport("WebRTC data channel closed".into())),
+          _ => {}
+        },
+        event = async {
+          match &data {
+            Some(channel) => channel.poll().await,
+            None => std::future::pending().await,
+          }
+        }, if !data_open => match event {
+          Some(DataChannelEvent::OnOpen) => data_open = true,
           Some(DataChannelEvent::OnMessage(_)) => return Err(ControlError::Authentication("received data before channel open".into())),
           Some(DataChannelEvent::OnClose) | None => return Err(ControlError::Transport("WebRTC data channel closed".into())),
           _ => {}
         },
       }
-      if connected && open {
-        return channel.ok_or_else(|| ControlError::Protocol("missing data channel".into()));
+      if connected && control_open && data_open {
+        let data = data.ok_or_else(|| ControlError::Protocol("missing data channel".into()))?;
+        if data.ordered().await.map_err(|e| ControlError::Transport(e.to_string()))?
+          || data.max_retransmits().await.map_err(|e| ControlError::Transport(e.to_string()))? != Some(0)
+          || data.max_packet_life_time().await.map_err(|e| ControlError::Transport(e.to_string()))?.is_some()
+        {
+          return Err(ControlError::Protocol("expected unreliable unordered data channel".into()));
+        }
+        return Ok(PeerChannels {
+          control: control.ok_or_else(|| ControlError::Protocol("missing control channel".into()))?,
+          data,
+        });
       }
     }
   })
   .await
   .map_err(|_| ControlError::Transport("WebRTC negotiation timed out".into()))?
+}
+
+#[cfg(test)]
+pub(crate) async fn test_pair(info_hash: [u8; 32]) -> (PeerSession, PeerSession) {
+  use tokio::sync::{Mutex, mpsc};
+  struct Pipe {
+    tx: mpsc::Sender<SignalRequest>,
+    rx: Mutex<mpsc::Receiver<SignalRequest>>,
+  }
+  impl SignalChannel for Pipe {
+    async fn signal(
+      &self,
+      request: &SignalRequest,
+    ) -> Result<q2q_punch::message::SignalResponse, ControlError> {
+      self
+        .tx
+        .send(request.clone())
+        .await
+        .map_err(|_| ControlError::Transport("test signal closed".into()))?;
+      Ok(q2q_punch::message::SignalResponse {
+        ok: true,
+        signal_key: None,
+        pending: Vec::new(),
+      })
+    }
+    async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
+      self
+        .rx
+        .lock()
+        .await
+        .recv()
+        .await
+        .ok_or_else(|| ControlError::Transport("test signal closed".into()))
+    }
+  }
+  tokio::time::timeout(Duration::from_secs(10), async {
+    let (left_tx, left_rx) = mpsc::channel(64);
+    let (right_tx, right_rx) = mpsc::channel(64);
+    let left_pipe = Pipe {
+      tx: left_tx,
+      rx: Mutex::new(right_rx),
+    };
+    let right_pipe = Pipe {
+      tx: right_tx,
+      rx: Mutex::new(left_rx),
+    };
+    let mut left = RtcConnection::new(None).await.unwrap();
+    let (offer, channels) = left.offer().await.unwrap();
+    let mut right = RtcConnection::new(None).await.unwrap();
+    let answer = right.answer(offer).await.unwrap();
+    left.apply_answer(answer).await.unwrap();
+    let (left_channels, right_channels) = tokio::join!(
+      negotiate(&mut left, &left_pipe, "test-peer-pair", Some(channels)),
+      negotiate(&mut right, &right_pipe, "test-peer-pair", None),
+    );
+    let left_channels = left_channels.unwrap();
+    let right_channels = right_channels.unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let left_identity = Identity::load_or_create(&directory.path().join("left.key")).unwrap();
+    let right_identity = Identity::load_or_create(&directory.path().join("right.key")).unwrap();
+    let left_auth = PeerIdentity {
+      local: &left_identity,
+      remote_key: right_identity.public_key(),
+      role: Role::Initiator,
+      info_hash,
+      connection_id: "test-peer-pair",
+    };
+    let right_auth = PeerIdentity {
+      local: &right_identity,
+      remote_key: left_identity.public_key(),
+      role: Role::Responder,
+      info_hash,
+      connection_id: "test-peer-pair",
+    };
+    let (a, b) = tokio::join!(
+      left_auth.authenticate(&left, &*left_channels.control),
+      right_auth.authenticate(&right, &*right_channels.control)
+    );
+    a.unwrap();
+    b.unwrap();
+    (
+      PeerSession {
+        peer_id: right_identity.peer_id().clone(),
+        info_hash,
+        connection_id: "test-peer-pair".into(),
+        rtc: left,
+        control: left_channels.control,
+        data: left_channels.data,
+      },
+      PeerSession {
+        peer_id: left_identity.peer_id().clone(),
+        info_hash,
+        connection_id: "test-peer-pair".into(),
+        rtc: right,
+        control: right_channels.control,
+        data: right_channels.data,
+      },
+    )
+  })
+  .await
+  .expect("local test peer negotiation timed out")
 }

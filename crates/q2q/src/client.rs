@@ -2,6 +2,8 @@
 
 pub use crate::control::{ControlError, ControlSession};
 pub use crate::peer::PeerSession;
+pub use crate::publication::Publication;
+pub use crate::transfer::{Transfer, TransferError};
 
 use crate::identity::Identity;
 use crate::publication::{PrepareError, PreparedFile};
@@ -9,6 +11,8 @@ use q2q_core::identity::PeerId;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, atomic::AtomicBool};
+use tokio::sync::OnceCell;
 use url::Url;
 
 /// Start configuring a client. The builder performs no network requests.
@@ -70,23 +74,85 @@ impl Builder {
       track_url,
       storage_dir,
       identity,
+      session: OnceCell::new(),
+      publishing: Arc::new(AtomicBool::new(false)),
     })
   }
 }
 
-/// A local peer. Network sessions and transfers are added in later stages.
+/// A local peer that can publish and download through a shared control session.
 pub struct Client {
   track_url: Url,
   storage_dir: PathBuf,
   identity: Identity,
+  session: OnceCell<Arc<ControlSession>>,
+  publishing: Arc<AtomicBool>,
 }
 
 impl Client {
-  /// Establish an authenticated Track session and a standing Punch Binding.
-  /// The caller keeps the returned session alive and heartbeats it until the
-  /// SDK's managed lifecycle is added with peer transfer.
-  pub async fn connect(&self) -> Result<ControlSession, ControlError> {
-    ControlSession::connect(&self.identity, &self.track_url).await
+  /// Reuse or establish the authenticated Track session and Punch Binding.
+  /// Publication/download handles maintain heartbeats while active; callers
+  /// using this lower-level session alone must drive its heartbeat themselves.
+  pub async fn connect(&self) -> Result<Arc<ControlSession>, ControlError> {
+    self
+      .session
+      .get_or_try_init(|| async {
+        ControlSession::connect(&self.identity, &self.track_url)
+          .await
+          .map(Arc::new)
+      })
+      .await
+      .cloned()
+  }
+
+  /// Publish one local file and maintain its announcement until the handle is
+  /// closed or dropped. This first transfer stage permits one active source
+  /// per client; the same client can download while publishing.
+  pub async fn publish_file(&self, path: impl Into<PathBuf>) -> Result<Publication, TransferError> {
+    let active = crate::publication::ActivePublication::acquire(self.publishing.clone())?;
+    let prepared = self.prepare_file(path).await?;
+    crate::transfer::check_seed(prepared.seed())?;
+    let session = self.connect().await?;
+    Publication::start(prepared, session, active).await
+  }
+
+  /// Start a single-peer download. `wait` succeeds only after every block has
+  /// passed verification; existing destination files are never overwritten.
+  pub async fn download(
+    &self,
+    seed: &q2q_core::seed::Seed,
+    path: impl Into<PathBuf>,
+  ) -> Result<Transfer, TransferError> {
+    crate::transfer::check_seed(seed)?;
+    let path = path.into();
+    if tokio::fs::try_exists(&path).await? {
+      return Err(
+        std::io::Error::new(
+          std::io::ErrorKind::AlreadyExists,
+          "download destination already exists",
+        )
+        .into(),
+      );
+    }
+    let session = self.connect().await?;
+    let seed = seed.clone();
+    let candidates = session.query(&seed.info_hash()).await?;
+    let target = candidates
+      .peers
+      .into_iter()
+      .find(|peer| peer.complete && peer.peer_id != self.peer_id().as_str())
+      .ok_or(TransferError::NoPeers)?;
+    let task = tokio::spawn(async move {
+      let download = async {
+        let peer = session.dial_peer(&target, seed.info_hash()).await?;
+        peer.download_file(seed, path).await
+      };
+      tokio::select! {
+        result = download => result,
+        result = crate::publication::keep_online(&session) => Err(TransferError::Control(result)),
+      }
+    });
+    Ok(Transfer { task: Some(task) })
   }
 
   /// Prepare a local file for seeding without announcing it to the network.

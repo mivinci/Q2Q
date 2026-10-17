@@ -15,7 +15,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use url::Url;
 
 const RPC_VERSION: u32 = 1;
@@ -25,6 +25,7 @@ pub(super) struct PunchBinding {
   punch_id: String,
   endpoint: quinn::Endpoint,
   connection: quinn::Connection,
+  signals: SignalReceiver,
   binding_id: String,
   key: [u8; 32],
   seq: Mutex<u64>,
@@ -59,6 +60,7 @@ impl PunchBinding {
     Ok(Self {
       punch_id: assignment.punch_id.clone(),
       endpoint,
+      signals: SignalReceiver::new(connection.clone()),
       connection,
       binding_id: joined.binding_id,
       key,
@@ -80,7 +82,7 @@ impl PunchBinding {
 
   /// Receive a forwarded signal pushed by Punch on a QUIC unidirectional stream.
   pub(crate) async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
-    read_signal(&self.connection).await
+    self.signals.recv().await
   }
 
   pub(super) async fn heartbeat(&self) -> Result<(), ControlError> {
@@ -126,8 +128,9 @@ impl PunchBinding {
     Ok(())
   }
 
-  pub(super) async fn close(&mut self) -> Result<(), ControlError> {
-    let seq = next_seq(self.seq.get_mut())?;
+  pub(super) async fn close(&self) -> Result<(), ControlError> {
+    let mut last_seq = self.seq.lock().await;
+    let seq = next_seq(&mut last_seq)?;
     let now = q2q_punch::binding::now();
     let request = ExitRequest {
       binding_id: self.binding_id.clone(),
@@ -155,6 +158,7 @@ impl Drop for PunchBinding {
 pub(crate) struct PunchEphemeral {
   endpoint: quinn::Endpoint,
   connection: quinn::Connection,
+  signals: SignalReceiver,
 }
 
 impl PunchEphemeral {
@@ -162,6 +166,7 @@ impl PunchEphemeral {
     let (endpoint, connection) = connect_quic(assignment).await?;
     Ok(Self {
       endpoint,
+      signals: SignalReceiver::new(connection.clone()),
       connection,
     })
   }
@@ -174,7 +179,7 @@ impl PunchEphemeral {
   }
 
   pub(crate) async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
-    read_signal(&self.connection).await
+    self.signals.recv().await
   }
 }
 
@@ -182,6 +187,52 @@ impl Drop for PunchEphemeral {
   fn drop(&mut self) {
     self.connection.close(0u32.into(), b"client dropped");
     self.endpoint.close(0u32.into(), b"client dropped");
+  }
+}
+
+/// Complete each QUIC push outside callers' select loops. Cancelling a receive
+/// must not drop a partly read unidirectional stream and lose its ICE message.
+struct SignalReceiver {
+  messages: Mutex<mpsc::Receiver<Result<SignalRequest, ControlError>>>,
+  reader: tokio::task::JoinHandle<()>,
+}
+
+impl SignalReceiver {
+  fn new(connection: quinn::Connection) -> Self {
+    let (sender, messages) = mpsc::channel(64);
+    let reader = tokio::spawn(async move {
+      loop {
+        let result = read_signal(&connection).await;
+        let failed = result.is_err();
+        if sender.send(result).await.is_err() {
+          break;
+        }
+        if failed {
+          connection.close(0u32.into(), b"invalid signal stream");
+          break;
+        }
+      }
+    });
+    Self {
+      messages: Mutex::new(messages),
+      reader,
+    }
+  }
+
+  async fn recv(&self) -> Result<SignalRequest, ControlError> {
+    self
+      .messages
+      .lock()
+      .await
+      .recv()
+      .await
+      .ok_or_else(|| ControlError::Transport("Punch signal channel closed".into()))?
+  }
+}
+
+impl Drop for SignalReceiver {
+  fn drop(&mut self) {
+    self.reader.abort();
   }
 }
 
@@ -239,10 +290,13 @@ async fn read_signal(connection: &quinn::Connection) -> Result<SignalRequest, Co
     .accept_uni()
     .await
     .map_err(|e| ControlError::Transport(e.to_string()))?;
-  let bytes = stream
-    .read_to_end(MAX_RESPONSE_BYTES)
-    .await
-    .map_err(|e| ControlError::Transport(e.to_string()))?;
+  let bytes = tokio::time::timeout(
+    Duration::from_secs(10),
+    stream.read_to_end(MAX_RESPONSE_BYTES),
+  )
+  .await
+  .map_err(|_| ControlError::Transport("Punch signal stream timed out".into()))?
+  .map_err(|e| ControlError::Transport(e.to_string()))?;
   serde_json::from_slice(&bytes)
     .map_err(|e| ControlError::Protocol(format!("bad forwarded Punch signal: {e}")))
 }
@@ -378,5 +432,81 @@ impl rustls::client::danger::ServerCertVerifier for PinnedKey {
 impl fmt::Display for PinnedKey {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     f.write_str("Punch public key from Track")
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[tokio::test]
+  async fn cancelling_a_signal_wait_preserves_a_partly_received_quic_push() {
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+    let cert = rcgen::CertificateParams::new(Vec::<String>::new())
+      .unwrap()
+      .self_signed(&key)
+      .unwrap();
+    let crypto = rustls::ServerConfig::builder_with_provider(Arc::new(
+      rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+      vec![cert.der().clone()],
+      rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+    )
+    .unwrap();
+    let config = quinn::ServerConfig::with_crypto(Arc::new(
+      quinn::crypto::rustls::QuicServerConfig::try_from(crypto).unwrap(),
+    ));
+    let server = quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let assignment = PunchWire {
+      punch_id: "test-punch".into(),
+      url: format!("quic://{}", server.local_addr().unwrap()),
+      public_key: B64.encode(key.public_key_raw()),
+    };
+    let expected = SignalRequest {
+      kind: q2q_punch::message::SignalType::Candidate,
+      connection_id: "cancel-safe".into(),
+      connect_token: None,
+      sdp: None,
+      candidate: Some("candidate-fragment".into()),
+      reason: None,
+      accept_token: None,
+      signal_key: None,
+    };
+    let bytes = serde_json::to_vec(&expected).unwrap();
+    let (prefix_written, prefix_ready) = tokio::sync::oneshot::channel();
+    let (resume, resumed) = tokio::sync::oneshot::channel();
+    let incoming = server.accept();
+    let sending = async {
+      let connection = incoming.await.unwrap().await.unwrap();
+      let mut stream = connection.open_uni().await.unwrap();
+      stream.write_all(&bytes[..bytes.len() / 2]).await.unwrap();
+      prefix_written.send(()).unwrap();
+      resumed.await.unwrap();
+      stream.write_all(&bytes[bytes.len() / 2..]).await.unwrap();
+      stream.finish().unwrap();
+      connection
+    };
+    let receiving = async {
+      let client = PunchEphemeral::connect(&assignment).await.unwrap();
+      prefix_ready.await.unwrap();
+      assert!(
+        tokio::time::timeout(Duration::from_millis(30), client.recv_signal())
+          .await
+          .is_err()
+      );
+      resume.send(()).unwrap();
+      let received = tokio::time::timeout(Duration::from_secs(2), client.recv_signal())
+        .await
+        .unwrap()
+        .unwrap();
+      assert_eq!(received.connection_id, expected.connection_id);
+      assert_eq!(received.candidate, expected.candidate);
+      client
+    };
+    let (_connection, _client) = tokio::join!(sending, receiving);
   }
 }

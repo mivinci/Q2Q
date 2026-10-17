@@ -12,25 +12,31 @@ use q2q_track::wire::{
 };
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock as SyncRwLock};
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use url::Url;
 
 const SESSION_TTL: u64 = 300;
 
-/// An online control-plane presence. File announcements and WebRTC transfer
-/// will be attached to this session in the next step.
+struct TrackAuth {
+  key: [u8; 32],
+  seq: u64,
+}
+
+/// A shared control-plane presence with serialized Track session rotations.
 pub struct ControlSession {
   http: reqwest::Client,
   identity: Identity,
   track_url: Url,
   peer_id: PeerId,
-  session_key: [u8; 32],
-  track_seq: Mutex<u64>,
+  track_auth: Mutex<TrackAuth>,
   track_expires_at: AtomicU64,
   heartbeat_interval: u32,
-  turn: q2q_track::wire::TurnWire,
-  punch: PunchBinding,
+  turn: RwLock<q2q_track::wire::TurnWire>,
+  assignment: SyncRwLock<q2q_track::wire::PunchWire>,
+  punch: RwLock<Arc<PunchBinding>>,
+  incoming: Mutex<()>,
 }
 
 impl ControlSession {
@@ -64,12 +70,16 @@ impl ControlSession {
       identity: identity.clone(),
       track_url: track_url.clone(),
       peer_id,
-      session_key,
-      track_seq: Mutex::new(0),
+      track_auth: Mutex::new(TrackAuth {
+        key: session_key,
+        seq: 0,
+      }),
       track_expires_at: AtomicU64::new(announced.expires_at),
       heartbeat_interval: announced.heartbeat_interval,
-      turn: announced.turn,
-      punch,
+      turn: RwLock::new(announced.turn),
+      assignment: SyncRwLock::new(announced.punch),
+      punch: RwLock::new(Arc::new(punch)),
+      incoming: Mutex::new(()),
     })
   }
 
@@ -77,8 +87,13 @@ impl ControlSession {
     &self.peer_id
   }
 
-  pub fn punch_id(&self) -> &str {
-    self.punch.punch_id()
+  pub fn punch_id(&self) -> String {
+    self
+      .assignment
+      .read()
+      .unwrap_or_else(|e| e.into_inner())
+      .punch_id
+      .clone()
   }
 
   pub fn heartbeat_interval(&self) -> u32 {
@@ -96,24 +111,28 @@ impl ControlSession {
     target: &q2q_track::wire::PeerWire,
     info_hash: [u8; 32],
   ) -> Result<PeerSession, ControlError> {
-    peer::dial(&self.identity, target, info_hash, &self.turn).await
+    let turn = self.turn.read().await.clone();
+    peer::dial(&self.identity, target, info_hash, &turn).await
   }
 
   /// Accept the next request for a specific content hash on this Punch Binding.
   pub async fn accept_peer(&self, info_hash: [u8; 32]) -> Result<PeerSession, ControlError> {
-    peer::accept(&self.identity, &self.punch, info_hash, &self.turn).await
+    let _incoming = self.incoming.lock().await;
+    let punch = self.punch.read().await.clone();
+    let turn = self.turn.read().await.clone();
+    peer::accept(&self.identity, &punch, info_hash, &turn).await
   }
 
   /// Refresh both sessions. Sequence numbers are consumed before I/O so a
   /// reply lost after server acceptance cannot cause a replay on retry.
   pub async fn heartbeat(&self) -> Result<(), ControlError> {
-    let mut track_seq = self.track_seq.lock().await;
-    let seq = next_seq(&mut track_seq)?;
+    let mut auth = self.track_auth.lock().await;
+    let seq = next_seq(&mut auth.seq)?;
     let now = q2q_track::state::now();
     let request = HeartbeatRequest {
       seq,
       timestamp: now,
-      mac: B64.encode(mac_bytes(&self.session_key, &self.peer_id, seq, now)),
+      mac: B64.encode(mac_bytes(&auth.key, &self.peer_id, seq, now)),
     };
     let url = endpoint(
       &self.track_url,
@@ -131,15 +150,15 @@ impl ControlSession {
     self
       .track_expires_at
       .store(heartbeat.expires_at, Ordering::Release);
-    drop(track_seq);
-    self.punch.heartbeat().await
+    drop(auth);
+    self.punch.read().await.clone().heartbeat().await
   }
 
   /// Query the current Track index. The hash must be the 32 raw bytes of an
   /// info hash, not a caller-chosen filename.
   pub async fn query(&self, info_hash: &[u8; 32]) -> Result<QueryResponse, ControlError> {
-    let mut track_seq = self.track_seq.lock().await;
-    let seq = next_seq(&mut track_seq)?;
+    let mut auth = self.track_auth.lock().await;
+    let seq = next_seq(&mut auth.seq)?;
     let now = q2q_track::state::now();
     let hash = format!("sha256:{}", hex(info_hash));
     let mut url = endpoint(&self.track_url, &["files", &hash, "peers"])?;
@@ -150,7 +169,7 @@ impl ControlSession {
       .append_pair("timestamp", &now.to_string())
       .append_pair(
         "mac",
-        &B64.encode(mac_bytes(&self.session_key, &self.peer_id, seq, now)),
+        &B64.encode(mac_bytes(&auth.key, &self.peer_id, seq, now)),
       );
     let response = self
       .http
@@ -163,8 +182,82 @@ impl ControlSession {
   }
 
   /// Leave the Punch Binding and close the authenticated QUIC channel.
-  pub async fn close(mut self) -> Result<(), ControlError> {
-    self.punch.close().await
+  pub async fn close(&self) -> Result<(), ControlError> {
+    self.punch.read().await.clone().close().await
+  }
+
+  /// Update complete holdings. Track rotates its session key on every announce;
+  /// serialize the rotation with query/heartbeat and adopt the new key first.
+  pub(crate) async fn update_files(
+    self: &Arc<Self>,
+    add: &[[u8; 32]],
+    del: &[[u8; 32]],
+  ) -> Result<u64, ControlError> {
+    let session = self.clone();
+    let add = add.to_vec();
+    let del = del.to_vec();
+    // Once submitted, a rotating announce must adopt its returned key even if
+    // its caller is cancelled. The next query/withdrawal waits for this task's
+    // auth lock rather than racing a server-side rotation it did not observe.
+    tokio::spawn(async move { session.update_files_inner(&add, &del).await })
+      .await
+      .map_err(|e| ControlError::Protocol(format!("announcement task failed: {e}")))?
+  }
+
+  async fn update_files_inner(
+    &self,
+    add: &[[u8; 32]],
+    del: &[[u8; 32]],
+  ) -> Result<u64, ControlError> {
+    let mut auth = self.track_auth.lock().await;
+    let hashes = |list: &[[u8; 32]]| {
+      list
+        .iter()
+        .map(|hash| format!("sha256:{}", hex(hash)))
+        .collect::<Vec<_>>()
+    };
+    let add = hashes(add);
+    let request = AnnounceRequest {
+      token: self
+        .identity
+        .ticket(Audience::Track, q2q_track::state::now(), None),
+      complete: add.clone(),
+      add,
+      del: hashes(del),
+      ttl: SESSION_TTL,
+    };
+    let url = endpoint(&self.track_url, &["peers", self.peer_id.as_str(), "files"])?;
+    let response = self
+      .http
+      .put(url)
+      .json(&request)
+      .send()
+      .await
+      .map_err(ControlError::Http)?;
+    let announced: AnnounceResponse = expect_success(response, "Track")
+      .await?
+      .json()
+      .await
+      .map_err(ControlError::Http)?;
+    auth.key = decode_key(&announced.session_key, "Track session_key")?;
+    auth.seq = 0;
+    self
+      .track_expires_at
+      .store(announced.expires_at, Ordering::Release);
+    let changed = {
+      let current = self.assignment.read().unwrap_or_else(|e| e.into_inner());
+      current.punch_id != announced.punch.punch_id
+        || current.url != announced.punch.url
+        || current.public_key != announced.punch.public_key
+    };
+    if changed {
+      let replacement = Arc::new(PunchBinding::connect(&self.identity, &announced.punch).await?);
+      let previous = std::mem::replace(&mut *self.punch.write().await, replacement);
+      *self.assignment.write().unwrap_or_else(|e| e.into_inner()) = announced.punch;
+      let _ = previous.close().await;
+    }
+    *self.turn.write().await = announced.turn;
+    Ok(announced.expires_at)
   }
 }
 

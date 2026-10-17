@@ -76,7 +76,7 @@ impl PeerIdentity<'_> {
       .label()
       .await
       .map_err(|e| auth_error(e.to_string()))?
-      != "q2q-blocks"
+      != "q2q-control"
       || !channel
         .ordered()
         .await
@@ -93,7 +93,7 @@ impl PeerIdentity<'_> {
         .is_some()
     {
       return Err(auth_error(
-        "expected the reliable ordered q2q-blocks channel",
+        "expected the reliable ordered q2q-control channel",
       ));
     }
     let (local_fingerprint, remote_fingerprint) = rtc

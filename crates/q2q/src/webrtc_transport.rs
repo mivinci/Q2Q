@@ -39,8 +39,14 @@ pub(crate) enum RtcEvent {
   State(RTCPeerConnectionState),
 }
 
+pub(crate) struct PeerChannels {
+  pub control: Arc<dyn DataChannel>,
+  pub data: Arc<dyn DataChannel>,
+}
+
 pub(crate) struct RtcConnection {
   peer: Arc<dyn PeerConnection>,
+  local_data: Arc<dyn DataChannel>,
   candidates: mpsc::UnboundedReceiver<RTCIceCandidateInit>,
   channels: mpsc::UnboundedReceiver<Arc<dyn DataChannel>>,
   states: mpsc::UnboundedReceiver<RTCPeerConnectionState>,
@@ -60,6 +66,7 @@ impl RtcConnection {
       }]);
     }
     let peer = PeerConnectionBuilder::new()
+      .with_data_channel_send_buffer_limit(256 * 1024)
       .with_configuration(config.build())
       .with_handler(Arc::new(Events {
         candidates: candidate_tx,
@@ -70,20 +77,36 @@ impl RtcConnection {
       .build()
       .await
       .map_err(|e| e.to_string())?;
+    // Reserve stream 1 for pieces on both peers. Keep the reliable control
+    // channel in-band: its DCEP ACK ensures the remote channel is ready before
+    // the first identity message. rtc 0.21.1 loses retransmission metadata for
+    // remotely announced partial-reliability channels, hence this data channel
+    // is configured locally at both ends instead.
+    let data = peer
+      .create_data_channel(
+        "q2q-data",
+        Some(RTCDataChannelInit {
+          negotiated: Some(1),
+          ordered: false,
+          max_retransmits: Some(0),
+          ..Default::default()
+        }),
+      )
+      .await
+      .map_err(|e| e.to_string())?;
     Ok(Self {
       peer: Arc::new(peer),
+      local_data: data,
       candidates,
       channels,
       states,
     })
   }
 
-  pub(crate) async fn offer(
-    &self,
-  ) -> Result<(RTCSessionDescription, Arc<dyn DataChannel>), String> {
-    let channel = self
+  pub(crate) async fn offer(&self) -> Result<(RTCSessionDescription, PeerChannels), String> {
+    let control = self
       .peer
-      .create_data_channel("q2q-blocks", Some(RTCDataChannelInit::default()))
+      .create_data_channel("q2q-control", Some(RTCDataChannelInit::default()))
       .await
       .map_err(|e| e.to_string())?;
     let offer = self
@@ -96,7 +119,17 @@ impl RtcConnection {
       .set_local_description(offer.clone())
       .await
       .map_err(|e| e.to_string())?;
-    Ok((offer, channel))
+    Ok((
+      offer,
+      PeerChannels {
+        control,
+        data: self.local_data.clone(),
+      },
+    ))
+  }
+
+  pub(crate) fn data_channel(&self) -> Arc<dyn DataChannel> {
+    self.local_data.clone()
   }
 
   pub(crate) async fn answer(
