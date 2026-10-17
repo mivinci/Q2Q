@@ -174,3 +174,11 @@ Rust SDK 的总进度及逐 Peer 字节用于客户端展示和故障分析。�
 - `npm run docs:build` 通过；设计基准文件未修改。
 - `git diff --check` 通过。未新增或运行行为测试，未部署到 Cloudflare，也未创建远端数据库/存储资源。
 - 安装审计仍提示既有文档依赖链（VitePress/Vite/esbuild、Mermaid/KaTeX）的问题；本轮没有升级文档技术栈。
+
+### 平台国际化基础
+
+- 已支持简体中文、英文，页面、元信息、无障碍标签及外观设置统一使用类型约束的文案字典。
+- 首次按浏览器 Accept-Language 权重选择，未匹配时使用英文；手动切换后保存一年 Cookie，SSR 首屏与 HTML lang 同步。
+- 桌面和窄屏提供语言切换，原生 POST 表单支持无 JavaScript 使用；语言状态仅存在于当前请求，避免 SSR 用户之间互相影响。
+- 账号语言偏好同步、更多语言及业务日期/容量格式化随相应功能接入。
+- 本轮 `platform:check` 通过（0 错误、0 警告），`platform:build` 和 `git diff --check` 通过；未运行行为测试或浏览器交互验证。

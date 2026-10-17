@@ -8,17 +8,22 @@
   import ThemeToggle from '#lib/components/theme-toggle.svelte';
   import { Button } from '#lib/components/ui/button/index.js';
 
+  import { page } from '$app/state';
+  import { messages } from '#lib/i18n.js';
+  import LanguageToggle from '#lib/components/language-toggle.svelte';
+  const text = $derived(messages[page.data.locale]);
+
   const navigation = [
-    { label: '内容库', icon: FolderClosed, active: true },
-    { label: '存储空间', icon: HardDrive, active: false },
-    { label: '做种节点', icon: Radio, active: false },
-    { label: '用量与套餐', icon: ChartNoAxesColumn, active: false }
-  ];
+    { label: 'library', icon: FolderClosed, active: true },
+    { label: 'storage', icon: HardDrive, active: false },
+    { label: 'nodes', icon: Radio, active: false },
+    { label: 'usage', icon: ChartNoAxesColumn, active: false }
+  ] as const;
 </script>
 
 <svelte:head>
-  <title>内容库 · Q2Q</title>
-  <meta name="description" content="Q2Q 内容分发平台，管理文件、来源与分发。" />
+  <title>{text.library} · Q2Q</title>
+  <meta name="description" content={text.metaDescription} />
 </svelte:head>
 
 <div class="min-h-svh bg-background text-foreground sm:grid sm:grid-cols-[190px_minmax(0,1fr)]">
@@ -28,8 +33,8 @@
       <span>Q2Q</span>
     </div>
     <div>
-      <p class="mb-2 hidden px-3 text-xs text-muted-foreground sm:block">工作空间</p>
-      <nav aria-label="工作空间导航" class="flex gap-1 sm:flex-col">
+      <p class="mb-2 hidden px-3 text-xs text-muted-foreground sm:block">{text.workspace}</p>
+      <nav aria-label={text.navigation} class="flex gap-1 sm:flex-col">
         {#each navigation as item}
           <Button
             variant="ghost"
@@ -40,41 +45,43 @@
             disabled={!item.active}
           >
             <item.icon class="hidden size-4 sm:block" aria-hidden="true" />
-            <span class="text-xs">{item.label}</span>
+            <span class="text-xs">{text[item.label]}</span>
           </Button>
         {/each}
       </nav>
     </div>
     <div class="hidden px-2 sm:mt-auto sm:block">
-      <p class="mb-2 text-xs text-muted-foreground">外观</p>
+      <p class="mb-2 text-xs text-muted-foreground">{text.appearance}</p>
       <ThemeToggle />
+      <p class="mt-5 mb-2 text-xs text-muted-foreground">{text.language}</p>
+      <LanguageToggle />
     </div>
   </aside>
   <main class="min-w-0">
-    <header class="flex h-16 items-center justify-between gap-4 border-b px-4 sm:px-7">
+    <header class="flex min-h-16 items-center justify-between gap-4 border-b px-4 sm:px-7">
       <p class="flex gap-2 text-xs text-muted-foreground">
-        <span>Q2Q</span><span aria-hidden="true">/</span><span class="text-foreground">内容库</span>
+        <span>Q2Q</span><span aria-hidden="true">/</span><span class="text-foreground">{text.library}</span>
       </p>
-      <div class="sm:hidden"><ThemeToggle /></div>
+      <div class="flex flex-wrap justify-end gap-2 sm:hidden"><LanguageToggle /><ThemeToggle /></div>
     </header>
     <div class="px-4 py-8 sm:px-7">
       <div class="mb-8 flex items-center justify-between gap-4">
         <div>
-          <h1 class="text-2xl font-medium tracking-tight">内容库</h1>
-          <p class="mt-1 text-xs text-muted-foreground">管理文件、来源与分发。</p>
+          <h1 class="text-2xl font-medium tracking-tight">{text.library}</h1>
+          <p class="mt-1 text-xs text-muted-foreground">{text.description}</p>
         </div>
-        <Button disabled><Plus class="size-4" aria-hidden="true" />上传文件</Button>
+        <Button disabled><Plus class="size-4" aria-hidden="true" />{text.upload}</Button>
       </div>
-      <section aria-label="内容列表">
+      <section aria-label={text.contentList}>
         <div class="grid grid-cols-[1fr_auto] border-b pb-3 text-xs text-muted-foreground sm:grid-cols-[2fr_1fr_1fr_1fr]">
-          <span>名称</span><span>可用来源</span><span class="hidden sm:block">大小</span><span class="hidden sm:block">最近更新</span>
+          <span>{text.name}</span><span>{text.sources}</span><span class="hidden sm:block">{text.size}</span><span class="hidden sm:block">{text.updated}</span>
         </div>
         <div class="flex min-h-80 flex-col items-center justify-center gap-3 border-b py-12 text-center">
           <FolderClosed class="size-8 text-muted-foreground" strokeWidth={1.25} aria-hidden="true" />
-          <h2 class="text-sm font-medium">还没有内容</h2>
-          <p class="max-w-64 text-xs text-muted-foreground">连接工作空间后，在这里管理你的文件和分发来源。</p>
+          <h2 class="text-sm font-medium">{text.empty}</h2>
+          <p class="max-w-64 text-xs text-muted-foreground">{text.emptyDescription}</p>
         </div>
-        <p class="mt-3 text-xs text-muted-foreground">0 个内容</p>
+        <p class="mt-3 text-xs text-muted-foreground">{text.contentCount(0)}</p>
       </section>
     </div>
   </main>

@@ -51,3 +51,11 @@ npx shadcn-svelte@latest add dialog --cwd apps/platform
 ```
 
 当前包含空状态页面骨架、shadcn Button、Lucide 以及浅色/深色/跟随系统主题。主题默认跟随系统，使用 mode-watcher 保存选择并初始化首屏外观；颜色和系统字体对照设计基准。内容、上传、账号、存储和计量尚未接通，未开放操作暂时禁用。
+
+## 国际化
+
+当前支持简体中文（zh-CN）和英文（en）。首次访问按 Accept-Language 的权重选择支持的语言，未匹配时使用英文；手动选择后将偏好保存到一年有效的 HttpOnly Cookie。
+
+文案集中在 `src/lib/i18n.ts`，两种语言共享 TypeScript 键约束，数量通过语言对应的 Intl 格式化。服务端 hook 在每次请求内选择语言，layout 将语言传给组件，HTML lang、Content-Language、页面标题和无障碍标签保持一致；不使用共享的可变服务端语言状态。语言切换使用 POST 表单，关闭 JavaScript 也可生效。
+
+新增文案时同步补齐两个字典；新增语言时同时更新 Locale 列表和浏览器语言匹配规则。日期、大小和用量等业务格式化在相应功能接入时使用当前 locale。

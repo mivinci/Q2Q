@@ -5,14 +5,18 @@
   import { setMode, userPrefersMode } from 'mode-watcher';
   import { Button } from '#lib/components/ui/button/index.js';
 
+  import { page } from '$app/state';
+  import { messages } from '#lib/i18n.js';
+  const text = $derived(messages[page.data.locale]);
+
   const modes = [
-    { value: 'light', label: '浅色', icon: Sun },
-    { value: 'dark', label: '深色', icon: Moon },
-    { value: 'system', label: '跟随系统', icon: Monitor }
+    { value: 'light', label: 'light', icon: Sun },
+    { value: 'dark', label: 'dark', icon: Moon },
+    { value: 'system', label: 'system', icon: Monitor }
   ] as const;
 </script>
 
-<div role="group" aria-label="外观设置" class="flex rounded-lg bg-border/60 p-0.5">
+<div role="group" aria-label={text.appearanceSettings} class="flex rounded-lg bg-border/60 p-0.5">
   {#each modes as mode}
     <Button
       variant="ghost"
@@ -20,7 +24,7 @@
       class={userPrefersMode.current === mode.value
         ? 'flex-1 bg-background text-foreground shadow-sm hover:bg-background'
         : 'flex-1 text-muted-foreground'}
-      aria-label={mode.label}
+      aria-label={text[mode.label]}
       aria-pressed={userPrefersMode.current === mode.value}
       onclick={() => setMode(mode.value)}
     >

@@ -15,6 +15,7 @@
 - 开放平台使用 SvelteKit，部署到 Cloudflare Workers，优先使用 Cloudflare 配套服务；Track、Punch、STUN/TURN 等保留为独立的原生集群部署。
 - 桌面端使用 Tauri，Rust 应用层复用 q2q SDK，界面使用 Svelte。移动端框架待定，可以后续单独使用 Flutter；不因跨端 UI 而假设 SDK、文件访问和后台做种已跨端。
 - 平台 Web 与桌面 Svelte 界面统一采用 shadcn-svelte 和 Lucide；视觉尽量贴近 Apple 原生，主题支持浅色、深色及跟随系统，保存用户偏好，默认跟随系统。
+- 平台支持国际化，当前提供简体中文和英文；文案集中维护，语言切换保存偏好，服务端首屏与客户端使用一致语言。
 - 用户已确认平台界面原型，基准保存在 [apps/platform/design/README.md](../apps/platform/design/README.md)。实现须对照浅色、深色与窄屏版本；整体布局或视觉调整先与用户确认并同步基准。
 - 大致方案与待细化边界见 [platform-technical-plan.md](../todos/platform-technical-plan.md)。平台工程已初始化，业务接线和桌面 GUI 尚未实现；不提前固定所有服务、目录和桥接接口。
 
