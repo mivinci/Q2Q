@@ -21,16 +21,14 @@ const PAGES = process.argv.slice(2).length
   ? process.argv.slice(2)
   : [
       BASE,
-      BASE + 'guide/',
+      BASE + 'guide/what-is-q2q.html',
       BASE + 'guide/deploy.html',
-      BASE + 'guide/track.html',
-      BASE + 'guide/punch.html',
+      BASE + 'guide/transport.html',
       BASE + 'zh/',
-      BASE + 'zh/guide/',
       BASE + 'zh/spec.html',
     ];
 // 首页是 layout:home，中文指南页目前是占位——两者都没有 h2/h3 锚点
-const NO_ANCHORS = [BASE, BASE + 'zh/', BASE + 'zh/guide/'];
+const NO_ANCHORS = [BASE, BASE + 'zh/'];
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',

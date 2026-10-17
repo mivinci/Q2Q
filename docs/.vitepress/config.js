@@ -5,11 +5,68 @@ import { mermaidBlock } from './mermaid.js';
 // document is still Chinese-only, so it sits in the Chinese locale and is not
 // linked from either nav until it is translated.
 const guide = (prefix) => [
-  { text: 'Overview', link: `${prefix}guide/` },
+  { text: 'What is Q2Q?', link: `${prefix}guide/what-is-q2q` },
   { text: 'Deploy', link: `${prefix}guide/deploy` },
   { text: 'Track', link: `${prefix}guide/track` },
   { text: 'Punch', link: `${prefix}guide/punch` },
 ];
+
+// 侧边栏用数组而不是按路径 keyed，让整站共用一份目录，
+// 跟 VitePress 官网一样；首页是 layout:home，本来就不显示侧边栏。
+// collapsed: false = 默认展开、带折叠箭头；不写则永远展开、没有箭头。
+const sidebar = (prefix, t) => [
+  {
+    text: t.intro,
+    collapsed: false,
+    items: [{ text: t.overview, link: `${prefix}guide/what-is-q2q` }],
+  },
+  {
+    text: t.planes,
+    collapsed: false,
+    items: [
+      { text: t.deploy, link: `${prefix}guide/deploy` },
+      { text: 'Track', link: `${prefix}guide/track` },
+      { text: 'Punch', link: `${prefix}guide/punch` },
+    ],
+  },
+  {
+    text: t.data,
+    collapsed: false,
+    items: [
+      { text: t.transport, link: `${prefix}guide/transport` },
+      { text: t.wire, link: `${prefix}guide/wire` },
+      { text: t.sched, link: `${prefix}guide/scheduling` },
+      { text: t.cdn, link: `${prefix}guide/cdn` },
+    ],
+  },
+  { text: t.api, link: `${prefix}api/` },
+];
+
+const en = {
+  intro: 'Introduction',
+  overview: 'What is Q2Q?',
+  planes: 'Control Plane',
+  deploy: 'Deploy',
+  data: 'Data Plane',
+  transport: 'Transport',
+  wire: 'Wire protocol',
+  sched: 'Scheduling',
+  cdn: 'CDN fallback',
+  api: 'API',
+};
+
+const zh = {
+  intro: '介绍',
+  overview: 'Q2Q 是什么？',
+  planes: '控制面',
+  deploy: '部署',
+  data: '数据面',
+  transport: '传输层',
+  wire: '消息编码',
+  sched: '调度',
+  cdn: 'CDN 回退',
+  api: 'API 参考',
+};
 
 export default defineConfig({
   // 部署在 le0.me/Q2Q/ 子路径下，资源链接要带这个前缀，否则全 404
@@ -19,6 +76,12 @@ export default defineConfig({
   srcDir: '.',
   outDir: '.vitepress/dist',
   cleanUrls: true,
+
+  // English sources live under en/ but keep the site root as their URL, so
+  // English stays the default locale; en/ is a directory, not a locale.
+  rewrites: {
+    'en/:rest*': ':rest*',
+  },
 
   markdown: {
     config: md => md.use(mermaidBlock),
@@ -53,7 +116,7 @@ export default defineConfig({
         nav: [
           {
             text: 'Guide',
-            link: '/guide/',
+            link: '/guide/what-is-q2q',
             activeMatch: '/guide/',
             items: guide('/'),
           },
@@ -66,10 +129,7 @@ export default defineConfig({
           text: 'Edit this page on GitHub',
         },
 
-        sidebar: {
-          '/guide/': [{ text: 'Guide', items: guide('/') }],
-          '/api/': [{ text: 'API', items: [{ text: 'Reference', link: '/api/' }] }],
-        },
+        sidebar: sidebar('/', en),
 
         footer: {
           message: 'Work in progress',
@@ -84,10 +144,10 @@ export default defineConfig({
         nav: [
           {
             text: '指南',
-            link: '/zh/guide/',
+            link: '/zh/guide/what-is-q2q',
             activeMatch: '/zh/guide/',
             items: [
-              { text: '总览', link: '/zh/guide/' },
+              { text: 'Q2Q 是什么？', link: '/zh/guide/what-is-q2q' },
               { text: '部署', link: '/zh/guide/deploy' },
               { text: 'Track', link: '/zh/guide/track' },
               { text: 'Punch', link: '/zh/guide/punch' },
@@ -101,22 +161,7 @@ export default defineConfig({
           text: '在 GitHub 上编辑此页',
         },
 
-        sidebar: {
-          '/zh/guide/': [
-            {
-              text: '指南',
-              items: [
-                { text: '总览', link: '/zh/guide/' },
-                { text: '部署', link: '/zh/guide/deploy' },
-                { text: 'Track', link: '/zh/guide/track' },
-                { text: 'Punch', link: '/zh/guide/punch' },
-              ],
-            },
-          ],
-          '/zh/api/': [
-            { text: 'API 参考', items: [{ text: '概览', link: '/zh/api/' }] },
-          ],
-        },
+        sidebar: sidebar('/zh/', zh),
 
         footer: {
           message: '设计稿，随时会改',

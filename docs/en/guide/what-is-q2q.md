@@ -1,4 +1,4 @@
-# Overview
+# What is Q2Q
 
 Q2Q is a framework for moving large files and streams between peers, with a CDN
 as the fallback rather than the primary path. Three kinds of programs take part:
@@ -14,37 +14,52 @@ and set up a connection, but never carry file data and never see the content.
 
 The two planes are independent, and both are built on the same network-free core:
 
-```mermaid
-flowchart TB
-  subgraph cp["Control plane — discovery and permission"]
-    direction LR
-    tr["Track<br/>REST · online and file index"]
-    pu["Punch<br/>QUIC · bindings and signalling"]
-    tu["STUN / TURN<br/>coturn · not built here"]
-  end
-  subgraph dp["Data plane — block transfer"]
-    direction LR
-    ca["Client A<br/>downloader"] <-->|"WebRTC · block / piece"| cb["Client B<br/>seeder"]
-  end
-  subgraph core["q2q-core — network-free, shared by both planes"]
-    direction LR
-    idm["identity"]
-    sd["seed"]
-    mk["merkle"]
-    st["store / cache"]
-  end
-```
+<img class="only-light" src="./architecture-light.svg" alt="Q2Q architecture: control plane and data plane" width="680" />
+<img class="only-dark" src="./architecture-dark.svg" alt="Q2Q architecture: control plane and data plane" width="680" />
 
 Peers then talk to those servers like this:
 
 ```mermaid
-flowchart LR
-  A[Peer A] -->|announce / query| T[Track]
-  B[Peer B] -->|announce / heartbeat| T
-  A -->|connect / offer| P[Punch]
-  B -->|join / heartbeat| P
-  A <-->|DataChannel| B
-  A -->|CDN| C[(Origin)]
+sequenceDiagram
+    autonumber
+    participant A as Peer A
+    participant T as Track
+    participant PB as Punch B
+    participant B as Peer B
+    participant C as CDN / Origin
+
+    B->>T: announce (self-signed ticket with pub)
+    T-->>B: session_key, Punch B address and public key
+    B->>PB: join (join ticket + signature)
+    PB-->>B: binding_id, binding_key, expires_at
+
+    A->>T: query (info_hash)
+    T-->>A: B peer_id, public key, Punch B address
+    Note over T,A: no addresses, no candidates, no credentials
+
+    A->>PB: connect (ticket: tgt=B, ih, cid)
+    PB->>B: connect (same ticket)
+    B-->>PB: accept
+    PB-->>A: accepted
+
+    A->>PB: offer (SDP + ICE candidates)
+    PB->>B: offer
+    B->>PB: answer (SDP + ICE candidates)
+    PB-->>A: answer
+
+    A<<->>B: ICE checks + DTLS handshake
+    Note over A,B: DTLS fingerprint == the one carried in signalling
+
+    A->>B: bitfield, request (block_index, count)
+    B-->>A: piece × N (1024 B each, unreliable)
+    Note over A: proof vs info.root → verified → broadcast have
+
+    alt punch fails or a block is slow
+        A->>T: relay_credentials (token)
+        T-->>A: short-lived TURN credential
+        A->>C: HTTP Range (block-aligned)
+        C-->>A: bytes + leaf_hashes
+    end
 ```
 
 ## How a download happens
