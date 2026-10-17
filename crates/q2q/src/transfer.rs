@@ -1,4 +1,4 @@
-//! Single-peer block transfer with bounded buffering and selective piece retry.
+//! Verified block transfer with bounded buffering and selective piece retry.
 
 use crate::control::ControlError;
 use crate::peer::PeerSession;
@@ -93,6 +93,67 @@ impl Drop for Transfer {
     if let Some(task) = &self.task {
       task.abort();
     }
+  }
+}
+
+pub(crate) async fn create_destination(
+  seed: &Seed,
+  path: &Path,
+) -> Result<Arc<Mutex<FileStore>>, TransferError> {
+  let destination = path.to_path_buf();
+  let length = seed.info.length;
+  let block_size = seed.info.block_size;
+  tokio::task::spawn_blocking(move || {
+    let file = std::fs::OpenOptions::new()
+      .write(true)
+      .create_new(true)
+      .open(&destination)?;
+    file.set_len(length)?;
+    Ok(Arc::new(Mutex::new(FileStore::open(
+      destination,
+      length,
+      block_size,
+    )?)))
+  })
+  .await?
+}
+
+pub(crate) fn destination_complete(store: &Mutex<FileStore>) -> Result<bool, TransferError> {
+  let store = store
+    .lock()
+    .map_err(|_| protocol("destination lock poisoned"))?;
+  for index in 0..store.block_count() {
+    if store.state(index)? != q2q_core::block::BlockState::Verified {
+      return Ok(false);
+    }
+  }
+  Ok(true)
+}
+
+pub(crate) async fn sync_destination(path: &Path) -> Result<(), TransferError> {
+  let path = path.to_path_buf();
+  tokio::task::spawn_blocking(move || {
+    std::fs::OpenOptions::new()
+      .write(true)
+      .open(path)?
+      .sync_all()
+  })
+  .await??;
+  Ok(())
+}
+
+impl TransferError {
+  pub(crate) fn peer_retryable(&self) -> bool {
+    matches!(
+      self,
+      Self::Control(_)
+        | Self::Wire(_)
+        | Self::Protocol(_)
+        | Self::Closed
+        | Self::Timeout
+        | Self::Rejected(_)
+        | Self::Store(StoreError::RootMismatch)
+    )
   }
 }
 
@@ -254,11 +315,32 @@ impl PeerSession {
     if &seed.info_hash() != self.info_hash() {
       return Err(protocol("seed belongs to another session"));
     }
+    let path = path.as_ref().to_path_buf();
+    let store = create_destination(&seed, &path).await?;
+    self.download_into(&seed, store).await?;
+    sync_destination(&path).await?;
+    Ok(path)
+  }
+
+  /// Continue an in-memory transfer on another authenticated peer. Only blocks
+  /// verified during this transfer are skipped; persisted flags are not trusted.
+  pub(crate) async fn download_into(
+    self,
+    seed: &Seed,
+    store: Arc<Mutex<FileStore>>,
+  ) -> Result<(), TransferError> {
+    if &seed.info_hash() != self.info_hash() {
+      return Err(protocol("seed belongs to another session"));
+    }
     let count = seed.info.leaf_count();
+    let bits = store
+      .lock()
+      .map_err(|_| protocol("destination lock poisoned"))?
+      .verified_bitfield();
     send(
       &*self.control,
       Control::Bitfield {
-        bits: B64.encode(vec![0u8; count.div_ceil(8)]),
+        bits: B64.encode(bits),
       },
     )
     .await?;
@@ -266,20 +348,16 @@ impl PeerSession {
     if (0..count).any(|i| available[i / 8] & (1 << (7 - i % 8)) == 0) {
       return Err(protocol("peer does not hold the complete file"));
     }
-    let path = path.as_ref().to_path_buf();
-    let destination = path.clone();
-    let length = seed.info.length;
-    let block_size = seed.info.block_size;
-    let mut store = tokio::task::spawn_blocking(move || {
-      let file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&destination)?;
-      file.set_len(length)?;
-      FileStore::open(destination, length, block_size).map_err(TransferError::Store)
-    })
-    .await??;
     for index in 0..count {
+      let length = {
+        let store = store
+          .lock()
+          .map_err(|_| protocol("destination lock poisoned"))?;
+        if store.state(index)? == q2q_core::block::BlockState::Verified {
+          continue;
+        }
+        store.block_len(index)?
+      };
       send(
         &*self.control,
         Control::Request {
@@ -288,17 +366,24 @@ impl PeerSession {
         },
       )
       .await?;
-      let length = store.block_len(index)?;
       let (bytes, proof) = self.receive_block(index, length).await?;
       let root = seed.info.root;
-      store = tokio::task::spawn_blocking(move || {
+      // Reject untrusted data before it can overwrite the destination.
+      if !merkle::verify(&bytes, index, count, &proof, &root) {
+        return Err(TransferError::Store(StoreError::RootMismatch));
+      }
+      let destination = store.clone();
+      tokio::task::spawn_blocking(move || {
+        let mut store = destination
+          .lock()
+          .map_err(|_| protocol("destination lock poisoned"))?;
         for (piece, data) in bytes.chunks(PIECE_SIZE).enumerate() {
           store.write_piece(index, piece, data)?;
         }
         store.verify(index, Some(&proof), &root)?;
         store.save_progress()?;
         store.save_leaves(&root)?;
-        Ok::<_, TransferError>(store)
+        Ok::<_, TransferError>(())
       })
       .await??;
       send(
@@ -316,15 +401,7 @@ impl PeerSession {
       )
       .await?;
     }
-    let sync_path = path.clone();
-    tokio::task::spawn_blocking(move || {
-      std::fs::OpenOptions::new()
-        .write(true)
-        .open(sync_path)?
-        .sync_all()
-    })
-    .await??;
-    Ok(path)
+    Ok(())
   }
 
   async fn receive_block(

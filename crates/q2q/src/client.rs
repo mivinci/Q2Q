@@ -116,7 +116,8 @@ impl Client {
     Publication::start(prepared, session, active).await
   }
 
-  /// Start a single-peer download. `wait` succeeds only after every block has
+  /// Download from complete peers in Track order, switching on peer failure.
+  /// `wait` succeeds only after every block has
   /// passed verification; existing destination files are never overwritten.
   pub async fn download(
     &self,
@@ -137,15 +138,60 @@ impl Client {
     let session = self.connect().await?;
     let seed = seed.clone();
     let candidates = session.query(&seed.info_hash()).await?;
-    let target = candidates
+    let targets: Vec<_> = candidates
       .peers
       .into_iter()
-      .find(|peer| peer.complete && peer.peer_id != self.peer_id().as_str())
-      .ok_or(TransferError::NoPeers)?;
+      .filter(|peer| peer.complete && peer.peer_id != self.peer_id().as_str())
+      .collect();
+    if targets.is_empty() {
+      return Err(TransferError::NoPeers);
+    }
     let task = tokio::spawn(async move {
       let download = async {
-        let peer = session.dial_peer(&target, seed.info_hash()).await?;
-        peer.download_file(seed, path).await
+        let mut store = None;
+        let mut last_error = TransferError::NoPeers;
+        for target in targets {
+          let peer = match tokio::time::timeout(
+            std::time::Duration::from_secs(45),
+            session.dial_peer(&target, seed.info_hash()),
+          )
+          .await
+          {
+            Ok(Ok(peer)) => peer,
+            Ok(Err(error)) => {
+              last_error = error.into();
+              continue;
+            }
+            Err(_) => {
+              last_error = TransferError::Timeout;
+              continue;
+            }
+          };
+          let destination = match &store {
+            Some(store) => Arc::clone(store),
+            None => {
+              let destination = crate::transfer::create_destination(&seed, &path).await?;
+              store = Some(destination.clone());
+              destination
+            }
+          };
+          match peer.download_into(&seed, destination).await {
+            Ok(()) => {
+              crate::transfer::sync_destination(&path).await?;
+              return Ok(path);
+            }
+            Err(error) if error.peer_retryable() => {
+              if crate::transfer::destination_complete(store.as_ref().expect("destination exists"))?
+              {
+                crate::transfer::sync_destination(&path).await?;
+                return Ok(path);
+              }
+              last_error = error;
+            }
+            Err(error) => return Err(error),
+          }
+        }
+        Err(last_error)
       };
       tokio::select! {
         result = download => result,
