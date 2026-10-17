@@ -387,6 +387,9 @@ async fn heartbeat<S: TrackState>(
   let expires_at = now + ttl;
   app.state.put_online(q2q_track::state::OnlineRecord {
     expires_at,
+    // `record` 是在 touch_sequence 之前克隆的，带着旧的 last_seq。原样写回
+    // 会把刚通过的递增校验撤销掉，同一个 seq + mac 就能在窗口内一直重放。
+    last_seq: req.seq,
     ..record
   });
 
@@ -432,34 +435,49 @@ async fn query<S: TrackState>(
 ) -> Result<Json<QueryResponse>, (StatusCode, Json<ErrorBody>)> {
   let now = q2q_track::state::now();
 
-  // spec 7.2.1 says query carries the session; there is no body, so the
-  // HMAC triple rides along as query parameters.
-  if let (Some(pid), Some(seq), Some(ts), Some(mac)) =
-    (&params.peer_id, params.seq, params.timestamp, &params.mac)
-  {
-    let peer = PeerId::unchecked(pid.clone());
-    let record = app
-      .state
-      .online(&peer)
-      .ok_or_else(|| fail("unknown_session", None))?;
-    auth::verify_session_request(
-      &record.session_key,
-      &peer,
-      seq,
-      ts,
-      mac,
-      record.last_seq,
-      now,
-    )
-    .map_err(auth_failure)?;
-    app
-      .state
-      .touch_sequence(&peer, seq)
-      .map_err(|_| fail("bad_mac", None))?;
-  }
-
+  // 先把请求本身的形状查清楚：格式错的请求不必走到认证那一步
   let hash = parse_info_hash(&info_hash)
     .ok_or_else(|| fail("bad_request", Some("info_hash must be sha256:<hex>".into())))?;
+
+  // spec 7.2.1 says query carries the session; there is no body, so the
+  // HMAC triple rides along as query parameters. All four are required —
+  // letting a request through without them (as an `if let` would) makes query
+  // an anonymous enumeration endpoint for peer ids and public keys.
+  let (pid, seq, ts, mac) = match (
+    params.peer_id.as_deref(),
+    params.seq,
+    params.timestamp,
+    params.mac.as_deref(),
+  ) {
+    (Some(pid), Some(seq), Some(ts), Some(mac)) => (pid, seq, ts, mac),
+    _ => {
+      return Err(fail(
+        "unknown_session",
+        Some("query needs peer_id, seq, timestamp and mac".into()),
+      ));
+    }
+  };
+
+  let peer = PeerId::unchecked(pid.to_string());
+  let record = app
+    .state
+    .online(&peer)
+    .ok_or_else(|| fail("unknown_session", None))?;
+  auth::verify_session_request(
+    &record.session_key,
+    &peer,
+    seq,
+    ts,
+    mac,
+    record.last_seq,
+    now,
+  )
+  .map_err(auth_failure)?;
+  app
+    .state
+    .touch_sequence(&peer, seq)
+    .map_err(|_| fail("bad_mac", None))?;
+
   let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
   let after = params.cursor.as_ref().map(|c| PeerId::unchecked(c.clone()));
 
@@ -521,6 +539,59 @@ mod tests {
     limits: Arc<Limiter>,
   ) -> Router {
     router_with(state, config(), punch, limits)
+  }
+
+  /// query 现在要求会话（spec 7.2.1），所以测试先 announce 一次拿 session_key。
+  async fn session_with(
+    app: &Router,
+    seed: u8,
+    add: &[String],
+    complete: &[String],
+  ) -> (String, [u8; 32]) {
+    let body = ticket_body(seed, "track");
+    let peer = body.iss.clone();
+    let req = Request::builder()
+      .method("PUT")
+      .uri(format!("/peers/{peer}/files"))
+      .header("content-type", "application/json")
+      .body(Body::from(
+        serde_json::to_vec(&serde_json::json!({
+          "token": body, "add": add, "complete": complete, "ttl": 600
+        }))
+        .unwrap(),
+      ))
+      .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    let key = B64.decode(json["session_key"].as_str().unwrap()).unwrap();
+    (peer, key.try_into().expect("session key is 32 bytes"))
+  }
+
+  async fn session_for(app: &Router, seed: u8) -> (String, [u8; 32]) {
+    session_with(app, seed, &[], &[]).await
+  }
+
+  /// base64 里的 `+` `/` `=` 在 query string 中另有含义，得转义
+  fn pct(s: &str) -> String {
+    s.replace('+', "%2B")
+      .replace('/', "%2F")
+      .replace('=', "%3D")
+  }
+
+  /// 带会话三元组的 query URI。`seq` 必须逐次递增。
+  fn authed_query(hash: &str, peer: &str, key: &[u8; 32], seq: u64) -> String {
+    let ts = q2q_track::state::now();
+    let mac = B64.encode(q2q_track::auth::mac_bytes(
+      key,
+      &PeerId::unchecked(peer.to_string()),
+      seq,
+      ts,
+    ));
+    format!(
+      "/files/sha256:{hash}/peers?peer_id={peer}&seq={seq}&timestamp={ts}&mac={}",
+      pct(&mac)
+    )
   }
 
   fn punch_list() -> Arc<PunchList> {
@@ -667,29 +738,19 @@ mod tests {
   async fn query_returns_the_holder() {
     let state = Arc::new(MemoryState::new());
     let app = build(state.clone(), punch_list());
-    let body = ticket_body(4, "track");
-    let peer = body.iss.clone();
     let hash = "ab".repeat(32);
+    let (peer, key) = session_with(
+      &app,
+      4,
+      &[format!("sha256:{hash}")],
+      &[format!("sha256:{hash}")],
+    )
+    .await;
 
-    let announce_req = Request::builder()
-      .method("PUT")
-      .uri(format!("/peers/{peer}/files"))
-      .header("content-type", "application/json")
-      .body(Body::from(
-        serde_json::to_vec(&serde_json::json!({
-          "token": body, "add": [format!("sha256:{hash}")], "complete": [format!("sha256:{hash}")], "ttl": 600
-        }))
-        .unwrap(),
-      ))
-      .unwrap();
-    let resp = app.oneshot(announce_req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    // query without session auth: peers are still returned (it is a lookup)
     let app2 = build(state, punch_list());
     let req = Request::builder()
       .method("GET")
-      .uri(format!("/files/sha256:{hash}/peers"))
+      .uri(authed_query(&hash, &peer, &key, 1))
       .body(Body::empty())
       .unwrap();
     let resp = app2.oneshot(req).await.unwrap();
@@ -717,27 +778,13 @@ mod tests {
     let hash = "ab".repeat(32);
 
     let announce_app = build(state.clone(), punch_list_at("https://old.example.com"));
-    let body = ticket_body(3, "track");
-    let peer = body.iss.clone();
-    let req = Request::builder()
-      .method("PUT")
-      .uri(format!("/peers/{peer}/files"))
-      .header("content-type", "application/json")
-      .body(Body::from(
-        serde_json::to_vec(&serde_json::json!({
-          "token": body, "add": [format!("sha256:{hash}")], "complete": [], "ttl": 600
-        }))
-        .unwrap(),
-      ))
-      .unwrap();
-    let resp = announce_app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (peer, key) = session_with(&announce_app, 3, &[format!("sha256:{hash}")], &[]).await;
 
     // same peer, but Track's list now points punch-1 somewhere else
     let app = build(state, punch_list_at("https://new.example.com"));
     let req = Request::builder()
       .method("GET")
-      .uri(format!("/files/sha256:{hash}/peers"))
+      .uri(authed_query(&hash, &peer, &key, 1))
       .body(Body::empty())
       .unwrap();
     let resp = app.oneshot(req).await.unwrap();
@@ -751,21 +798,7 @@ mod tests {
     let hash = "cd".repeat(32);
 
     let announce_app = build(state.clone(), punch_list());
-    let body = ticket_body(4, "track");
-    let peer = body.iss.clone();
-    let req = Request::builder()
-      .method("PUT")
-      .uri(format!("/peers/{peer}/files"))
-      .header("content-type", "application/json")
-      .body(Body::from(
-        serde_json::to_vec(&serde_json::json!({
-          "token": body, "add": [format!("sha256:{hash}")], "complete": [], "ttl": 600
-        }))
-        .unwrap(),
-      ))
-      .unwrap();
-    let resp = announce_app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let (peer, key) = session_with(&announce_app, 4, &[format!("sha256:{hash}")], &[]).await;
 
     // punch-1 is gone from the list: nobody can reach this peer any more
     let retired = PunchList::new(vec![PunchAssignment {
@@ -777,7 +810,7 @@ mod tests {
     let app = build(state, retired);
     let req = Request::builder()
       .method("GET")
-      .uri(format!("/files/sha256:{hash}/peers"))
+      .uri(authed_query(&hash, &peer, &key, 1))
       .body(Body::empty())
       .unwrap();
     let resp = app.oneshot(req).await.unwrap();
@@ -799,34 +832,20 @@ mod tests {
       url: "https://before.example.com".into(),
       public_key: vec![7u8; 32],
     }]);
-    let body = ticket_body(5, "track");
-    let peer = body.iss.clone();
-    let req = Request::builder()
-      .method("PUT")
-      .uri(format!("/peers/{peer}/files"))
-      .header("content-type", "application/json")
-      .body(Body::from(
-        serde_json::to_vec(&serde_json::json!({
-          "token": body, "add": [format!("sha256:{hash}")], "complete": [], "ttl": 600
-        }))
-        .unwrap(),
-      ))
-      .unwrap();
-    let resp = build(state.clone(), punch.clone())
-      .oneshot(req)
-      .await
-      .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    let announce_app = build(state.clone(), punch.clone());
+    let (peer, key) = session_with(&announce_app, 5, &[format!("sha256:{hash}")], &[]).await;
 
-    let query = || {
+    // seq 必须逐次递增，所以每次查询都要带一个
+    let query = |seq: u64| {
       let state = state.clone();
       let punch = punch.clone();
       let hash = hash.clone();
+      let peer = peer.clone();
       async move {
         let app = build(state, punch);
         let req = Request::builder()
           .method("GET")
-          .uri(format!("/files/sha256:{hash}/peers"))
+          .uri(authed_query(&hash, &peer, &key, seq))
           .body(Body::empty())
           .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -835,7 +854,7 @@ mod tests {
     };
 
     assert_eq!(
-      query().await["peers"][0]["punch"]["url"],
+      query(1).await["peers"][0]["punch"]["url"],
       "https://before.example.com"
     );
 
@@ -844,7 +863,7 @@ mod tests {
       url: "https://after.example.com".into(),
       public_key: vec![7u8; 32],
     }]);
-    let json = query().await;
+    let json = query(2).await;
     assert_eq!(
       json["peers"][0]["punch"]["url"],
       "https://after.example.com"
@@ -866,10 +885,11 @@ mod tests {
   async fn a_peer_that_exceeds_the_bucket_gets_429() {
     let state = Arc::new(MemoryState::new());
     let app = build_with_limits(state, punch_list(), tiny_limiter(RULE_QUERY, 2));
+    let (peer, key) = session_for(&app, 1).await;
 
     let hash = "ab".repeat(32);
-    let uri = format!("/files/sha256:{hash}/peers");
-    for expected in [StatusCode::OK, StatusCode::OK] {
+    for seq in [1u64, 2] {
+      let uri = authed_query(&hash, &peer, &key, seq);
       let mut req = Request::builder()
         .method("GET")
         .uri(&uri)
@@ -879,9 +899,10 @@ mod tests {
         .extensions_mut()
         .insert(PeerAddr("198.51.100.7".parse().unwrap()));
       let resp = app.clone().oneshot(req).await.unwrap();
-      assert_eq!(resp.status(), expected);
+      assert_eq!(resp.status(), StatusCode::OK, "seq {seq}");
     }
 
+    let uri = authed_query(&hash, &peer, &key, 3);
     let mut req = Request::builder()
       .method("GET")
       .uri(&uri)
@@ -899,10 +920,11 @@ mod tests {
   async fn a_different_network_keeps_its_own_bucket() {
     let state = Arc::new(MemoryState::new());
     let app = build_with_limits(state, punch_list(), tiny_limiter(RULE_QUERY, 1));
+    let (peer, key) = session_for(&app, 2).await;
 
     let hash = "ab".repeat(32);
-    let uri = format!("/files/sha256:{hash}/peers");
-    for ip in ["198.51.100.7", "203.0.113.7"] {
+    for (seq, ip) in [(1u64, "198.51.100.7"), (2, "203.0.113.7")] {
+      let uri = authed_query(&hash, &peer, &key, seq);
       let mut req = Request::builder()
         .method("GET")
         .uri(&uri)
@@ -924,6 +946,97 @@ mod tests {
       .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+  }
+
+  #[tokio::test]
+  async fn query_without_a_session_is_rejected() {
+    // 匿名 query 等于把 peer_id 与公钥开放给任何人枚举（spec 7.2.1）
+    let app = build(Arc::new(MemoryState::new()), punch_list());
+    let hash = "ab".repeat(32);
+    let req = Request::builder()
+      .method("GET")
+      .uri(format!("/files/sha256:{hash}/peers"))
+      .body(Body::empty())
+      .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(body_json(resp).await["code"], "unknown_session");
+  }
+
+  #[tokio::test]
+  async fn query_with_a_partial_session_is_rejected() {
+    let app = build(Arc::new(MemoryState::new()), punch_list());
+    let hash = "ab".repeat(32);
+    // 四个参数缺两个：不能当成"没有会话"就放行
+    let req = Request::builder()
+      .method("GET")
+      .uri(format!("/files/sha256:{hash}/peers?peer_id=whatever&seq=1"))
+      .body(Body::empty())
+      .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+  }
+
+  #[tokio::test]
+  async fn replaying_a_heartbeat_sequence_is_rejected() {
+    let state = Arc::new(MemoryState::new());
+    let app = build(state, punch_list());
+    let (peer, key) = session_for(&app, 6).await;
+
+    // 同一个 seq 连发两次。旧实现把 touch_sequence 之前的旧 last_seq 又写了
+    // 回去，递增校验等于被自己撤销，第二次会当成合法请求
+    let mut statuses = Vec::new();
+    for _ in 0..2 {
+      let ts = q2q_track::state::now();
+      let mac = B64.encode(q2q_track::auth::mac_bytes(
+        &key,
+        &PeerId::unchecked(peer.clone()),
+        1,
+        ts,
+      ));
+      let req = Request::builder()
+        .method("POST")
+        .uri(format!("/peers/{peer}/heartbeat"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+          serde_json::to_vec(&serde_json::json!({"seq": 1, "timestamp": ts, "mac": mac})).unwrap(),
+        ))
+        .unwrap();
+      let resp = app.clone().oneshot(req).await.unwrap();
+      statuses.push(resp.status());
+    }
+
+    assert_eq!(statuses[0], StatusCode::OK);
+    assert_eq!(statuses[1], StatusCode::UNAUTHORIZED);
+  }
+
+  #[tokio::test]
+  async fn a_heartbeat_that_advances_the_sequence_is_accepted() {
+    // 顺便确认正常递增没有被上面的修改弄坏
+    let state = Arc::new(MemoryState::new());
+    let app = build(state, punch_list());
+    let (peer, key) = session_for(&app, 7).await;
+
+    for seq in [1u64, 2, 3] {
+      let ts = q2q_track::state::now();
+      let mac = B64.encode(q2q_track::auth::mac_bytes(
+        &key,
+        &PeerId::unchecked(peer.clone()),
+        seq,
+        ts,
+      ));
+      let req = Request::builder()
+        .method("POST")
+        .uri(format!("/peers/{peer}/heartbeat"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+          serde_json::to_vec(&serde_json::json!({"seq": seq, "timestamp": ts, "mac": mac}))
+            .unwrap(),
+        ))
+        .unwrap();
+      let resp = app.clone().oneshot(req).await.unwrap();
+      assert_eq!(resp.status(), StatusCode::OK, "seq {seq}");
+    }
   }
 
   #[tokio::test]
