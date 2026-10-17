@@ -1,6 +1,6 @@
 # CDN fallback
 
-The Rust SDK can download verified blocks over HTTP(S) when P2P is unavailable. It tries P2P first, then uses CDN sources to fill the remaining blocks. An unavailable Track or Punch does not prevent CDN cold start.
+The Rust SDK can download verified blocks over HTTP(S) when P2P is unavailable. Full-file downloads try P2P first, then use CDN sources to fill remaining blocks. On-demand VOD also supports urgent fallback for the current read block. An unavailable Track or Punch does not prevent CDN cold start.
 
 ## Configure the seed
 
@@ -35,4 +35,40 @@ The `max_download_peers` builder setting also bounds concurrent CDN block reques
 
 `Transfer::subscribe_progress()` exposes `active_peers` for WebRTC connections and `active_cdn_requests` for HTTP data or hash-table requests. Dropping or cancelling the transfer cancels its HTTP requests. Preserve the destination and its `.q2q.resume` file to resume later.
 
-This version does not race CDN requests against slow peers, switch back to P2P automatically, or fetch hash tables in ranges.
+Full-file downloads do not race CDN against slow peers or switch back to P2P automatically. Hash tables are not fetched in ranges.
+
+
+## VOD urgent-block handoff
+
+`client.open(...).await` uses a different activation policy from full-file downloads. The current read block gives P2P `min(2 seconds, read_timeout / 2)`. When peers are exhausted, CDN may fill the whole read/prefetch window. An urgent block does not have to wait for the full 15-second discovery deadline before attempting CDN.
+
+```mermaid
+sequenceDiagram
+    participant R as Reader
+    participant Q as Queue and policy
+    participant P as Slow peer worker
+    participant C as CDN worker
+    participant S as Destination
+    R->>Q: Current block and prefetch window
+    P->>Q: Claim current block lease
+    P->>P: Request and wait for data
+    Note over Q,C: P2P wait budget expires
+    C->>C: Load and verify CDN leaf table
+    C->>Q: CDN ready
+    Q-->>P: Policy changed
+    P->>P: guard_peer interrupts connection
+    P->>Q: Release unfinished lease
+    C->>Q: Claim the same block
+    C->>C: Fetch HTTP range
+    C->>S: Commit bytes and proof
+    S->>Q: Durable commit completes lease
+    Q-->>R: Block verified
+    R->>S: Read and recheck bytes
+    S-->>R: Return readable content
+```
+
+This is a lease handoff. Only a verified CDN leaf table permits interruption of the slow connection holding the urgent block. CDN cannot claim the block until its previous lease is released. Other peers continue. A bad table cannot force healthy peers to stop; a bad CDN block tries the next mirror while healthy peers can still supply content.
+
+VOD permits up to max_download_peers workers for each source class, rather than one combined connection quota. Each block has one owner throughout fetching and disk submission.
+
+Track is queried once. A later window can reconnect known candidates but does not rediscover holders. After leaf-table loading fails, this reader does not reload that source; reopening can retry. See [Scheduling](./scheduling) for cancellation and window behavior.
