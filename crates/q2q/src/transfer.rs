@@ -1,13 +1,14 @@
 //! Verified block transfer with bounded buffering and selective piece retry.
 
 use crate::control::ControlError;
+use crate::download_store::DownloadStore;
 use crate::peer::PeerSession;
 use crate::publication::{PrepareError, PreparedFile};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use bytes::BytesMut;
 use q2q_core::block::PIECE_SIZE;
-use q2q_core::file::{FileStore, StoreError};
+use q2q_core::file::StoreError;
 use q2q_core::merkle::{self, Proof};
 use q2q_core::peer_wire::{Control, MAX_BLOCKS, Piece, WireError};
 use q2q_core::seed::Seed;
@@ -30,6 +31,7 @@ pub enum TransferError {
   Io(std::io::Error),
   Task(tokio::task::JoinError),
   Protocol(String),
+  Checkpoint(String),
   Closed,
   Timeout,
   Rejected(u32),
@@ -47,6 +49,7 @@ impl std::fmt::Display for TransferError {
       Self::Io(e) => e.fmt(f),
       Self::Task(e) => e.fmt(f),
       Self::Protocol(e) => write!(f, "peer transfer protocol: {e}"),
+      Self::Checkpoint(e) => write!(f, "download checkpoint: {e}"),
       Self::Closed => f.write_str("peer transfer channel closed"),
       Self::Timeout => f.write_str("peer transfer timed out"),
       Self::Rejected(ms) => write!(f, "peer rejected request; retry after {ms} ms"),
@@ -98,26 +101,30 @@ impl Drop for Transfer {
 pub(crate) async fn create_destination(
   seed: &Seed,
   path: &Path,
-) -> Result<Arc<Mutex<FileStore>>, TransferError> {
-  let destination = path.to_path_buf();
-  let length = seed.info.length;
-  let block_size = seed.info.block_size;
+) -> Result<Arc<Mutex<DownloadStore>>, TransferError> {
+  open_destination(seed, path, false).await
+}
+
+pub(crate) async fn open_destination(
+  seed: &Seed,
+  path: &Path,
+  resume: bool,
+) -> Result<Arc<Mutex<DownloadStore>>, TransferError> {
+  check_seed(seed)?;
+  let seed = seed.clone();
+  let path = path.to_path_buf();
   tokio::task::spawn_blocking(move || {
-    let file = std::fs::OpenOptions::new()
-      .write(true)
-      .create_new(true)
-      .open(&destination)?;
-    file.set_len(length)?;
-    Ok(Arc::new(Mutex::new(FileStore::open(
-      destination,
-      length,
-      block_size,
-    )?)))
+    let store = if resume {
+      DownloadStore::resume(&seed, &path)?
+    } else {
+      DownloadStore::create(&seed, &path)?
+    };
+    Ok(Arc::new(Mutex::new(store)))
   })
   .await?
 }
 
-pub(crate) fn destination_complete(store: &Mutex<FileStore>) -> Result<bool, TransferError> {
+pub(crate) fn destination_complete(store: &Mutex<DownloadStore>) -> Result<bool, TransferError> {
   let store = store
     .lock()
     .map_err(|_| protocol("destination lock poisoned"))?;
@@ -318,17 +325,17 @@ impl PeerSession {
     }
     let path = path.as_ref().to_path_buf();
     let store = create_destination(&seed, &path).await?;
-    self.download_into(&seed, store).await?;
+    self.download_into(&seed, store.clone()).await?;
     sync_destination(&path).await?;
     Ok(path)
   }
 
-  /// Continue an in-memory transfer on another authenticated peer. Only blocks
-  /// verified during this transfer are skipped; persisted flags are not trusted.
+  /// Continue a transfer using blocks verified in memory or revalidated from
+  /// root-bound checkpoint proofs. Persisted state flags are never trusted.
   pub(crate) async fn download_into(
     self,
     seed: &Seed,
-    store: Arc<Mutex<FileStore>>,
+    store: Arc<Mutex<DownloadStore>>,
   ) -> Result<(), TransferError> {
     if &seed.info_hash() != self.info_hash() {
       return Err(protocol("seed belongs to another session"));
@@ -378,13 +385,7 @@ impl PeerSession {
         let mut store = destination
           .lock()
           .map_err(|_| protocol("destination lock poisoned"))?;
-        for (piece, data) in bytes.chunks(PIECE_SIZE).enumerate() {
-          store.write_piece(index, piece, data)?;
-        }
-        store.verify(index, Some(&proof), &root)?;
-        store.save_progress()?;
-        store.save_leaves(&root)?;
-        Ok::<_, TransferError>(())
+        store.commit(index, &bytes, proof, &root)
       })
       .await??;
       send(

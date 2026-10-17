@@ -124,9 +124,44 @@ impl Client {
     seed: &q2q_core::seed::Seed,
     path: impl Into<PathBuf>,
   ) -> Result<Transfer, TransferError> {
+    self.start_download(seed, path.into(), false).await
+  }
+
+  /// Resume an existing SDK destination using its `.q2q.resume` receipts.
+  /// Every recorded block is read and reverified against the seed root; missing
+  /// or corrupt blocks are fetched again. A complete file needs no network.
+  pub async fn resume_download(
+    &self,
+    seed: &q2q_core::seed::Seed,
+    path: impl Into<PathBuf>,
+  ) -> Result<Transfer, TransferError> {
+    self.start_download(seed, path.into(), true).await
+  }
+
+  async fn start_download(
+    &self,
+    seed: &q2q_core::seed::Seed,
+    path: PathBuf,
+    resume: bool,
+  ) -> Result<Transfer, TransferError> {
     crate::transfer::check_seed(seed)?;
-    let path = path.into();
-    if tokio::fs::try_exists(&path).await? {
+    let initial_store = if resume {
+      Some(crate::transfer::open_destination(seed, &path, true).await?)
+    } else {
+      None
+    };
+    if let Some(store) = &initial_store
+      && crate::transfer::destination_complete(store)?
+    {
+      let task = tokio::spawn(async move {
+        // Retain the destination lock through the final sync.
+        let _store = initial_store;
+        crate::transfer::sync_destination(&path).await?;
+        Ok(path)
+      });
+      return Ok(Transfer { task: Some(task) });
+    }
+    if !resume && tokio::fs::try_exists(&path).await? {
       return Err(
         std::io::Error::new(
           std::io::ErrorKind::AlreadyExists,
@@ -148,7 +183,7 @@ impl Client {
     }
     let task = tokio::spawn(async move {
       let download = async {
-        let mut store = None;
+        let mut store = initial_store;
         let mut last_error = TransferError::NoPeers;
         for target in targets {
           let peer = match tokio::time::timeout(

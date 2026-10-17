@@ -4,6 +4,7 @@
 //! verified blocks through authenticated WebRTC peer sessions.
 
 mod control;
+mod download_store;
 mod identity;
 mod peer;
 mod peer_identity;

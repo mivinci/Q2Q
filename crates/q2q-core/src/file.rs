@@ -255,6 +255,34 @@ impl FileStore {
     }
   }
 
+  /// Revalidate existing disk bytes using a full root-bound proof, regardless
+  /// of saved state or cached leaves. This never writes file contents.
+  pub fn verify_existing(
+    &mut self,
+    block: usize,
+    proof: &Proof,
+    root: &Hash,
+  ) -> Result<BlockState, StoreError> {
+    let data = self.read_block(block)?;
+    if !cache::verify_range_into_cache(
+      &[data.as_slice()],
+      block,
+      self.block_count(),
+      proof,
+      root,
+      &mut self.cache,
+    ) {
+      self.blocks[block].reset();
+      return Err(StoreError::RootMismatch);
+    }
+    let restored = &mut self.blocks[block];
+    for piece in 0..restored.piece_count() {
+      restored.set_piece(piece, true);
+    }
+    restored.mark_verified();
+    Ok(BlockState::Verified)
+  }
+
   pub fn read_block(&self, block: usize) -> Result<Vec<u8>, StoreError> {
     let len = self.block(block)?.len();
     let offset = block as u64 * self.block_size as u64;
