@@ -26,6 +26,8 @@ flowchart TB
     Reads --> Source["UploadSource<br/>upload_source.rs"]
     Source --> Prepared["PreparedFile / ProofTree<br/>source_file.rs"]
     Source --> Dest
+    Workers --> DownloadStats["Live download attempts<br/>download_progress.rs"]
+    Handles --> DownloadStats
     Workers --> Dest["Verification and commit<br/>destination.rs"]
     Handles -->|"Verified reads"| Dest
     Dest --> Store["Disk and receipts<br/>download_store.rs"]
@@ -70,6 +72,55 @@ Publication manages announcements, holding renewal, uploads and withdrawal. Acti
 Dropping a transfer or reader cancels network tasks. Blocking disk jobs already started can finish and retain the destination lock until they do. Block proofs are stored in `.q2q.resume`; resume reads and verifies the disk bytes again. A complete file can resume offline.
 
 The SDK supports fixed files and VOD with a single read cursor. Each Client supports up to 32 distinct active content hashes, serving multiple downloading peers concurrently (`max_upload_peers` defaults to 4, range 1–16). Discovery refreshes the current Track page, without pagination. Files are limited to 65,536 blocks, or 16 GiB with the default block size. Partial-file sharing is opt-in. Live indexes and browser adaptation are not implemented yet.
+
+## Download Peer observation
+
+`Transfer` and `VerifiedFile` expose a separate bounded live-Peer snapshot. The
+existing `TransferProgress` remains `Copy` and keeps its aggregate semantics.
+
+```rust
+let peers = transfer.peer_progress();
+let mut updates = transfer.subscribe_peer_progress();
+loop {
+    let snapshot = updates.borrow_and_update().clone();
+    for peer in snapshot {
+        println!("{} {:?}: {} received, {} verified",
+            peer.peer_id, peer.state, peer.received_bytes, peer.verified_bytes);
+    }
+    if updates.changed().await.is_err() { break; }
+}
+```
+
+Run observation alongside `transfer.wait()`; cancelling that wait drops the
+transfer and clears live attempts. Watch values may merge, so this is a current
+snapshot rather than a connection-event history. Clone borrows before awaiting
+or doing potentially blocking output. Keep a receiver before consuming a handle
+if you want to observe its final empty snapshot.
+
+`DownloadPeerProgress` includes `attempt_id`, `peer_id`, optional authenticated
+`connection_id`, `state`, `received_bytes` and `verified_bytes`. Attempts are
+numbered within one handle and reconnects start new counters. The states are
+`Connecting` (Punch/ICE/identity), `Handshaking` (authenticated bitfield exchange),
+`Idle`, `Receiving`, `Verifying` (including durable commit) and `Finishing`.
+Connecting identities come from candidates and are not yet authenticated.
+Live attempts include connection establishment, whereas `active_peers` retains
+its existing count of authenticated data-protocol sessions.
+
+Received bytes count accepted current-block piece payload, including matching
+duplicates. They exclude headers, control traffic, rejected/ignored old blocks
+and CDN traffic; a subsequent bad proof does not erase received traffic.
+Verified bytes increase only after root verification and durable data/receipt
+commit. Resumed blocks and CDN commits do not count toward a Peer. A cancelled
+worker does not retain a live row just because its blocking commit is still
+running; late completion cannot recreate a row or update a newer attempt.
+
+`download_progress.rs` holds per-attempt counters. Piece arrivals update memory;
+watch byte notifications coalesce every 100 ms, and subscribing synchronizes the
+latest counters. Topology/state changes publish immediately. Snapshots only hold
+live attempts, bounded by download concurrency; terminal snapshots are empty.
+Clients calculate rates from successive per-attempt received-byte samples and
+reset their baselines on reconnect. These are payload rates, not NIC throughput,
+quality scores or delivery acknowledgements.
 
 ## Concurrent uploads
 

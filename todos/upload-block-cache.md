@@ -48,3 +48,5 @@
 - 中英文文档构建与页面检查通过，Mermaid 均渲染成功，无资源 404 或控制台错误。
 - `cargo fmt --all -- --check`、`git diff --check` 和全工作区/all-targets/all-features Clippy（`-D warnings`）通过。
 - Redis 外部集成 3 项未重跑；本项没有修改 Redis 或服务端实现。
+
+下载目标读写锁的后续评估见 [shared-storage-reads.md](shared-storage-reads.md)，目前仅记录，尚未实施。

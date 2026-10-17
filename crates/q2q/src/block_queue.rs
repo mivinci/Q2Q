@@ -22,6 +22,7 @@ pub(crate) struct WorkQueue {
   changed: watch::Sender<u64>,
   focus_changed: watch::Sender<u64>,
   pub(crate) progress: watch::Sender<TransferProgress>,
+  pub(crate) peers: Arc<crate::download_progress::Progress>,
   length: u64,
   block_size: u32,
   pub(crate) scope: TaskScope,
@@ -42,6 +43,22 @@ impl WorkQueue {
     progress: watch::Sender<TransferProgress>,
     scope: TaskScope,
   ) -> Arc<Self> {
+    Self::observed(
+      seed,
+      bits,
+      progress,
+      scope,
+      crate::download_progress::Progress::new(),
+    )
+  }
+
+  pub(crate) fn observed(
+    seed: &Seed,
+    bits: &[u8],
+    progress: watch::Sender<TransferProgress>,
+    scope: TaskScope,
+    peers: Arc<crate::download_progress::Progress>,
+  ) -> Arc<Self> {
     let done: Vec<_> = (0..seed.info.leaf_count())
       .map(|i| {
         bits
@@ -61,6 +78,7 @@ impl WorkQueue {
       changed: watch::channel(0).0,
       focus_changed: watch::channel(0).0,
       progress,
+      peers,
       length: seed.info.length,
       block_size: seed.info.block_size,
       scope,
@@ -126,6 +144,7 @@ impl WorkQueue {
       .unwrap_or_else(|e| e.into_inner())
       .policy
       .fail(message);
+    self.peers.close();
     progress::finish(&self.progress, progress::TransferState::Failed);
     self.notify();
   }
@@ -229,6 +248,7 @@ impl WorkQueue {
       index,
       queue: self.clone(),
       committed: false,
+      peer: None,
     })
   }
 
@@ -254,6 +274,7 @@ impl WorkQueue {
             index,
             queue: self.clone(),
             committed: false,
+            peer: None,
           });
         }
         match source {
@@ -287,8 +308,15 @@ pub(crate) struct BlockLease {
   pub(crate) index: usize,
   queue: Arc<WorkQueue>,
   committed: bool,
+  peer: Option<std::sync::Weak<crate::download_progress::Connection>>,
 }
 impl BlockLease {
+  pub(crate) fn attribute(&mut self, peer: &Arc<crate::download_progress::Connection>) {
+    // A non-abortable disk job must not keep a cancelled network row alive.
+    // If the worker still exists, attribute only after the durable commit.
+    self.peer = Some(Arc::downgrade(peer));
+  }
+
   pub(crate) fn disk_task(&self) -> TaskGuard {
     self.queue.scope.enter()
   }
@@ -305,6 +333,11 @@ impl BlockLease {
       p.verified_blocks += 1;
       p.verified_bytes += progress::block_len(self.queue.length, self.queue.block_size, self.index);
     });
+    if let Some(peer) = self.peer.as_ref().and_then(std::sync::Weak::upgrade) {
+      peer.verified(
+        progress::block_len(self.queue.length, self.queue.block_size, self.index) as usize,
+      );
+    }
     self
       .queue
       .changed

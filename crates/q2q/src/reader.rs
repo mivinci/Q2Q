@@ -124,6 +124,15 @@ impl VerifiedFile {
   pub fn progress(&self) -> TransferProgress {
     *self.engine.queue.progress.borrow()
   }
+  /// Live download attempts; includes only Peer traffic for this reader.
+  pub fn peer_progress(&self) -> Vec<crate::transfer::DownloadPeerProgress> {
+    self.engine.queue.peers.snapshot()
+  }
+  pub fn subscribe_peer_progress(
+    &self,
+  ) -> watch::Receiver<Vec<crate::transfer::DownloadPeerProgress>> {
+    self.engine.queue.peers.subscribe()
+  }
   pub fn subscribe_progress(&self) -> watch::Receiver<TransferProgress> {
     self.engine.queue.progress.subscribe()
   }

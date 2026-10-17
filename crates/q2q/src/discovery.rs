@@ -82,6 +82,9 @@ impl Peers {
         let store = store.clone();
         let queue = queue.clone();
         let task = queue.scope.enter();
+        let observation = queue
+          .peers
+          .connection(q2q_core::identity::PeerId::unchecked(&id));
         workers.spawn(async move {
           let _task = task;
           let result = async {
@@ -91,7 +94,7 @@ impl Peers {
             )
             .await
             .map_err(|_| TransferError::Timeout)??;
-            crate::scheduler::download_peer(peer, &seed, store, queue).await
+            crate::scheduler::download_peer_observed(peer, &seed, store, queue, observation).await
           }
           .await;
           (id, result)

@@ -7,7 +7,9 @@ pub use crate::peer::PeerSession;
 pub use crate::publication::{
   Publication, PublicationState, UploadConnectionProgress, UploadConnectionState, UploadProgress,
 };
-pub use crate::transfer::{Transfer, TransferError, TransferProgress, TransferState};
+pub use crate::transfer::{
+  DownloadPeerProgress, DownloadPeerState, Transfer, TransferError, TransferProgress, TransferState,
+};
 
 use crate::identity::Identity;
 use crate::source_file::{PrepareError, PreparedFile};
