@@ -8,7 +8,9 @@
 >
 > **2026-10-15 控制面改为自签票据**（本次修订）：去掉 `register` / `login` / `revoke`——身份不再需要服务端背书，公钥内嵌在票据里，随 `announce` 上报、随 `query` 下发，Track 只在 peer 在线期间持有。会话续约改用 `session_key` + HMAC，不再每次携带票据。`grace_until` 移除：中继凭据改为按需自签请求，凭据过期再请求一次即可。新增两项：连接前的**显式同意**（`connect` / `accept` / `reject`，必须先于 offer）与 **block 级来源选择**（逐 block 决定走 CDN 还是 P2P）。组件名由 Tracker 统一改为 Track。代价见 3.1.4 节：**本设计没有吊销机制**。
 >
-> **2026-10-17 `aud` 加类型前缀**（本次修订）：Punch 场景的 `aud` 由裸 `punch_id` 改为 `punch:<punch_id>`（见 3.1.2）。原先一个字符串字段承载两种语义——字面量 `track` 与 Punch 标识——无法无歧义地解析，一个恰好名叫 `track` 的 Punch 节点会永远验不过自己的票。加前缀后两种取值互斥，解析不再需要猜测。
+> **2026-10-17 `aud` 加类型前缀**：Punch 场景的 `aud` 由裸 `punch_id` 改为 `punch:<punch_id>`（见 3.1.2）。原先一个字符串字段承载两种语义——字面量 `track` 与 Punch 标识——无法无歧义地解析，一个恰好名叫 `track` 的 Punch 节点会永远验不过自己的票。加前缀后两种取值互斥，解析不再需要猜测。
+>
+> **2026-10-17 清理自签票据模型的残留表述**（本次修订）：10-15 那轮改为自签票据后，有几处旧表述没跟着更新，本次一并对齐。7.3.1 客户端函数面表删去 `register` / `revoke` / `login` 共四行——控制面已无注册与吊销，会话由 `announce` 建立、`heartbeat` 续约——并补上缺失的 `SendHeartbeatReq`。7.2.1 的 query 响应删去 `connect_token` 字段：Track 只做发现不做授权，连接凭据由请求方自签（7.3.1 同处一并修正）。7.2.2 的 offer 流程中，connect 票据改为「由 A 自签」而非「由 Track 签发」，B 侧验签改用票据内嵌的 `pub`（校验与 `iss` 一致）而非 Track 公钥。全文的 `jti` 统一改为 `cid`——票据结构里没有 `jti`，一次性标识就叫 `cid`；连带删去 7.1 节已不存在的 Track nonce 去重窗口。
 
 ## 1. 引言
 
@@ -120,9 +122,9 @@ sequenceDiagram
         Note over A,B: block 集齐 → 用已缓存的叶子哈希查表（或证明校验）对上 info.root → verified → 广播 have；不匹配 → 回 partial 重下并计失败
     else 直连失败
         Note over T: 验 A 自签的 track 票据（签名 + iss/pub 一致 + ih 未封禁）
-        A->>T: relay_credentials(connect_token)
+        A->>T: relay_credentials(token)
         T-->>A: A 的 TURN REST 凭据
-        B->>T: relay_credentials(connect_token)
+        B->>T: relay_credentials(token)
         T-->>B: B 的 TURN REST 凭据
         A<<->>TURN: 加密数据流
         TURN<<->>B: 加密数据流
@@ -572,7 +574,7 @@ Track **可以**部署为无状态多实例：实例间共享一致的状态存�
 
 **两者的存储扩展模型是相反的**：Track 多实例**必须**共享状态存储（在线记录、`session_key`、`peer_id → public_key` 缓存、文件索引）；Punch 侧的状态（Binding、已消费 `cid`、连接记录）**不必**跨实例共享——票据的 `aud` 绑定到单个 Punch（`punch_id` / `punch_b_id`），每张票只可能被那一台消费。只有当同一个 `punch_id` 需要多实例容灾时，才需要为 Binding 引入共享存储或粘性路由。
 
-`punch.join` / `punch.exit` / `punch.signal` 的请求响应控制面经加密认证信道传输（TCP+TLS、UDP+DTLS 或 QUIC 均可，客户端与 Punch 间的常驻与瞬时信令信道同此要求）；为维持 NAT 映射的 `punch.heartbeat` 可以使用 UDP，但**必须**遵循前述 MAC、时钟窗口和序列号校验。消息使用版本化 schema；未知必填字段、超出大小限制的 candidate 列表和不匹配的 `connection_id` 都**必须**拒绝。每个响应至少带协议版本、请求 ID 和明确的错误码。所有时钟校验（`nbf`/`exp`、heartbeat 的时间戳窗口）使用统一的服务端可配置容差（如 ±60 秒），客户端**应当**与可信时间源对时，容差需计入 Track 的 nonce 去重窗口、Punch/Track 的 `jti` 去重窗口与序列号乱序窗口的计算。
+`punch.join` / `punch.exit` / `punch.signal` 的请求响应控制面经加密认证信道传输（TCP+TLS、UDP+DTLS 或 QUIC 均可，客户端与 Punch 间的常驻与瞬时信令信道同此要求）；为维持 NAT 映射的 `punch.heartbeat` 可以使用 UDP，但**必须**遵循前述 MAC、时钟窗口和序列号校验。消息使用版本化 schema；未知必填字段、超出大小限制的 candidate 列表和不匹配的 `connection_id` 都**必须**拒绝。每个响应至少带协议版本、请求 ID 和明确的错误码。所有时钟校验（`nbf`/`exp`、heartbeat 的时间戳窗口）使用统一的服务端可配置容差（如 ±60 秒），客户端**应当**与可信时间源对时，容差需计入 Punch/Track 的 `cid` 去重窗口与序列号乱序窗口的计算。
 
 ### 7.2 接口契约表
 
@@ -662,9 +664,8 @@ sequenceDiagram
 | `public_key` | string | Ed25519 公钥 base64 |
 | `punch_server` | string | 该 peer 所在 Punch 地址（Track 实时读取） |
 | `punch_public_key` | string | 该 Punch 的 Ed25519 公钥 base64（32 字节解码后），客户端验证其服务器身份用 |
-| `connect_token` | string | 一次连接所需的 connect 票据（`scope=connect`，`sub`、`target_peer_id`、`info_hash`、`connection_id` 绑定） |
 
-**授权与限制**：session `query`；限流、防枚举、不得返回 candidates 的公网地址或候选地址；候选数上限防放大——返回 N 个候选即 N 次签名，故 `limit` 不宜取大值（默认 10）。
+**授权与限制**：session `query`；限流、防枚举、不得返回候选的公网地址或候选地址，**不得**下发 connect 票据（连接凭据由请求方自签，见 3.1）；候选数上限防放大——返回 N 个候选即后续可能有 N 次连接请求，故 `limit` 不宜取大值（默认 10）。
 
 **交互流程**：
 
@@ -765,11 +766,11 @@ sequenceDiagram
 
     B->>PB: punch.join(join_token, public_key, signature, ts)
     Note over PB: 验 join 票据 (pub 与 iss 一致, 签名, aud, exp)
-    Note over PB: 查 jti 未被消费过
+    Note over PB: 查 cid 未被消费过
     Note over PB: 不查询 Track —— 票据自签自证，请求路径上与 Track 无运行时依赖（见 3.1.4：本设计没有吊销机制）
     Note over PB: 校验 base32(SHA-256(public_key)) == iss (公钥与身份一致)
     Note over PB: 用 public_key 验签 signature
-    Note over PB: 标记 jti 已消费 (一次性)
+    Note over PB: 标记 cid 已消费 (一次性)
     Note over PB: 生成 binding_id (随机)
     Note over PB: 生成 binding_key (随机 32 字节对称密钥)
     Note over PB: 旧 binding (如有) 立即失效
@@ -871,7 +872,7 @@ sequenceDiagram
 | 请求字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `type` | enum | `connect` / `accept` / `reject` / `offer` / `answer` / `candidate` / `cancel` |
-| `connection_id` | string | 来自 connect 票据 的 `jti` |
+| `connection_id` | string | 来自 connect 票据的 `cid` |
 | `connect_token` | string? | `type=connect` 与 `type=offer` 时**必须**携带；其余类型不重复验证（信道即凭据） |
 | `sdp` | string? | `type=offer` / `answer` 时携带 SDP |
 | `candidate` | string? | `type=candidate` 时携带 ICE candidate 字符串 |
@@ -901,13 +902,13 @@ sequenceDiagram
 
     A->>PB: signal(type=offer, connection_id, connect_token,<br/>sdp=A 的 SDP offer + DTLS 指纹 + ICE 候选)
     Note over PB: 验 connect 票据: 签名, aud, scope, sub,<br/>target_peer_id, info_hash, connection_id, exp
-    Note over PB: 原子登记 connection_id (一次性消费 jti)
+    Note over PB: 原子登记 connection_id (一次性消费 cid)
     Note over PB: 生成 signal_key (随机)
     Note over PB: 存连接记录: connection_id → (A, B, info_hash, signal_key, ...)
     PB-->>A: {signal_key, ok}
 
     PB->>B: signal(type=offer, connection_id, info_hash,<br/>A peer_id, connect_token, sdp)
-    Note over B: 验签 connect 票据 (用 Track 公钥)
+    Note over B: 验签 connect 票据 (用票据内 pub, 与 iss 一致)
     Note over B: 校验 target_peer_id == self
     Note over B: 决定接受/拒绝
 ```
@@ -978,7 +979,7 @@ sequenceDiagram
     Note over PB: 按序补发, 送达或超时后丢弃
 ```
 
-**为什么 offer 要带 connect 票据 而 answer 不用**：offer 是连接的**第一次**消息，Punch B 必须验证 A 有权发起连接（connect 票据 由 Track 签发，绑定 A/B/info_hash/connection_id）。一旦 connection_id 被原子登记（jti 一次性消费），后续 answer/candidate/cancel 只需凭 `connection_id` 匹配已登记的连接——信道即凭据。
+**为什么 offer 要带 connect 票据 而 answer 不用**：offer 是连接的**第一次**消息，Punch B 必须验证 A 有权发起连接（connect 票据 由 A 自签，绑定 A/B/info_hash/connection_id）。一旦 connection_id 被原子登记（cid 一次性消费），后续 answer/candidate/cancel 只需凭 `connection_id` 匹配已登记的连接——信道即凭据。
 
 **为什么 signal_key 只在 offer 响应里下发一次**：signal_key 是对称密钥，用于断线重连时恢复信道。它在加密信道内传输，不暴露给网络。后续消息不再重复发送 signal_key，减少泄露面。
 
@@ -990,13 +991,10 @@ sequenceDiagram
 
 | 函数 | 方向 | 对应 REST | 说明 |
 | --- | --- | --- | --- |
-| `SendRegisterReq` / `OnRegisterRsp` | client ↔ Track | `POST /peers` | 首次启动或密钥轮换时调用，一次性 |
-| `SendRevokeReq` / `OnRevokeRsp` | client → Track | `DELETE /peers/{peer_id}` | 私钥泄露时提交 revocation token，一次性 |
-| `SendLoginChallengeReq` / `OnLoginChallengeRsp` | client ↔ Track | `GET /sessions/challenge` | 获取登录挑战 nonce |
-| `SendLoginReq` / `OnLoginRsp` | client ↔ Track | `POST /sessions` | 提交签名，rsp 含 会话票据、join 票据、Punch 分配（地址与公钥）与 STUN/TURN 配置 |
-| `SendAnnounceReq` / `OnAnnounceRsp` | client ↔ Track | `PUT /peers/{peer_id}/files` | `add` / `del` 批量登记与撤下文件 |
-| `SendQueryReq` / `OnQueryRsp` | client ↔ Track | `GET /files/{info_hash}/peers` | rsp 含候选 Peer 的 `peer_id`、公钥、Punch 地址与公钥及 connect 票据 |
-| `SendRelayCredentialsReq` / `OnRelayCredentialsRsp` | client ↔ Track | `POST /connections/relay` | 请求体携带 connect 票据 本体；rsp 仅含请求方自身的 relay 凭据 |
+| `SendAnnounceReq` / `OnAnnounceRsp` | client → Track | `PUT /peers/{peer_id}/files` | 建立会话并登记文件；`add` / `del` 批量登记与撤下；rsp 含 `session_key`、分配的 Punch 地址与公钥、STUN/TURN 配置 |
+| `SendHeartbeatReq` / `OnHeartbeatRsp` | client → Track | `POST /peers/{peer_id}/heartbeat` | 续约会话；rsp 含刷新后的过期时间 |
+| `SendQueryReq` / `OnQueryRsp` | client → Track | `GET /files/{info_hash}/peers` | rsp 含候选 Peer 的 `peer_id`、公钥、Punch 地址与公钥；**不含** connect 票据 |
+| `SendRelayCredentialsReq` / `OnRelayCredentialsRsp` | client → Track | `POST /connections/relay` | 请求体携带当场自签的 `aud=track` 票据；rsp 仅含请求方自身的 relay 凭据 |
 
 #### 7.3.2 Punch 通信接口
 
@@ -1050,7 +1048,7 @@ Peer 之间的消息是对称、单向的，没有控制面那种请求-响应�
 - 没有 `heartbeat` 的 MAC、序列号和过期管理：攻击者可伪造或重放保活包，使虚假 Binding 长期存在，或干扰真实 Peer 的可达性。
 - 没有针对 B 的短期 `connect` 票据：任何人只要知道 Punch B 地址，就能要求它向 B 投递信令；Punch 会被用于骚扰、扫描、反射流量或对大量 Peer 发起连接请求。
 - 只靠 `scope=connect`、却不校验 `aud` 与 `target_peer_id`：一张泄露票据可被拿去联系其他 Punch 节点或其他 Peer，权限范围过大。
-- 没有 `exp`、`jti`：截获的连接请求可在很久以后无限重放。
+- 没有 `exp`、`cid`：截获的连接请求可在很久以后无限重放。
 - 没有独立的 TURN 授权与配额：攻击者可把 TURN 当开放代理消耗带宽，造成高额成本与滥用风险。
 - 没有密钥吊销机制：私钥泄露后，攻击者持有私钥即可持续自签票据冒充身份，短 `exp` 只能把损失框在单个凭据的有效期内，无法提前终止。这是**自签模型的固有代价**——吊销需要一份持久的身份注册表来判断"这个身份属于这把公钥"，而这与本设计的前提直接冲突（详见 3.1.4 节）。缓解手段只有两条：把各类凭据的有效期取到业务可容忍的下限；对 `relay_credentials` 这类消耗真实成本的操作按身份与 `info_hash` 限流。若业务要求即时吊销能力，必须回到中心化身份注册。
 
