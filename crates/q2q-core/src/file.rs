@@ -152,6 +152,8 @@ pub enum StoreError {
   NotDownloadable(BlockState),
   /// 这块没缓存过叶子，又没有给证明——无从校验
   ProofMissing,
+  /// 叶子缓存文件里记的 root 与当前 info 的不是同一个：换了文件，或者被改过
+  CacheRootMismatch,
   /// 校验没通过：证明无效或算出来的 root 与 `info.root` 不符（spec 4.2）。
   /// 是一个 `Err` 而不是 `Ok(Partial)`——调用方要靠它对该 Peer 记一次失败
   RootMismatch,
@@ -177,6 +179,7 @@ impl std::fmt::Display for StoreError {
       }
       StoreError::NotDownloadable(s) => write!(f, "block is {s:?}, nothing to verify"),
       StoreError::ProofMissing => f.write_str("block is not cached and no proof was given"),
+      StoreError::CacheRootMismatch => f.write_str("leaf cache belongs to a different root"),
       StoreError::RootMismatch => f.write_str("proof or data does not match the root"),
       StoreError::MalformedProgress => f.write_str("progress file is malformed"),
       StoreError::ProgressMismatch => f.write_str("progress file belongs to a different file"),
@@ -403,6 +406,14 @@ impl FileStore {
     PathBuf::from(p)
   }
 
+  /// 叶子缓存单独一个文件：它比进度大得多（每 block 32 字节），而变化次数少
+  /// 得多（每个 block 一次），不该跟着每次写 piece 一起落盘。
+  pub fn leaves_path(&self) -> PathBuf {
+    let mut p = self.path.clone().into_os_string();
+    p.push(".q2q.leaves");
+    PathBuf::from(p)
+  }
+
   pub fn save_progress(&self) -> Result<(), StoreError> {
     let states: Vec<BValue> = self
       .blocks
@@ -485,6 +496,80 @@ impl FileStore {
         return Err(StoreError::MalformedProgress);
       }
     }
+    Ok(())
+  }
+
+  /// 把已验证的叶子写出去。`root` 一并存——回来时靠它确认这份缓存属于同一个文件。
+  pub fn save_leaves(&self, root: &Hash) -> Result<(), StoreError> {
+    let leaves: Vec<BValue> = (0..self.block_count())
+      .map(|i| match self.cache.leaf(i) {
+        Some(h) => BValue::Bytes(h.to_vec()),
+        // 空串表示这一格还不知道
+        None => BValue::Bytes(Vec::new()),
+      })
+      .collect();
+
+    let mut d = Dict::new();
+    d.insert(b"v".to_vec(), BValue::Int(1));
+    d.insert(b"root".to_vec(), BValue::Bytes(root.to_vec()));
+    d.insert(b"leaves".to_vec(), BValue::List(leaves));
+
+    let mut f = FsFile::create(self.leaves_path())?;
+    f.write_all(&BValue::Dict(d).encode())?;
+    Ok(())
+  }
+
+  /// 读回存下的叶子。`root` 是当前 info 的树根：缓存文件里记的那个必须与它一致，
+  /// 否则换了文件或者文件被改过，一个叶子都不能信。
+  pub fn load_leaves(&mut self, root: &Hash) -> Result<(), StoreError> {
+    let bytes = std::fs::read(self.leaves_path())?;
+    let value = bencode::decode(&bytes).map_err(|_| StoreError::MalformedProgress)?;
+    let d = match &value {
+      BValue::Dict(d) => d,
+      _ => return Err(StoreError::MalformedProgress),
+    };
+
+    let saved = match d.get(&b"root"[..]) {
+      Some(BValue::Bytes(b)) if b.len() == 32 => {
+        let mut h = [0u8; 32];
+        h.copy_from_slice(b);
+        h
+      }
+      _ => return Err(StoreError::MalformedProgress),
+    };
+    if &saved != root {
+      return Err(StoreError::CacheRootMismatch);
+    }
+
+    let list = match d.get(&b"leaves"[..]) {
+      Some(BValue::List(v)) => v,
+      _ => return Err(StoreError::MalformedProgress),
+    };
+    if list.len() != self.block_count() {
+      return Err(StoreError::MalformedProgress);
+    }
+
+    let mut slots = Vec::with_capacity(list.len());
+    for item in list {
+      match item {
+        BValue::Bytes(b) if b.is_empty() => slots.push(None),
+        BValue::Bytes(b) if b.len() == 32 => {
+          let mut h = [0u8; 32];
+          h.copy_from_slice(b);
+          slots.push(Some(h));
+        }
+        _ => return Err(StoreError::MalformedProgress),
+      }
+    }
+
+    let cache = LeafCache::from_slots(slots);
+    // 整表都在的时候可以真正自证：重建出来的 root 必须对得上
+    if let Some(r) = cache.root() {
+      if &r != root {
+        return Err(StoreError::CacheRootMismatch);
+      }
+    }
+    self.cache = cache;
     Ok(())
   }
 }
@@ -828,6 +913,88 @@ mod tests {
     store.write_piece(0, 0, &[6u8; PIECE_SIZE]).unwrap();
     assert_eq!(store.state(0).unwrap(), BlockState::Downloaded);
     assert_eq!(store.verify(0, None, &root), Err(StoreError::RootMismatch));
+  }
+
+  /// 把一个 block 的 piece 全写进去，状态推进到 Downloaded。
+  fn fill(store: &mut FileStore, block: usize, data: &[u8]) {
+    for p in 0..store.piece_count(block).unwrap() {
+      let start = p * PIECE_SIZE;
+      let end = (start + PIECE_SIZE).min(data.len());
+      store.write_piece(block, p, &data[start..end]).unwrap();
+    }
+  }
+
+  /// 建一个已经校验过 block 0、并且把缓存落了盘的 store。
+  fn verified_store(dir: &TempDir) -> (FileStore, std::path::PathBuf, Hash, Vec<u8>) {
+    let path = dir.path().join("f");
+    let length = 2 * PIECE_SIZE as u64;
+    let data = vec![5u8; 2 * PIECE_SIZE];
+    let leaf = leaf_hash(&data);
+    let root = merkle::root(&[leaf]);
+
+    let mut store = FileStore::create(&path, length, 256 * 1024).unwrap();
+    fill(&mut store, 0, &data);
+    let proof = merkle::prove(&[leaf], 0);
+    store.verify(0, Some(&proof), &root).unwrap();
+    store.save_leaves(&root).unwrap();
+    (store, path, root, data)
+  }
+
+  #[test]
+  fn cached_leaves_survive_a_reopen() {
+    let dir = TempDir::new().unwrap();
+    let (_, path, root, data) = verified_store(&dir);
+    let length = 2 * PIECE_SIZE as u64;
+
+    // 新 store 的缓存是空的；从文件读回之后，重新写满就不必再去要证明
+    let mut reopened = FileStore::open(&path, length, 256 * 1024).unwrap();
+    assert_eq!(reopened.cache().known_count(), 0);
+    reopened.load_leaves(&root).unwrap();
+    assert_eq!(reopened.cache().known_count(), 1);
+
+    fill(&mut reopened, 0, &data);
+    assert_eq!(reopened.state(0).unwrap(), BlockState::Downloaded);
+    assert_eq!(
+      reopened.verify(0, None, &root).unwrap(),
+      BlockState::Verified
+    );
+  }
+
+  #[test]
+  fn a_leaf_cache_from_another_root_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let (_, path, _, _) = verified_store(&dir);
+    let length = 2 * PIECE_SIZE as u64;
+
+    let mut reopened = FileStore::open(&path, length, 256 * 1024).unwrap();
+    assert_eq!(
+      reopened.load_leaves(&[0xff; 32]),
+      Err(StoreError::CacheRootMismatch)
+    );
+  }
+
+  #[test]
+  fn a_tampered_leaf_cache_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let (store, path, root, _) = verified_store(&dir);
+    let length = 2 * PIECE_SIZE as u64;
+
+    // root 字段不动，只把叶子换掉：整表重建出来的根会对不上
+    let mut d = match bencode::decode(&std::fs::read(store.leaves_path()).unwrap()).unwrap() {
+      BValue::Dict(d) => d,
+      _ => unreachable!(),
+    };
+    d.insert(
+      b"leaves".to_vec(),
+      BValue::List(vec![BValue::Bytes(vec![0xab; 32])]),
+    );
+    std::fs::write(store.leaves_path(), BValue::Dict(d).encode()).unwrap();
+
+    let mut reopened = FileStore::open(&path, length, 256 * 1024).unwrap();
+    assert_eq!(
+      reopened.load_leaves(&root),
+      Err(StoreError::CacheRootMismatch)
+    );
   }
 
   #[test]

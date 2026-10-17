@@ -237,6 +237,18 @@ impl LeafCache {
     self.leaves.iter().filter(|h| h.is_some()).count()
   }
 
+  /// The cached leaf, if this index is known. Used when writing the cache out.
+  pub fn leaf(&self, index: usize) -> Option<&Hash> {
+    self.leaves.get(index)?.as_ref()
+  }
+
+  /// Rebuild a cache from persisted slots. **The caller must have established
+  /// that these leaves belong to the same root** — a single slot cannot vouch
+  /// for itself, only the whole table can (see `LeafCache::root`).
+  pub fn from_slots(slots: Vec<Option<Hash>>) -> Self {
+    LeafCache { leaves: slots }
+  }
+
   /// O(1) check for a block whose leaf is cached. `None` means this index is
   /// not cached yet and the caller has to go get a proof.
   pub fn verify(&self, index: usize, block: &[u8]) -> Option<bool> {
