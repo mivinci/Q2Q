@@ -1,5 +1,7 @@
 //! Client construction and identity lifecycle.
 
+pub use crate::reader::{OpenOptions, VerifiedFile};
+
 pub use crate::control::{ControlError, ControlSession};
 pub use crate::peer::PeerSession;
 pub use crate::publication::Publication;
@@ -85,7 +87,7 @@ impl Builder {
       track_url,
       storage_dir,
       identity,
-      session: OnceCell::new(),
+      session: Arc::new(OnceCell::new()),
       publishing: Arc::new(AtomicBool::new(false)),
       max_download_peers,
     })
@@ -97,7 +99,7 @@ pub struct Client {
   track_url: Url,
   storage_dir: PathBuf,
   identity: Identity,
-  session: OnceCell<Arc<ControlSession>>,
+  session: Arc<OnceCell<Arc<ControlSession>>>,
   publishing: Arc<AtomicBool>,
   max_download_peers: usize,
 }
@@ -107,15 +109,31 @@ impl Client {
   /// Publication/download handles maintain heartbeats while active; callers
   /// using this lower-level session alone must drive its heartbeat themselves.
   pub async fn connect(&self) -> Result<Arc<ControlSession>, ControlError> {
-    self
-      .session
-      .get_or_try_init(|| async {
-        ControlSession::connect(&self.identity, &self.track_url)
-          .await
-          .map(Arc::new)
-      })
-      .await
-      .cloned()
+    self.connect_owned().await
+  }
+
+  pub(crate) fn connect_owned(
+    &self,
+  ) -> impl std::future::Future<Output = Result<Arc<ControlSession>, ControlError>> + Send + 'static
+  {
+    let cell = self.session.clone();
+    let identity = self.identity.clone();
+    let url = self.track_url.clone();
+    async move {
+      cell
+        .get_or_try_init(|| async { ControlSession::connect(&identity, &url).await.map(Arc::new) })
+        .await
+        .cloned()
+    }
+  }
+
+  /// Open a verified, seekable file with a bounded read-ahead window.
+  pub fn open(
+    &self,
+    seed: &q2q_core::seed::Seed,
+    path: impl Into<PathBuf>,
+  ) -> crate::reader::OpenOptions<'_> {
+    crate::reader::OpenOptions::new(self, seed.clone(), path.into(), self.max_download_peers)
   }
 
   /// Publish one local file and maintain its announcement until the handle is

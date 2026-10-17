@@ -3,7 +3,7 @@
 All SDK test cases and fixtures live in this flat directory.
 
 - `sdk.rs`: Cargo integration target using only the public `q2q` API.
-- `client.rs`, `download_store.rs`, `transfer.rs`, `scheduler.rs`, `cdn.rs`, `peer_identity.rs`, `punch_transport.rs`, `webrtc_transport.rs`: unit test modules loaded from their source modules through `#[cfg(test)]` and `#[path]`, preserving access to private implementation details.
+- `client.rs`, `download_store.rs`, `transfer.rs`, `scheduler.rs`, `cdn.rs`, `reader.rs`, `peer_identity.rs`, `punch_transport.rs`, `webrtc_transport.rs`: unit test modules loaded from their source modules through `#[cfg(test)]` and `#[path]`, preserving access to private implementation details.
 - `peer.rs`: authenticated local WebRTC pair fixture, compiled only for unit tests.
 - `http.rs`: shared local HTTP fixture for unit and integration tests.
 

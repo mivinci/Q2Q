@@ -48,11 +48,25 @@ struct State {
   pending: VecDeque<usize>,
   done: Vec<bool>,
   remaining: usize,
+  leased: Vec<bool>,
+  demand: Option<Demand>,
+}
+
+struct Demand {
+  start: usize,
+  end: usize,
+  urgent: Option<(usize, tokio::time::Instant)>,
+  cdn_ready: bool,
+  peers_exhausted: bool,
+  errors: Vec<Option<String>>,
+  source_error: Option<String>,
+  fatal: Option<String>,
 }
 
 pub(crate) struct WorkQueue {
   state: Mutex<State>,
   changed: watch::Sender<u64>,
+  focus_changed: watch::Sender<u64>,
   pub(crate) progress: watch::Sender<TransferProgress>,
   length: u64,
   block_size: u32,
@@ -85,15 +99,226 @@ impl WorkQueue {
     Arc::new(Self {
       state: Mutex::new(State {
         remaining: pending.len(),
+        leased: vec![false; done.len()],
+        demand: None,
         pending,
         done,
       }),
       changed: watch::channel(0).0,
+      focus_changed: watch::channel(0).0,
       progress,
       length: seed.info.length,
       block_size: seed.info.block_size,
       scope,
     })
+  }
+
+  pub(crate) fn demand(
+    seed: &Seed,
+    bits: &[u8],
+    progress: watch::Sender<TransferProgress>,
+  ) -> Arc<Self> {
+    let queue = Self::new(seed, bits, progress);
+    {
+      let mut state = queue.state.lock().unwrap_or_else(|e| e.into_inner());
+      let count = state.done.len();
+      state.pending.clear();
+      state.demand = Some(Demand {
+        start: 0,
+        end: 0,
+        urgent: None,
+        cdn_ready: false,
+        peers_exhausted: false,
+        errors: vec![None; count],
+        source_error: None,
+        fatal: None,
+      });
+    }
+    queue
+  }
+
+  fn notify(&self) {
+    self.changed.send_modify(|v| *v = v.wrapping_add(1));
+  }
+
+  pub(crate) fn subscribe_focus(&self) -> watch::Receiver<u64> {
+    self.focus_changed.subscribe()
+  }
+
+  pub(crate) fn focus(&self, index: usize, ahead: usize, wait: Duration, urgent: bool) {
+    let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+    let end = index
+      .saturating_add(ahead)
+      .saturating_add(1)
+      .min(state.done.len());
+    if let Some(d) = &mut state.demand {
+      d.start = index;
+      d.end = end;
+      d.urgent = urgent.then(|| (index, tokio::time::Instant::now() + wait));
+      for error in d.errors.iter_mut().take(end).skip(index) {
+        *error = None;
+      }
+    }
+    self.focus_changed.send_modify(|v| *v = v.wrapping_add(1));
+    state.pending = (index..end)
+      .filter(|i| !state.done[*i] && !state.leased[*i])
+      .collect();
+    drop(state);
+    self.notify();
+  }
+
+  pub(crate) fn peer_status(&self, exhausted: bool, error: Option<String>) {
+    let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(d) = &mut state.demand {
+      d.peers_exhausted = exhausted;
+      if let Some(error) = error {
+        d.source_error = Some(error);
+      }
+    }
+    drop(state);
+    self.notify();
+  }
+
+  pub(crate) fn cdn_status(&self, result: Result<(), String>) {
+    let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(d) = &mut state.demand {
+      match result {
+        Ok(()) => d.cdn_ready = true,
+        Err(e) => {
+          d.cdn_ready = false;
+          d.source_error = Some(e);
+        }
+      }
+    }
+    drop(state);
+    self.notify();
+  }
+
+  pub(crate) fn fail(&self, message: String) {
+    if let Some(d) = &mut self.state.lock().unwrap_or_else(|e| e.into_inner()).demand {
+      d.fatal = Some(message);
+    }
+    progress::finish(&self.progress, progress::TransferState::Failed);
+    self.notify();
+  }
+
+  pub(crate) fn block_failed(&self, index: usize, error: String) {
+    if let Some(d) = &mut self.state.lock().unwrap_or_else(|e| e.into_inner()).demand {
+      d.errors[index] = Some(error);
+    }
+    self.notify();
+  }
+
+  pub(crate) async fn verified(&self, index: usize) -> std::io::Result<()> {
+    let mut changed = self.changed.subscribe();
+    loop {
+      {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let d = state.demand.as_ref().expect("demand queue");
+        if let Some(error) = &d.fatal {
+          return Err(std::io::Error::other(error.clone()));
+        }
+        if state.done[index] {
+          return Ok(());
+        }
+        if d.peers_exhausted
+          && let Some(error) = d.errors[index]
+            .as_ref()
+            .or(d.source_error.as_ref().filter(|_| !d.cdn_ready))
+        {
+          return Err(std::io::Error::other(error.clone()));
+        }
+      }
+      changed.changed().await.expect("queue sender");
+    }
+  }
+
+  pub(crate) async fn cdn_needed(&self) {
+    let mut changed = self.changed.subscribe();
+    loop {
+      let deadline = {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let d = state.demand.as_ref().expect("demand queue");
+        if state.remaining == 0 || (d.peers_exhausted && !state.pending.is_empty()) {
+          return;
+        }
+        d.urgent
+          .filter(|(i, _)| !state.done[*i])
+          .map(|(_, deadline)| deadline)
+      };
+      if let Some(deadline) = deadline {
+        tokio::select! { _ = tokio::time::sleep_until(deadline) => return, _ = changed.changed() => {} }
+      } else {
+        changed.changed().await.expect("queue sender");
+      }
+    }
+  }
+
+  pub(crate) async fn claim_cdn(self: &Arc<Self>) -> Option<BlockLease> {
+    let mut changed = self.changed.subscribe();
+    loop {
+      let deadline = {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.remaining == 0 {
+          return None;
+        }
+        let d = state.demand.as_ref().expect("demand queue");
+        if d.fatal.is_some() {
+          return None;
+        }
+        let deadline = d
+          .urgent
+          .filter(|(i, _)| !state.done[*i])
+          .map(|(_, deadline)| deadline);
+        let position = state.pending.iter().position(|i| {
+          d.errors[*i].is_none()
+            && (d.peers_exhausted
+              || d.urgent.is_some_and(|(index, deadline)| {
+                index == *i && tokio::time::Instant::now() >= deadline
+              }))
+        });
+        if let Some(index) = position.and_then(|p| state.pending.remove(p)) {
+          state.leased[index] = true;
+          return Some(BlockLease {
+            index,
+            queue: self.clone(),
+            committed: false,
+          });
+        }
+        deadline.filter(|deadline| *deadline > tokio::time::Instant::now())
+      };
+      if let Some(deadline) = deadline {
+        tokio::select! { _ = tokio::time::sleep_until(deadline) => {}, _ = changed.changed() => {} }
+      } else {
+        changed.changed().await.expect("queue sender");
+      }
+    }
+  }
+
+  pub(crate) async fn guard_peer<F: Future<Output = Result<T, TransferError>>, T>(
+    &self,
+    index: usize,
+    operation: F,
+  ) -> Result<T, TransferError> {
+    tokio::pin!(operation);
+    let mut changed = self.changed.subscribe();
+    loop {
+      let deadline = {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state
+          .demand
+          .as_ref()
+          .filter(|d| d.cdn_ready && d.errors[index].is_none())
+          .and_then(|d| d.urgent)
+          .filter(|(i, _)| *i == index)
+          .map(|(_, deadline)| deadline)
+      };
+      if let Some(deadline) = deadline {
+        tokio::select! { result = &mut operation => return result, _ = tokio::time::sleep_until(deadline) => return Err(TransferError::Timeout), _ = changed.changed() => {} }
+      } else {
+        tokio::select! { result = &mut operation => return result, _ = changed.changed() => {} }
+      }
+    }
   }
 
   pub(crate) fn complete(&self) -> bool {
@@ -121,7 +346,20 @@ impl WorkQueue {
     loop {
       {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(index) = state.pending.pop_front() {
+        if state.demand.as_ref().is_some_and(|d| d.fatal.is_some()) {
+          return None;
+        }
+        let eligible = state.pending.iter().position(|index| {
+          !state.demand.as_ref().is_some_and(|d| {
+            d.cdn_ready
+              && d.errors[*index].is_none()
+              && d
+                .urgent
+                .is_some_and(|(i, deadline)| i == *index && tokio::time::Instant::now() >= deadline)
+          })
+        });
+        if let Some(index) = eligible.and_then(|position| state.pending.remove(position)) {
+          state.leased[index] = true;
           return Some(BlockLease {
             index,
             queue: self.clone(),
@@ -136,9 +374,12 @@ impl WorkQueue {
     }
   }
 
-  async fn finished(&self) {
+  pub(crate) async fn finished(&self) {
     let mut changed = self.changed.subscribe();
-    while !self.complete() {
+    while {
+      let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+      state.remaining != 0 && state.demand.as_ref().is_none_or(|d| d.fatal.is_none())
+    } {
       changed.changed().await.expect("queue retains its sender");
     }
   }
@@ -157,6 +398,7 @@ impl BlockLease {
   pub(crate) fn commit(mut self) {
     {
       let mut state = self.queue.state.lock().unwrap_or_else(|e| e.into_inner());
+      state.leased[self.index] = false;
       state.done[self.index] = true;
       state.remaining -= 1;
     }
@@ -174,13 +416,16 @@ impl BlockLease {
 impl Drop for BlockLease {
   fn drop(&mut self) {
     if !self.committed {
-      self
-        .queue
-        .state
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .pending
-        .push_front(self.index);
+      let mut state = self.queue.state.lock().unwrap_or_else(|e| e.into_inner());
+      state.leased[self.index] = false;
+      if state
+        .demand
+        .as_ref()
+        .is_none_or(|d| self.index >= d.start && self.index < d.end)
+      {
+        state.pending.push_front(self.index);
+      }
+      drop(state);
       self
         .queue
         .changed

@@ -431,7 +431,9 @@ impl PeerSession {
         },
       )
       .await?;
-      let (bytes, proof) = self.receive_block(index, length, &completed).await?;
+      let (bytes, proof) = queue
+        .guard_peer(index, self.receive_block(index, length, &completed))
+        .await?;
       let root = seed.info.root;
       // Reject untrusted data before it can overwrite the destination.
       if !merkle::verify(&bytes, index, count, &proof, &root) {

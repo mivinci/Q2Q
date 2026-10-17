@@ -146,6 +146,62 @@ async fn block(
   exact_body(response, length as usize).await
 }
 
+pub(crate) struct Source {
+  http: Client,
+  tree: ProofTree,
+  urls: Vec<Url>,
+}
+impl Source {
+  pub(crate) async fn load(
+    seed: &Seed,
+    progress: &watch::Sender<TransferProgress>,
+  ) -> Result<Self, TransferError> {
+    let http = Client::builder()
+      .timeout(Duration::from_secs(20))
+      .connect_timeout(Duration::from_secs(5))
+      .redirect(reqwest::redirect::Policy::limited(3))
+      .build()
+      .map_err(http_error)?;
+    let urls: Vec<_> = seed
+      .cdn_list
+      .iter()
+      .filter_map(|source| http_url(source).ok())
+      .collect();
+    if urls.is_empty() {
+      return Err(error("no usable CDN source"));
+    }
+    let tree = leaf_tree(&http, seed, progress).await?;
+    Ok(Self { http, tree, urls })
+  }
+  pub(crate) async fn fetch(
+    &self,
+    seed: &Seed,
+    index: usize,
+    progress: &watch::Sender<TransferProgress>,
+  ) -> Result<(Vec<u8>, merkle::Proof), TransferError> {
+    let proof = self.tree.proof(index).expect("validated block index");
+    let mut last = error("no usable CDN source");
+    for url in &self.urls {
+      match block(&self.http, url.clone(), seed, index, progress).await {
+        Ok(bytes)
+          if merkle::verify(
+            &bytes,
+            index,
+            seed.info.leaf_count(),
+            &proof,
+            &seed.info.root,
+          ) =>
+        {
+          return Ok((bytes, proof));
+        }
+        Ok(_) => last = error("HTTP block does not match content root"),
+        Err(e) => last = e,
+      }
+    }
+    Err(last)
+  }
+}
+
 pub(crate) async fn download(
   seed: Seed,
   store: Arc<Mutex<DownloadStore>>,

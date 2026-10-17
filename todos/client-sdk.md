@@ -42,7 +42,7 @@ publication.close().await?;
 1. **SDK 基础**：建立 `q2q::client::builder()`；持久化 Ed25519 身份并暴露稳定的 `peer_id`；把 Track 和 Punch 的线协议类型放在各自 crate 中，让 SDK 和服务端使用同一套定义。验收：重新构建得到相同 `peer_id`，损坏的身份文件会报错，现有服务端仍使用相同的 JSON 形状。
 2. **单 Peer 文件传输**：从本机文件生成种子与 Merkle 根，宣告、Punch join，通过 `webrtc-rs/webrtc` 建连、传输并校验 block；`Publication` 和 `Transfer` 管理生命周期。Punch 转发 SDP offer/answer 和 ICE candidate；piece 写入目标文件后经 Merkle 校验才标记 verified 并确认完成。
 3. **可靠下载**：断点续传、多 Peer 取块、进度/取消、CDN 按 block 回退。所有来源经过相同校验；仅已验证的 block 可被读取或上传。
-4. **VOD**：提供可 seek 的已验证读取接口，按播放位置和缓冲水位决定取块优先级。
+4. **VOD**：已实现单游标 AsyncRead/AsyncSeek、固定预取窗口与紧急块 CDN 回退；后续可扩展自适应水位和多游标。
 5. **直播**：先定义分段索引、更新签名和滑动窗口；现有固定长度、固定 Merkle 根的种子不能直接表示持续增长的直播流。
 
 SDK 的高层 API 不要求应用直接发送 `announce`、`join` 或 `piece` 消息；这些协议步骤仍应通过类型化事件和错误可观测。
@@ -149,3 +149,25 @@ transfer.wait().await?;
 ### 测试布局
 
 SDK 测试统一放在 `crates/q2q/tests`，保持单层目录。公开 API 用例由 `tests/sdk.rs` 作为独立 Cargo 集成测试运行；需要访问内部状态的用例通过各源码文件的 cfg(test)/path 入口编译，源码中不再内嵌测试实现。HTTP 与真实 WebRTC 测试夹具同样集中到 tests，避免为了测试扩大 SDK 的公开接口。执行 `cargo test -p q2q` 会覆盖两类测试。
+
+
+### 第四阶段：VOD 已验证读取
+
+```rust
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use std::{io::SeekFrom, time::Duration};
+let mut file = client.open(&seed, "video.mp4")
+    .prefetch_blocks(8) // 默认 8，范围 0–64；0 表示只取当前块
+    .read_timeout(Duration::from_secs(30))
+    .await?;
+file.seek(SeekFrom::Start(offset)).await?;
+let n = file.read(&mut buffer).await?;
+```
+
+- `open` 新建目标或从同名 SDK 检查点恢复；已有非 SDK 文件、错误种子、长度或检查点均拒绝覆盖。返回文件句柄后后台发现 Peer，首次 read/seek 才建立取块窗口；完成的本地目标不需要网络。句柄持有排他锁，Drop 取消所有网络任务，已开始的阻塞磁盘操作可完成，检查点继续保留。
+- 当前版本一个文件句柄对应一个游标，使用 Tokio `AsyncRead` / `AsyncSeek`。读取等待整块通过 Merkle 校验并持久化，再重新读取并核对已认证的叶子哈希；从不直接暴露稀疏目标文件中的未下载字节。句柄缓存一个已校验块；外部修改磁盘内容会在重新读取时报告 InvalidData，可关闭后重新 open 来重验并修复。
+- 当前块优先，随后是固定数量预取块，不进行全文件后台填充。seek 撤下旧窗口尚未开始的块，保留已在途任务和已验证缓存；移到 EOF 或 EOF 之后不再预取。负偏移或 u64 溢出报 InvalidInput，EOF 返回 0。read 被取消不会前移游标，seek 会丢弃旧的读取等待。
+- 当前读取块先给 P2P 最多 2 秒（若 read_timeout 较短，则为其一半）；超过预算后加载并验证 CDN 叶子表。只有 CDN 元数据可用后，才终止持有该紧急块的慢 Peer 并回收租约，CDN 随后独占该块；其他 Peer 继续工作。没有 Peer 时 CDN 可填充当前整个预取窗口。CDN 镜像逐块重试，每块仍需同一根校验和持久化流程；坏 CDN 不终止健康 Peer。
+- read_timeout 限制每次缺块等待（包括验证和磁盘读取），超时返回 TimedOut，游标不动；已开始的下载仍可完成。来源耗尽返回读取错误，句柄可通过下一次 read/seek 再请求窗口。首次查询仍只使用 Track 当前页；窗口变更后可重连已有候选，暂不刷新 Track 列表。控制会话失效和 CDN 证明表加载失败后，本句柄不重新建立该来源，需要重新 open。
+- `progress()` / `subscribe_progress()` 沿用下载快照，计数表示整个文件已验证的内容，未必达到完整文件大小。完整文件最终同步后发布 Completed；部分窗口读完仍保持 Downloading，Drop 发布 Cancelled。来源错误可以只影响某次读取；磁盘写入/检查点错误会发布 Failed 并阻止后续提交。
+- 测试覆盖随机 seek、跨块读取、尾部/越界 EOF、非法偏移、取消读取后 seek、超时、恢复、HTTP/磁盘损坏拒绝、窗口撤销、租约互斥、健康 P2P 零 HTTP，以及真实双 WebRTC 连接中 CDN 接手慢块且另一 Peer 继续取块。

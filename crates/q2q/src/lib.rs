@@ -11,6 +11,7 @@ mod peer;
 mod peer_identity;
 mod progress;
 mod punch_transport;
+mod reader;
 mod scheduler;
 pub mod transfer;
 mod webrtc_transport;
@@ -24,3 +25,7 @@ pub mod protocol {
   pub use q2q_punch::message as punch;
   pub use q2q_track::wire as track;
 }
+
+#[cfg(test)]
+#[path = "../tests/http.rs"]
+mod test_http;

@@ -1,8 +1,6 @@
 use super::*;
 
-#[path = "http.rs"]
-mod http;
-use http::*;
+use crate::test_http::*;
 
 #[tokio::test]
 async fn invalid_range_status_encoding_and_body_lengths_are_rejected() {
