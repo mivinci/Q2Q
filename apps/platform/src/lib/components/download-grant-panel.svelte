@@ -19,8 +19,8 @@
       const response = await fetch(`/api/publications/${publicationId}/seed`);
       if (!response.ok) throw new Error('seed unavailable');
       const bytes = new Uint8Array(await response.arrayBuffer());
-      const grant = await uploadRequest<{ sourceUrl: string }>(`/api/publications/${publicationId}/download-grants`);
-      await downloadSeed(bytes, grant.sourceUrl, name);
+      const grant = await uploadRequest<{ sourceUrl: string; trackUrl: string | null }>(`/api/publications/${publicationId}/download-grants`);
+      await downloadSeed(bytes, grant.sourceUrl, name, grant.trackUrl);
     } catch { issue = text.projectActionFailed; }
     finally { await refresh().catch(() => {}); busy = false; }
   }

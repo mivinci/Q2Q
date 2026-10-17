@@ -2,10 +2,11 @@ import { env } from 'cloudflare:workers';
 import { error } from '@sveltejs/kit';
 import { requireFile } from './files.js';
 import type { PublicationSummary } from '../publication.js';
+import { platformTrack } from './network.js';
 
 // Never serialize provider object keys, storage identity or pending artifact references.
 const summaryColumns = `p.id, p.projectId, p.fileId, p.status, p.name, p.size, p.infoHash,
-  p.createdAt, p.updatedAt, p.withdrawnAt, p.cleanupPending`;
+  p.createdAt, p.updatedAt, p.withdrawnAt, p.cleanupPending, p.networkMode, p.trackUrl`;
 
 export async function publicationBlocksDeletion(fileId: string): Promise<boolean> {
   return !!await env.DB.prepare(`SELECT id FROM content_publication WHERE fileId = ?
@@ -52,18 +53,20 @@ export async function createPublication(fileId: string, userId: string, input: R
   await env.DB.prepare(`INSERT INTO content_publication (
     id, projectId, fileId, uploadId, createdBy, status, name, size, infoHash,
     objectKey, objectVersion, objectEtag, transport, bucketIdentity,
-    preparedSeedKey, preparedProofKey, seedDigest, seedSize, createdAt, updatedAt)
+    preparedSeedKey, preparedProofKey, seedDigest, seedSize, createdAt, updatedAt, networkMode, trackUrl)
     SELECT ?, f.projectId, f.id, u.id, ?, 'creating', f.name, f.size, s.infoHash,
       u.objectKey, u.objectVersion, u.objectEtag, u.transport, u.bucketIdentity,
-      s.seedKey, s.proofKey, s.seedDigest, s.seedSize, ?, ?
+      s.seedKey, s.proofKey, s.seedDigest, s.seedSize, ?, ?, COALESCE(n.mode, 'platform'),
+      CASE WHEN n.mode = 'custom' THEN n.trackUrl ELSE ? END
     FROM file_record f JOIN seed_task s ON s.fileId = f.id JOIN upload_task u ON u.id = s.uploadId
     JOIN project_member m ON m.projectId = f.projectId AND m.userId = ?
+    LEFT JOIN project_network n ON n.projectId = f.projectId
     WHERE f.id = ? AND f.status = 'uploaded' AND s.status = 'ready' AND u.status = 'uploaded'
       AND (f.createdBy = ? OR m.role = 'owner') AND u.objectEtag IS NOT NULL
       AND s.infoHash IS NOT NULL AND s.seedKey IS NOT NULL AND s.proofKey IS NOT NULL
       AND s.seedDigest IS NOT NULL AND s.seedSize > 0
       AND NOT EXISTS (SELECT 1 FROM content_publication WHERE fileId = f.id AND status IN ('creating', 'published'))
-    ON CONFLICT DO NOTHING`).bind(input.id, userId, now, now, userId, fileId, userId).run();
+    ON CONFLICT DO NOTHING`).bind(input.id, userId, now, now, platformTrack(), userId, fileId, userId).run();
   const inserted = await env.DB.prepare('SELECT fileId FROM content_publication WHERE id = ?').bind(input.id).first<{ fileId: string }>();
   if (inserted) {
     if (inserted.fileId !== fileId) error(409, 'publicationConflict');

@@ -10,4 +10,6 @@ export interface PublicationSummary {
   updatedAt: number;
   withdrawnAt: number | null;
   cleanupPending: number;
+  networkMode: 'platform' | 'custom' | 'unconfigured';
+  trackUrl: string | null;
 }

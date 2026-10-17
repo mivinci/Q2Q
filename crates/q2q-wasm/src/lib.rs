@@ -32,6 +32,22 @@ pub fn decode_seed(bytes: &[u8]) -> Result<String, JsError> {
 
 /// Source hints live outside info; changing them must preserve content identity.
 #[wasm_bindgen]
+pub fn seed_with_network(
+  bytes: &[u8],
+  source: String,
+  track: Option<String>,
+) -> Result<Vec<u8>, JsError> {
+  let encoded = seed_with_source(bytes, source)?;
+  let mut seed = q2q_core::seed::Seed::parse(&encoded)?;
+  seed.track_list = track
+    .filter(|value| !value.is_empty())
+    .into_iter()
+    .collect();
+  Ok(seed.encode())
+}
+
+/// Source hints live outside info; changing them must preserve content identity.
+#[wasm_bindgen]
 pub fn seed_with_source(bytes: &[u8], source: String) -> Result<Vec<u8>, JsError> {
   let mut seed = q2q_core::seed::Seed::parse(bytes)?;
   seed.validate()?;

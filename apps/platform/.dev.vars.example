@@ -1,5 +1,6 @@
 # Copy to .dev.vars and fill locally. Use the actual public origin in production.
 AUTH_ORIGIN=http://localhost:5173
+PLATFORM_TRACK_URL=
 BETTER_AUTH_SECRET=
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=

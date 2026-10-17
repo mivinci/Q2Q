@@ -12,6 +12,7 @@
   },
   "workers_dev": true,
   "preview_urls": true,
+  "vars": { "PLATFORM_TRACK_URL": "" },
   "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false } },
   "queues": { "producers": [{ "binding": "PROCESSING_QUEUE", "queue": "q2q-seed-processing" }] },
   "d1_databases": [

@@ -8,7 +8,7 @@ import { createProject, requireProject } from '#lib/server/projects.js';
 
 const projectCookie = 'q2q-platform-project';
 const returnPath = (value: FormDataEntryValue | null) =>
-  value === '/storage' || value === '/settings' || value === '/seeds' ? value : '/library';
+  value === '/storage' || value === '/settings' || value === '/seeds' || value === '/network' ? value : '/library';
 
 export const load: PageServerLoad = async ({ locals, parent }) => {
   if (!locals.user) redirect(303, '/login');

@@ -22,6 +22,7 @@
     <div><dt class="text-xs text-muted-foreground">{text.seedSourceFile}</dt><dd class="mt-2">{#if data.sourceAvailable}<a href={`/library/${data.seed.fileId}`} class="text-primary hover:underline">{data.seed.name}</a>{:else}{data.seed.name}{/if}</dd></div>
     <div><dt class="text-xs text-muted-foreground">{text.fileCreatedAt}</dt><dd class="mt-2">{new Intl.DateTimeFormat(page.data.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(data.seed.createdAt)}</dd></div>
   </dl>
+  <section class="mt-6 rounded-xl border bg-card p-5"><h2 class="text-sm font-medium">{text.network}</h2><p class="mt-2 text-sm">{data.seed.trackUrl ? data.seed.networkMode === 'custom' ? text.networkCustom : text.networkPlatform : text.networkNotConfigured}</p>{#if data.seed.trackUrl}<p class="mt-2 break-all font-mono text-xs text-muted-foreground">{data.seed.trackUrl}</p>{/if}<p class="mt-3 text-xs text-muted-foreground">{text.networkFuture}</p></section>
   {#if data.canManage && data.seed.status === 'published'}<div class="mt-6"><DownloadGrantPanel publicationId={data.seed.id} name={data.seed.name} /></div>{/if}
   <div class="mt-6 rounded-xl border bg-card p-5 text-sm text-muted-foreground">{text.seedStatisticsPending}</div>
 </div>

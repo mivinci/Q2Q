@@ -6,6 +6,7 @@
   import Brand from '#lib/components/brand.svelte';
   import FolderClosed from '@lucide/svelte/icons/folder-closed';
   import Sprout from '@lucide/svelte/icons/sprout';
+  import Network from '@lucide/svelte/icons/network';
   import HardDrive from '@lucide/svelte/icons/hard-drive';
   import Radio from '@lucide/svelte/icons/radio';
   import ChartNoAxesColumn from '@lucide/svelte/icons/chart-no-axes-column';
@@ -25,7 +26,7 @@
     children: Snippet;
   } = $props();
   const text = $derived(messages[page.data.locale]);
-  const section = $derived(page.url.pathname.startsWith('/seeds') ? 'seeds' : page.url.pathname === '/settings' ? 'settings' : page.url.pathname === '/storage' ? 'storage' : 'library');
+  const section = $derived(page.url.pathname.startsWith('/seeds') ? 'seeds' : page.url.pathname === '/network' ? 'network' : page.url.pathname === '/settings' ? 'settings' : page.url.pathname === '/storage' ? 'storage' : 'library');
   const desktop = new MediaQuery('(min-width: 1024px)');
   const persistent = new MediaQuery('(min-width: 768px)');
   // Follow the viewport until the user chooses a width; resizing preserves that choice.
@@ -46,6 +47,7 @@
     { label: 'library', icon: FolderClosed, href: '/library' },
     { label: 'seeds', icon: Sprout, href: '/seeds' },
     { label: 'storage', icon: HardDrive, href: '/storage' },
+    { label: 'network', icon: Network, href: '/network' },
     { label: 'nodes', icon: Radio, href: null },
     { label: 'usage', icon: ChartNoAxesColumn, href: null }
   ] as const;

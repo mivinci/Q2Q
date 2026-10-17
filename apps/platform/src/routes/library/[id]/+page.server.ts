@@ -7,6 +7,7 @@ import { getPlatformStorage } from '#lib/server/storage.js';
 import { uploadTransport } from '#lib/server/upload-storage.js';
 import { processingSummary } from '#lib/server/seed-tasks.js';
 import { publicationBlocksDeletion, listPublications } from '#lib/server/publications.js';
+import { projectNetwork } from '#lib/server/network.js';
 
 export const load: PageServerLoad = async ({ locals, params, parent }) => {
   if (!locals.user) redirect(303, '/login');
@@ -17,6 +18,7 @@ export const load: PageServerLoad = async ({ locals, params, parent }) => {
   const connection = await getPlatformStorage(env.DB, currentProject.id);
   const transport = uploadTransport();
   return {
+    network: await projectNetwork(record.projectId),
     publications: await listPublications(record.id, locals.user.id),
     publicationDeletionBlocked: await publicationBlocksDeletion(record.id),
     processingAvailable: transport === 's3' && !!env.PROCESSING_QUEUE,

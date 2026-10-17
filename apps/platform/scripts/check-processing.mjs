@@ -68,6 +68,7 @@ function fixture(onCommit, onPublicationCommit) {
   sql.exec(readFileSync(new URL('../migrations/0011_publication_jobs.sql', import.meta.url), 'utf8'));
   sql.exec(readFileSync(new URL('../migrations/0012_publication_recovery.sql', import.meta.url), 'utf8'));
   sql.exec(readFileSync(new URL('../migrations/0013_download_grants.sql', import.meta.url), 'utf8'));
+  sql.exec(readFileSync(new URL('../migrations/0014_project_network.sql', import.meta.url), 'utf8'));
   sql.prepare('INSERT INTO file_record VALUES (?, ?, ?, ?, ?, ?)').run('file', 'uploaded', 'fixture.bin', bytes.length, 'project', 'user');
   sql.prepare('INSERT INTO upload_task VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run('upload', 'file', 'uploaded', 'source', 'snapshot', null, 's3', identity);
   sql.prepare('INSERT INTO seed_task (fileId, uploadId, status, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)').run('file', 'upload', 'pending', 0, 0);

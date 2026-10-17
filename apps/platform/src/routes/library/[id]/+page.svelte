@@ -47,6 +47,7 @@
     {#key data.file.id}<ProcessingPanel fileId={data.file.id} size={data.file.size} summary={data.processing} available={data.processingAvailable} canManage={data.canManage} onBusyChange={(value) => processing = value} />{/key}
   {/if}
   {#if data.currentProject}
+    <div class="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4 text-sm"><div><p class="text-xs text-muted-foreground">{text.network}</p><p class="mt-1">{data.network.trackUrl ? data.network.mode === 'custom' ? text.networkCustom : text.networkPlatform : text.networkNotConfigured}</p></div><Button href="/network" variant="ghost" size="sm">{text.networkConfigure}</Button></div>
     <PublicationPanel fileId={data.file.id} publications={data.publications} ready={data.processing?.status === 'ready' && data.processingAvailable && data.file.status === 'uploaded'} canManage={data.canManage} />
     {#key data.file.id}
       <UploadPanel detail onActiveChange={(value) => uploading = value} retryFile={data.canManage && data.file.status === 'pending' ? data.file : undefined} projectId={data.currentProject.id} ready={data.uploadReady && data.file.status !== 'deleting' && !deleting} storageEnabled={data.storageEnabled} localUploads={data.localUploads} uploads={data.uploads} />
