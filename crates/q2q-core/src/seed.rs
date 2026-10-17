@@ -139,6 +139,8 @@ impl Info {
 pub struct Seed {
   pub track_list: Vec<String>,
   pub cdn_list: Vec<String>,
+  /// HTTP(S) sources of the complete raw leaf table (32 bytes per block).
+  pub proof_list: Vec<String>,
   pub leaf_hashes: Option<Vec<Hash>>,
   pub info: Info,
 }
@@ -148,6 +150,7 @@ impl Seed {
     Seed {
       track_list: Vec::new(),
       cdn_list: Vec::new(),
+      proof_list: Vec::new(),
       leaf_hashes: None,
       info,
     }
@@ -183,6 +186,18 @@ impl Seed {
         ),
       );
     }
+    if !self.proof_list.is_empty() {
+      d.insert(
+        b"proof_list".to_vec(),
+        BValue::List(
+          self
+            .proof_list
+            .iter()
+            .map(|s| BValue::bytes(s.as_bytes()))
+            .collect(),
+        ),
+      );
+    }
     if let Some(hashes) = &self.leaf_hashes {
       d.insert(
         b"leaf_hashes".to_vec(),
@@ -206,6 +221,7 @@ impl Seed {
 
     let track_list = string_list(d.get(&b"track_list"[..]))?;
     let cdn_list = string_list(d.get(&b"cdn_list"[..]))?;
+    let proof_list = string_list(d.get(&b"proof_list"[..]))?;
     let leaf_hashes = match d.get(&b"leaf_hashes"[..]) {
       Some(BValue::Bytes(b)) => {
         if b.len() % 32 != 0 {
@@ -234,6 +250,7 @@ impl Seed {
     let seed = Seed {
       track_list,
       cdn_list,
+      proof_list,
       leaf_hashes,
       info,
     };
@@ -580,5 +597,24 @@ mod tests {
   fn rejects_foreign_namespace() {
     let link = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567";
     assert_eq!(parse_magnet(link), Err(MagnetError::WrongNamespace));
+  }
+}
+
+#[cfg(test)]
+mod proof_list_tests {
+  use super::*;
+  #[test]
+  fn proof_urls_round_trip_without_changing_content_identity() {
+    let mut seed = Seed::new(Info::new(0, merkle::EMPTY_ROOT));
+    let hash = seed.info_hash();
+    seed.proof_list = vec!["https://cdn.example.com/data.hashes".into()];
+    let encoded = seed.encode();
+    assert_eq!(Seed::parse(&encoded).unwrap(), seed);
+    assert_eq!(seed.info_hash(), hash);
+    let BValue::Dict(mut value) = bencode::decode(&encoded).unwrap() else {
+      panic!()
+    };
+    value.insert(b"proof_list".to_vec(), BValue::Int(42));
+    assert!(Seed::parse(&BValue::Dict(value).encode()).is_err());
   }
 }

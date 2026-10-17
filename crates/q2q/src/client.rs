@@ -50,7 +50,7 @@ impl Builder {
     self
   }
 
-  /// Maximum concurrent download connections, from 1 to 16 (default 4).
+  /// Maximum concurrent peer connections or CDN block requests, 1–16 (default 4).
   pub fn max_download_peers(mut self, count: usize) -> Self {
     self.max_download_peers = Some(count);
     self
@@ -189,56 +189,91 @@ impl Client {
         .into(),
       );
     }
-    let session = self.connect().await?;
-    let seed = seed.clone();
-    let candidates = session.query(&seed.info_hash()).await?;
-    let mut seen = std::collections::HashSet::new();
-    let targets: Vec<_> = candidates
-      .peers
-      .into_iter()
-      .filter(|peer| {
-        peer.complete
-          && peer.peer_id != self.peer_id().as_str()
-          && seen.insert(peer.peer_id.clone())
-      })
-      .collect();
-    if targets.is_empty() {
-      return Err(TransferError::NoPeers);
+    if seed.info.length == 0 {
+      let seed = seed.clone();
+      return Ok(Transfer::start(progress, async move {
+        let _store = crate::transfer::create_destination(&seed, &path).await?;
+        crate::transfer::sync_destination(&path).await?;
+        Ok(path)
+      }));
     }
+    // A failed control plane must not prevent CDN-only cold start. Bound the
+    // complete discovery path, including Punch Binding setup, before fallback.
+    let discovery = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+      let session = self.connect().await?;
+      let candidates = session.query(&seed.info_hash()).await?;
+      let mut seen = std::collections::HashSet::new();
+      let targets: Vec<_> = candidates
+        .peers
+        .into_iter()
+        .filter(|peer| {
+          peer.complete
+            && peer.peer_id != self.peer_id().as_str()
+            && seen.insert(peer.peer_id.clone())
+        })
+        .collect();
+      if targets.is_empty() {
+        return Err(TransferError::NoPeers);
+      }
+      Ok((session, targets))
+    })
+    .await
+    .map_err(|_| TransferError::Timeout)
+    .and_then(|result| result);
+    let discovery = match discovery {
+      Err(error) if seed.cdn_list.is_empty() => return Err(error),
+      result => result,
+    };
+    let seed = seed.clone();
     let concurrency = self.max_download_peers;
     let updates = progress.clone();
     Ok(Transfer::start(progress, async move {
-      let download = async {
-        let store = match initial_store {
-          Some(store) => store,
-          None => crate::transfer::create_destination(&seed, &path).await?,
-        };
-        let dialing = session.clone();
-        let info_hash = seed.info_hash();
-        crate::scheduler::download(
-          targets,
-          seed,
-          store.clone(),
-          concurrency,
-          updates,
-          move |target| {
-            let session = dialing.clone();
-            async move {
-              session
-                .dial_peer(&target, info_hash)
-                .await
-                .map_err(Into::into)
-            }
-          },
-        )
-        .await?;
-        crate::transfer::sync_destination(&path).await?;
-        Ok(path)
+      let store = match initial_store {
+        Some(store) => store,
+        None => crate::transfer::create_destination(&seed, &path).await?,
       };
-      tokio::select! {
-        result = download => result,
-        result = crate::publication::keep_online(&session) => Err(TransferError::Control(result)),
+      let activity = crate::scheduler::TaskScope::new();
+      let p2p = match discovery {
+        Ok((session, targets)) => {
+          let dialing = session.clone();
+          let info_hash = seed.info_hash();
+          let attempt = crate::scheduler::download_scoped(
+            targets,
+            seed.clone(),
+            store.clone(),
+            concurrency,
+            updates.clone(),
+            move |target| {
+              let session = dialing.clone();
+              async move {
+                session
+                  .dial_peer(&target, info_hash)
+                  .await
+                  .map_err(Into::into)
+              }
+            },
+            activity.clone(),
+          );
+          tokio::select! {
+            result = attempt => result,
+            result = crate::publication::keep_online(&session) => Err(TransferError::Control(result)),
+          }
+        }
+        Err(error) => Err(error),
+      };
+      if let Err(error) = p2p {
+        if seed.cdn_list.is_empty()
+          || !(error.peer_retryable() || matches!(error, TransferError::NoPeers))
+        {
+          return Err(error);
+        }
+        // Workers can be cancelled while blocking writes remain queued. Wait
+        // for both before snapshotting state for a new source phase.
+        activity.idle().await;
+        crate::cdn::download(seed, store.clone(), concurrency, updates).await?;
       }
+      crate::transfer::sync_destination(&path).await?;
+      Ok(path)
     }))
   }
 
@@ -307,90 +342,5 @@ impl std::error::Error for BuildError {
 }
 
 #[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[tokio::test]
-  async fn download_concurrency_is_bounded_and_defaults_to_four() {
-    let dir = tempfile::tempdir().unwrap();
-    for count in [0, 17, usize::MAX] {
-      assert!(matches!(
-        builder().max_download_peers(count).build().await,
-        Err(BuildError::InvalidDownloadPeers)
-      ));
-    }
-    let make = || {
-      builder()
-        .track_url("http://127.0.0.1:1")
-        .identity_file(dir.path().join("identity"))
-        .storage_dir(dir.path().join("storage"))
-    };
-    assert_eq!(make().build().await.unwrap().max_download_peers, 4);
-    assert_eq!(
-      make()
-        .max_download_peers(1)
-        .build()
-        .await
-        .unwrap()
-        .max_download_peers,
-      1
-    );
-    assert_eq!(
-      make()
-        .max_download_peers(16)
-        .build()
-        .await
-        .unwrap()
-        .max_download_peers,
-      16
-    );
-  }
-
-  #[tokio::test]
-  async fn identity_survives_rebuilding_the_client() {
-    let dir = tempfile::tempdir().unwrap();
-    let identity_file = dir.path().join("identity");
-    let storage_dir = dir.path().join("storage");
-    let make_client = || {
-      builder()
-        .track_url("https://track.example.net")
-        .identity_file(&identity_file)
-        .storage_dir(&storage_dir)
-    };
-
-    let first = make_client().build().await.unwrap();
-    let peer_id = first.peer_id().clone();
-    let public_key = first.public_key();
-    drop(first);
-
-    let second = make_client().build().await.unwrap();
-    assert_eq!(second.peer_id(), &peer_id);
-    assert_eq!(second.public_key(), public_key);
-  }
-
-  #[tokio::test]
-  async fn corrupt_identity_is_rejected_without_replacement() {
-    let dir = tempfile::tempdir().unwrap();
-    let identity_file = dir.path().join("identity");
-    std::fs::write(&identity_file, b"broken").unwrap();
-    #[cfg(unix)]
-    {
-      use std::os::unix::fs::PermissionsExt;
-      std::fs::set_permissions(&identity_file, std::fs::Permissions::from_mode(0o600)).unwrap();
-    }
-
-    let result = builder()
-      .track_url("https://track.example.net")
-      .identity_file(&identity_file)
-      .storage_dir(dir.path().join("storage"))
-      .build()
-      .await;
-    assert!(matches!(
-      result,
-      Err(BuildError::Identity(
-        crate::identity::IdentityError::InvalidFormat
-      ))
-    ));
-    assert_eq!(std::fs::read(&identity_file).unwrap(), b"broken");
-  }
-}
+#[path = "../tests/client.rs"]
+mod tests;

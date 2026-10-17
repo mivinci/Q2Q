@@ -3,6 +3,7 @@
 //! The SDK prepares a persistent identity, publishes local files and downloads
 //! verified blocks through authenticated WebRTC peer sessions.
 
+mod cdn;
 mod control;
 mod download_store;
 mod identity;

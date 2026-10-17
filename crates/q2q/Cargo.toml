@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 description = "Q2Q client SDK"
 license = "MIT"
+# Test helpers and private-unit modules live beside the integration target.
+autotests = false
 
 [dependencies]
 async-trait = "0.1.92"
@@ -28,3 +30,7 @@ x509-parser = "0.18.1"
 rcgen = "0.14.10"
 tempfile = "3.27.0"
 tokio = { version = "1.53.3", features = ["macros", "rt"] }
+
+[[test]]
+name = "sdk"
+path = "tests/sdk.rs"

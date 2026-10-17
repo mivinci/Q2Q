@@ -18,6 +18,8 @@ pub struct TransferProgress {
   pub total_blocks: usize,
   pub verified_blocks: usize,
   pub active_peers: usize,
+  /// In-flight HTTP data or leaf-table requests, distinct from WebRTC peers.
+  pub active_cdn_requests: usize,
   pub state: TransferState,
 }
 
@@ -28,6 +30,7 @@ pub(crate) fn channel(seed: &Seed, bits: &[u8]) -> watch::Sender<TransferProgres
     total_blocks: seed.info.leaf_count(),
     verified_blocks: 0,
     active_peers: 0,
+    active_cdn_requests: 0,
     state: TransferState::Downloading,
   };
   for index in 0..progress.total_blocks {
@@ -64,5 +67,18 @@ impl ActivePeer {
 impl Drop for ActivePeer {
   fn drop(&mut self) {
     self.0.send_modify(|p| p.active_peers -= 1);
+  }
+}
+
+pub(crate) struct ActiveCdnRequest(watch::Sender<TransferProgress>);
+impl ActiveCdnRequest {
+  pub(crate) fn new(progress: watch::Sender<TransferProgress>) -> Self {
+    progress.send_modify(|p| p.active_cdn_requests += 1);
+    Self(progress)
+  }
+}
+impl Drop for ActiveCdnRequest {
+  fn drop(&mut self) {
+    self.0.send_modify(|p| p.active_cdn_requests -= 1);
   }
 }

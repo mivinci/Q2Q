@@ -34,7 +34,7 @@ publication.close().await?;
 - `q2q-core`：身份、种子、Merkle、block 与本地文件能力，以及网络无关的 `peer_auth` 签名输入和 `peer_wire` 消息编码。
 - `q2q-track::wire`：Track 的 REST 请求/响应类型。`q2q-track` 的 Redis 实现由可选的 `redis` feature 隔离，SDK 使用默认配置时不引入 Redis。
 - `q2q-punch::message`：Punch 的 RPC 与信令消息、签名和 MAC 校验。`q2q-punch::signal` 保留连接状态机，协议类型从 `message` 引用。
-- `q2q`：应用入口与客户端生命周期；使用 `webrtc-rs/webrtc` 的异步 `PeerConnection`。控制消息和证明走可靠有序通道，1024 字节 piece 走不可靠无序通道；封装 Track/Punch 会话、上传、并行下载与进度通知，后续加入 CDN 回退。
+- `q2q`：应用入口与客户端生命周期；使用 `webrtc-rs/webrtc` 的异步 `PeerConnection`。控制消息和证明走可靠有序通道，1024 字节 piece 走不可靠无序通道；封装 Track/Punch 会话、上传、并行下载与进度通知，使用 HTTP Range 在 P2P 不可用时兜底。
 - 平台适配：原生 Rust 先落地；文件/密钥存储和 WebRTC 留出适配边界，再支持浏览器。
 
 ## 阶段
@@ -53,7 +53,7 @@ SDK 的高层 API 不要求应用直接发送 `announce`、`join` 或 `piece` �
 
 第二阶段已实现首个完整路径：本地准备 → 宣告 → Track 查询 → Punch 同意与信令 → WebRTC 建连与双向身份确认 → bitfield → block 请求与证明 → piece 传输与缺片重传 → Merkle 校验 → 完成。`Client` 复用同一控制会话，可同时发布和下载；文件宣告导致的 Track 会话密钥轮换与查询、心跳串行处理。Punch 的完整推送消息由独立接收任务排队，避免 select 取消正在读取的 QUIC 流而丢失 candidate。后台任务维护在线状态与文件索引租约。
 
-当前范围：每个 Client 一个活跃发布文件，每个发布句柄一次服务一个下载 Peer；下载从 Track 当前页选取去重后的完整持有者，默认最多 4 个并行连接（`max_download_peers` 可设为 1–16）；每个节点最多尝试一次，建连上限 45 秒，每个连接一个 block 的在途窗口；Peer 建连、传输或校验失败后回收未完成的块，交给健康节点或新的候选者，最多 65536 个 block（默认块大小对应 16 GiB）。普通 `download` 拒绝覆盖已有目标；显式 `resume_download` 可恢复本版本创建的目标和检查点。并行调度、续传与进度通知已接入；磁力链 info 拉取、Track 分页/重新查询、自动重连与 CDN 回退尚待实现。低层 `PeerSession::serve_file` / `download_file` 可用于自行管理调度。
+当前范围：每个 Client 一个活跃发布文件，每个发布句柄一次服务一个下载 Peer；下载从 Track 当前页选取去重后的完整持有者，默认最多 4 个并行连接（`max_download_peers` 可设为 1–16）；每个节点最多尝试一次，建连上限 45 秒，每个连接一个 block 的在途窗口；Peer 建连、传输或校验失败后回收未完成的块，交给健康节点或新的候选者，最多 65536 个 block（默认块大小对应 16 GiB）。普通 `download` 拒绝覆盖已有目标；显式 `resume_download` 可恢复本版本创建的目标和检查点。并行调度、续传与进度通知已接入；CDN 按块回退已接入；磁力链 info 拉取、Track 分页/重新查询、自动重连尚待实现。低层 `PeerSession::serve_file` / `download_file` 可用于自行管理调度。
 
 ### 当前 Peer 消息编码
 
@@ -122,8 +122,30 @@ reporter.await?;
 - 所有 Peer 共用块队列，每个 block 同时只有一个任务持有。失败或取消会归还未完成的块，空闲 Peer 会等待其他在途块完成或归还；任务完成后不再等待慢速的建连尝试。
 - 校验和检查点写入统一串行执行，持久化成功后才完成块租约、增长进度并发送 have/block_done。任何磁盘/检查点失败都会阻止排队任务继续写入，避免在半条失败记录之后追加新证明。内存中的在途数据受连接数和块大小限制；一个坏节点不会导致已验证块重下。
 - 重新分配可能使同一连接先请求较高索引、再请求较低索引；接收端按该连接已完成的块集合忽略迟到的旧 piece/proof，不把它们当成新请求的数据。
-- `TransferProgress` 包含 `total_bytes`、`verified_bytes`、`total_blocks`、`verified_blocks`、`active_peers` 和 `state`。初始进度包含续传时重新验证的块。下载到内存但尚未校验/持久化的字节不计入进度。
+- `TransferProgress` 包含 `total_bytes`、`verified_bytes`、`total_blocks`、`verified_blocks`、`active_peers`、`active_cdn_requests` 和 `state`。初始进度包含续传时重新验证的块。下载到内存但尚未校验/持久化的字节不计入进度。
 - `progress()` 获取当前快照，`subscribe_progress()` 返回 Tokio watch 接收器；通知可合并，慢消费者不阻塞下载。`Downloading`、`Completed`、`Failed`、`Cancelled` 表示生命周期；成功状态在最终同步目标文件后发布。取消会终止所有网络任务，已开始的阻塞写入仍可能完成，清理期间快照可继续更新。
 - 本项验收覆盖双 Peer 同时请求、块请求无重复、坏节点块回收、较低索引重试时的迟到数据、并发上限、取消释放目标锁、所有节点失败、续传初始进度、空文件及离线完成。
 
-下一项：CDN 按 block 回退；继续使用相同的根校验与持久化入口，不能将 HTTP 成功响应直接视为可信内容。
+CDN 按 block 回退已接入，见下节。
+
+
+### 第三阶段：CDN 按 block 回退
+
+```rust
+// 地址是同一份完整字节文件；proof_list 是每块 32 字节叶子哈希顺序拼接。
+seed.cdn_list = vec!["https://cdn.example.net/video.mp4".into()];
+seed.proof_list = vec!["https://cdn.example.net/video.mp4.hashes".into()];
+let transfer = client.download(&seed, "video.mp4").await?;
+transfer.wait().await?;
+```
+
+- 策略为 P2P 优先：先尝试当前页的完整 Peer，候选耗尽或控制面失败后，CDN 仅补齐尚未验证的块。整个 Track/Punch 发现阶段上限 15 秒；CDN 不要求 Track/Punch 可用，因此可从零 Peer 冷启动。暂不与慢速 Peer 竞速，也不自动切回 P2P。
+- `Seed::proof_list` 按规范解析/编码，和 cdn_list 一样不参与 info_hash。优先使用已通过种子校验的内联 leaf_hashes；没有内联列表时依次尝试 proof_list。列表必须恰为 block_count × 32 字节，完整重建根并匹配 info.root 后才能取内容；列表失败时尝试下一个来源。当前整表拉取，上限 65536 × 32 字节，不做分段拉取。
+- CDN 使用 HTTP(S) Range：`bytes=start-end`，要求 206 和精确的 Content-Range（包括文件总长）；仅单个请求覆盖整个文件时接受 200。使用 identity 编码，拒绝压缩表示；响应长度必须精确，超长/过短均失败，读取缓冲有界。单请求限时 20 秒、连接限时 5 秒，最多 3 次重定向。
+- 每个 CDN 镜像最多同时运行 max_download_peers 个取块任务。遇到网络/响应/内容校验错误的任务停止，归还未完成块；当前镜像所有任务退出后再尝试下一个镜像，已验证块不重下。磁盘和检查点错误立即停止整个传输。
+- 叶子表构建为可复用 ProofTree，逐块生成 O(log n) 证明；HTTP 字节通过同样的 Merkle 校验后，复用 DownloadStore 的持久化、块租约和续传记录。CDN 数据不因 HTTP 200/206 或正确 Content-Range 而直接可信。
+- `TransferProgress::active_cdn_requests` 单独统计 HTTP 数据/叶子表请求；active_peers 继续只表示 WebRTC Peer。取消会中止 HTTP 请求，并保留可恢复的已验证块。空文件可直接本地完成。
+
+### 测试布局
+
+SDK 测试统一放在 `crates/q2q/tests`，保持单层目录。公开 API 用例由 `tests/sdk.rs` 作为独立 Cargo 集成测试运行；需要访问内部状态的用例通过各源码文件的 cfg(test)/path 入口编译，源码中不再内嵌测试实现。HTTP 与真实 WebRTC 测试夹具同样集中到 tests，避免为了测试扩大 SDK 的公开接口。执行 `cargo test -p q2q` 会覆盖两类测试。

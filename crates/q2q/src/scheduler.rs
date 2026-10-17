@@ -12,6 +12,38 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
+/// Tracks network workers and their non-abortable disk jobs across source phases.
+#[derive(Clone)]
+pub(crate) struct TaskScope(watch::Sender<usize>);
+impl TaskScope {
+  pub(crate) fn new() -> Self {
+    Self(watch::channel(0).0)
+  }
+  pub(crate) fn enter(&self) -> TaskGuard {
+    self.0.send_modify(|count| *count += 1);
+    TaskGuard {
+      scope: self.clone(),
+    }
+  }
+  pub(crate) async fn idle(&self) {
+    let mut count = self.0.subscribe();
+    loop {
+      if *count.borrow_and_update() == 0 {
+        return;
+      }
+      count.changed().await.expect("scope retains its sender");
+    }
+  }
+}
+pub(crate) struct TaskGuard {
+  scope: TaskScope,
+}
+impl Drop for TaskGuard {
+  fn drop(&mut self) {
+    self.scope.0.send_modify(|count| *count -= 1);
+  }
+}
+
 struct State {
   pending: VecDeque<usize>,
   done: Vec<bool>,
@@ -24,6 +56,7 @@ pub(crate) struct WorkQueue {
   pub(crate) progress: watch::Sender<TransferProgress>,
   length: u64,
   block_size: u32,
+  scope: TaskScope,
 }
 
 impl WorkQueue {
@@ -31,6 +64,15 @@ impl WorkQueue {
     seed: &Seed,
     bits: &[u8],
     progress: watch::Sender<TransferProgress>,
+  ) -> Arc<Self> {
+    Self::scoped(seed, bits, progress, TaskScope::new())
+  }
+
+  fn scoped(
+    seed: &Seed,
+    bits: &[u8],
+    progress: watch::Sender<TransferProgress>,
+    scope: TaskScope,
   ) -> Arc<Self> {
     let done: Vec<_> = (0..seed.info.leaf_count())
       .map(|i| {
@@ -50,6 +92,7 @@ impl WorkQueue {
       progress,
       length: seed.info.length,
       block_size: seed.info.block_size,
+      scope,
     })
   }
 
@@ -107,6 +150,10 @@ pub(crate) struct BlockLease {
   committed: bool,
 }
 impl BlockLease {
+  pub(crate) fn disk_task(&self) -> TaskGuard {
+    self.queue.scope.enter()
+  }
+
   pub(crate) fn commit(mut self) {
     {
       let mut state = self.queue.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -144,13 +191,14 @@ impl Drop for BlockLease {
 
 /// Each candidate is tried once. Worker cancellation drops both its RTC session
 /// and its lease; the JoinSet never detaches network workers.
-pub(crate) async fn download<T, F, Fut>(
+pub(crate) async fn download_scoped<T, F, Fut>(
   targets: Vec<T>,
   seed: Seed,
   store: Arc<Mutex<DownloadStore>>,
   concurrency: usize,
   progress: watch::Sender<TransferProgress>,
   connect: F,
+  scope: TaskScope,
 ) -> Result<(), TransferError>
 where
   T: Send + 'static,
@@ -161,7 +209,7 @@ where
     .lock()
     .map_err(|_| TransferError::Protocol("destination lock poisoned".into()))?
     .verified_bitfield();
-  let queue = WorkQueue::new(&seed, &bits, progress);
+  let queue = WorkQueue::scoped(&seed, &bits, progress, scope);
   let seed = Arc::new(seed);
   let connect = Arc::new(connect);
   let mut targets = targets.into_iter();
@@ -176,7 +224,9 @@ where
       let queue = queue.clone();
       let seed = seed.clone();
       let store = store.clone();
+      let task = queue.scope.enter();
       workers.spawn(async move {
+        let _task = task;
         let peer = tokio::select! {
           result = tokio::time::timeout(Duration::from_secs(45), connect(target)) =>
             result.map_err(|_| TransferError::Timeout)??,
@@ -202,50 +252,8 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-  use super::*;
-  use q2q_core::seed::Info;
+#[path = "../tests/scheduler.rs"]
+mod tests;
 
-  #[tokio::test]
-  async fn exclusive_leases_requeue_on_drop_and_wake_idle_workers() {
-    let seed = Seed::new(Info::new(262144 + 7, [0; 32]));
-    let progress = progress::channel(&seed, &[]);
-    let queue = WorkQueue::new(&seed, &[], progress.clone());
-    let first = queue.claim().await.unwrap();
-    let second = queue.claim().await.unwrap();
-    assert_ne!(first.index, second.index);
-    let idle = tokio::spawn({
-      let queue = queue.clone();
-      async move { queue.claim().await }
-    });
-    second.commit();
-    assert!(!queue.complete());
-    let abandoned = first.index;
-    drop(first);
-    let reassigned = tokio::time::timeout(Duration::from_secs(1), idle)
-      .await
-      .unwrap()
-      .unwrap()
-      .unwrap();
-    assert_eq!(reassigned.index, abandoned);
-    reassigned.commit();
-    assert!(queue.claim().await.is_none());
-    assert!(queue.complete());
-    assert_eq!(queue.bitfield(), vec![0xc0]);
-    assert_eq!(progress.borrow().verified_bytes, seed.info.length);
-    assert_eq!(progress.borrow().verified_blocks, 2);
-  }
-
-  #[tokio::test]
-  async fn resumed_blocks_are_never_leased_or_counted_twice() {
-    let seed = Seed::new(Info::new(262144 + 7, [0; 32]));
-    let progress = progress::channel(&seed, &[0x80]);
-    let queue = WorkQueue::new(&seed, &[0x80], progress.clone());
-    let lease = queue.claim().await.unwrap();
-    assert_eq!(lease.index, 1);
-    assert_eq!(progress.borrow().verified_bytes, 262144);
-    lease.commit();
-    assert!(queue.claim().await.is_none());
-    assert_eq!(progress.borrow().verified_bytes, seed.info.length);
-  }
-}
+#[cfg(test)]
+pub(crate) use tests::download;
