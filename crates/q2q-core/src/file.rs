@@ -1,144 +1,19 @@
-//! Local storage for a single content file: block states, piece bitmaps and
-//! in-place writes.
+//! Local storage for a single content file: in-place writes, progress and
+//! leaf-cache persistence.
 //!
 //! Pieces go straight to their final offset — there is no "download to a temp
 //! file, verify, then copy over" step, so a partially downloaded file is a
-//! sparse file as far as the filesystem is concerned.
+//! sparse file as far as the filesystem is concerned. Per-block state and the
+//! piece bitmap live in `block`; this module owns everything that touches disk.
 
 use crate::bencode::{self, BValue, Dict};
+use crate::block::{Block, BlockState, PIECE_SIZE};
 use crate::merkle::{self, Hash, LeafCache, Proof};
 // block 大小的合法范围由 seed 定义（spec 5.2），store 不再自己另立一套
 use crate::seed::{MAX_BLOCK_SIZE, MIN_BLOCK_SIZE};
 use std::fs::File as FsFile;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-
-pub const PIECE_SIZE: usize = 1024;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockState {
-  Missing,
-  Partial,
-  Downloaded,
-  Verified,
-}
-
-/// One block: how much of it has landed, and where it stands.
-///
-/// State and bitmap live together because they are one thing. Keeping them in
-/// parallel vectors means every access has to index twice and stay in step by
-/// hand; here the association is structural.
-#[derive(Debug)]
-pub struct Block {
-  state: BlockState,
-  /// Byte length; only the last block is shorter than the store's block size.
-  len: usize,
-  /// One bit per piece, held as u64 words.
-  bitmap: Vec<u64>,
-}
-
-impl Block {
-  fn new(len: usize) -> Self {
-    let pieces = len.div_ceil(PIECE_SIZE);
-    Block {
-      state: BlockState::Missing,
-      len,
-      bitmap: vec![0u64; pieces.div_ceil(64)],
-    }
-  }
-
-  pub fn state(&self) -> BlockState {
-    self.state
-  }
-
-  pub fn len(&self) -> usize {
-    self.len
-  }
-
-  /// Only true for a block of a zero-length file; exists because `len` is
-  /// public and callers expect the pair.
-  pub fn is_empty(&self) -> bool {
-    self.len == 0
-  }
-
-  pub fn piece_count(&self) -> usize {
-    self.len.div_ceil(PIECE_SIZE)
-  }
-
-  /// Bytes in one piece. Only the last piece of a short block can be short.
-  /// Out-of-range pieces give 0 — this is public, so it must not panic.
-  pub fn piece_len(&self, piece: usize) -> usize {
-    let start = piece * PIECE_SIZE;
-    self.len.saturating_sub(start).min(PIECE_SIZE)
-  }
-
-  pub fn piece_present(&self, piece: usize) -> bool {
-    if piece >= self.piece_count() {
-      return false;
-    }
-    let (word, bit) = (piece / 64, piece % 64);
-    self.bitmap[word] & (1 << bit) != 0
-  }
-
-  fn set_piece(&mut self, piece: usize, present: bool) {
-    let (word, bit) = (piece / 64, piece % 64);
-    if present {
-      self.bitmap[word] |= 1 << bit;
-    } else {
-      self.bitmap[word] &= !(1 << bit);
-    }
-  }
-
-  fn all_pieces_present(&self) -> bool {
-    (0..self.piece_count()).all(|p| self.piece_present(p))
-  }
-
-  /// Record a piece and advance the state. Returns the state afterwards.
-  fn mark_piece(&mut self, piece: usize) -> BlockState {
-    self.set_piece(piece, true);
-    if self.state == BlockState::Missing {
-      self.state = BlockState::Partial;
-    }
-    // 往已校验的 block 里写 piece，字节已经跟 root 不一致了，不能再算 verified。
-    // piece 齐了就落到 Downloaded —— 数据是全的，只是得重新校验一次。
-    if self.state == BlockState::Verified {
-      self.state = BlockState::Partial;
-    }
-    if self.state == BlockState::Partial && self.all_pieces_present() {
-      self.state = BlockState::Downloaded;
-    }
-    self.state
-  }
-
-  fn mark_verified(&mut self) {
-    self.state = BlockState::Verified;
-  }
-
-  /// Drop every piece. Called when verification fails: a root mismatch usually
-  /// means the bytes themselves came from a bad peer, so keeping them would
-  /// only fail again.
-  fn reset(&mut self) {
-    self.bitmap.fill(0);
-    self.state = BlockState::Partial;
-  }
-
-  fn bitmap_bytes(&self) -> Vec<u8> {
-    self.bitmap.iter().flat_map(|w| w.to_le_bytes()).collect()
-  }
-
-  fn set_bitmap_bytes(&mut self, bytes: &[u8]) -> bool {
-    let expected = self.bitmap.len() * 8;
-    if bytes.len() != expected {
-      return false;
-    }
-    for (w, chunk) in self.bitmap.iter_mut().zip(bytes.chunks(8)) {
-      let mut arr = [0u8; 8];
-      arr.copy_from_slice(chunk);
-      *w = u64::from_le_bytes(arr);
-    }
-    true
-  }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
@@ -995,15 +870,6 @@ mod tests {
       reopened.load_leaves(&root),
       Err(StoreError::CacheRootMismatch)
     );
-  }
-
-  #[test]
-  fn out_of_range_queries_answer_instead_of_panicking() {
-    let dir = TempDir::new().unwrap();
-    let store = FileStore::create(dir.path().join("f"), 4 * PIECE_SIZE as u64, 256 * 1024).unwrap();
-    let block = store.block(0).unwrap();
-    assert_eq!(block.piece_len(block.piece_count()), 0);
-    assert!(!block.piece_present(block.piece_count()));
   }
 
   #[test]

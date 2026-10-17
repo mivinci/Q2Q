@@ -9,10 +9,12 @@
 //! - `seed` — info dict, `info_hash`, magnet links
 //! - `identity` — Ed25519 keys, `peer_id`, self-signed tickets
 //! - `mac` — HMAC-SHA-256, the cheap follow-up once a ticket has been signed
-//! - `file` — block states, piece bitmaps, in-place writes
+//! - `block` — one block's state and piece bitmap, no I/O
+//! - `file` — in-place writes, progress and leaf-cache persistence
 
 pub mod bencode;
 pub mod bencode_serde;
+pub mod block;
 pub mod file;
 pub mod identity;
 pub mod mac;
