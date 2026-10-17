@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Q2Q：开源 P2P 网络框架，发布者无需自建后端",
   "workspaces": [
+    "apps/*",
     "docs",
     "packages/*"
   ],
@@ -13,9 +14,17 @@
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "e2e": "node e2e/check-site.mjs",
-    "test": "npm run docs:build && npm run e2e"
+    "test": "npm run docs:build && npm run e2e",
+    "platform:dev": "npm run dev --workspace @q2q/platform",
+    "platform:check": "npm run check --workspace @q2q/platform",
+    "platform:build": "npm run build --workspace @q2q/platform",
+    "platform:preview": "npm run preview --workspace @q2q/platform",
+    "platform:types": "npm run types --workspace @q2q/platform"
   },
   "devDependencies": {
     "playwright-core": "^1.57.0"
+  },
+  "engines": {
+    "node": ">=22.17.0"
   }
 }

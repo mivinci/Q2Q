@@ -1,0 +1,40 @@
+name: Platform
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/platform/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.base.json'
+      - '.node-version'
+      - '.github/workflows/platform.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/platform/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.base.json'
+      - '.node-version'
+      - '.github/workflows/platform.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Platform check and build
+    runs-on: ubuntu-latest
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.node-version'
+          cache: npm
+      - run: npm ci
+      - run: npm run platform:check
+      - run: npm run platform:build

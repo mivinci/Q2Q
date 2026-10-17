@@ -45,6 +45,21 @@ Keep the publisher running and send the seed to the recipient. Use separate stat
 directories for simultaneous clients. See the [CLI guide](docs/en/guide/cli.md) for
 configuration, progress and explicit resume.
 
+## Platform development
+
+Use Node.js 24 (see `.node-version`) and install dependencies from the repository root:
+
+```sh
+npm ci
+npm run platform:dev
+npm run platform:check
+npm run platform:build
+```
+
+The SvelteKit/TypeScript app lives in `apps/platform` and targets Cloudflare Workers.
+See the [platform README](apps/platform/README.md) and [approved design](apps/platform/design/README.md).
+Shared TypeScript compiler options live in the root `tsconfig.base.json`.
+
 ## Development
 
 ```sh
