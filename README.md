@@ -19,7 +19,7 @@ audio/video streaming (VOD and live) — faster transfers, less CDN bandwidth.
 </p>
 
 <p>
-  <a href="https://le0.me/Q2Q/">Website</a> ·
+  <a href="https://docs.q2q.app/">Website</a> ·
   <a href="docs/spec.md">Design</a> ·
   <a href="https://github.com/mivinci/Q2Q/issues">Issues</a> ·
   <a href="LICENSE">License</a>

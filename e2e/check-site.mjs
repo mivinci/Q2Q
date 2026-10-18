@@ -13,10 +13,10 @@ import { chromium } from 'playwright-core';
 const CHROME = process.env.CHROME_PATH
   || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const ROOT = resolve('docs/.vitepress/dist');
-// 站点带 base，页面 URL 也必须带，否则客户端路由跟 SSR 对不上（hydration mismatch）
-const BASE = process.env.SITE_BASE || '/Q2Q/';
+// 独立文档域名部署在站点根路径；保留 SITE_BASE 以便本地验证子路径部署。
+const BASE = process.env.SITE_BASE || '/';
 // 站点现在分语言、分节，所以自检也不再看单页。默认覆盖英文各节、中文占位页
-// 和中文设计文档；也可以显式传页面路径覆盖（npm run e2e -- /Q2Q/guide/）。
+// 和中文设计文档；也可以显式传页面路径覆盖（npm run e2e -- /guide/）。
 const PAGES = process.argv.slice(2).length
   ? process.argv.slice(2)
   : [
