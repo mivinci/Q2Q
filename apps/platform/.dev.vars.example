@@ -6,6 +6,9 @@ PLATFORM_TRACK_URL=
 BETTER_AUTH_SECRET=
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
+# Optional: configure both values to enable Google sign-in.
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
 
 # Vite dev only; never used by the production Worker. Local uploads are limited to 64 MiB.
 UPLOAD_LOCAL_PROXY=true

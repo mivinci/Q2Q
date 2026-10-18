@@ -67,8 +67,11 @@ npx shadcn-svelte@latest add dialog --cwd apps/platform
    - `AUTH_ORIGIN`：浏览器访问平台的固定 origin，开发默认 `http://localhost:5173`。
    - `BETTER_AUTH_SECRET`：至少 32 字符的随机密钥，生产环境使用独立值并保持稳定。
    - `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`：GitHub OAuth App 凭据。
+   - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`：可选的 Google OAuth 凭据；两项均配置后显示 Google 登录入口。
 3. GitHub OAuth App 的 Authorization callback URL 配置为 `http://localhost:5173/api/auth/callback/github`。
 4. 运行 `npm run platform:dev`，访问 `/login`。构建后 preview 使用 4173 端口时，需同步 origin 和回调地址；建议为开发和生产分别创建 OAuth App。
+
+使用 Google 登录时，在 Google Cloud 的 Web OAuth 客户端中添加本地回调 `http://localhost:5173/api/auth/callback/google` 和生产回调 `https://platform.q2q.app/api/auth/callback/google`，并分别配置对应环境的凭据。当前未启用账号关联，已有 GitHub 用户不能仅凭相同邮箱自动绑定 Google 账号；已有邮箱发生冲突时需继续使用原登录方式。
 
 未配置完整认证信息时，登录页显示不可用状态；不提供开发用假登录或通用账号。登录成功后首次访问自动创建个人项目，可以创建其他项目并切换。项目成员关系每次从 D1 查询，Cookie 仅保存当前项目偏好。Team 项目 owner 可管理成员、创建和撤销 7 天有效的一次性邀请链接；接受邀请需登录，链接只保存哈希。项目所有权移交和项目删除尚未开放。
 

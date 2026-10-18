@@ -18,14 +18,18 @@
   ] as const;
 </script>
 
-<div role="group" aria-label={text.appearanceSettings} class="flex rounded-lg bg-border/60 p-0.5">
+<div
+  role="group"
+  aria-label={text.appearanceSettings}
+  class={`flex items-center rounded-lg bg-border/60 ${showLabels ? 'p-0.5' : 'gap-0.5 p-1'}`}
+>
   {#each modes as mode}
     <Button
       variant="ghost"
       size={showLabels ? "sm" : "icon-sm"}
-      class={userPrefersMode.current === mode.value
-        ? 'flex-1 bg-background text-foreground shadow-sm hover:bg-background'
-        : 'flex-1 text-muted-foreground'}
+      class={`${showLabels ? 'flex-1' : 'flex-none'} ${userPrefersMode.current === mode.value
+        ? 'bg-background text-foreground shadow-sm hover:bg-background'
+        : 'text-muted-foreground'}`}
       aria-label={text[mode.label]}
       aria-pressed={userPrefersMode.current === mode.value}
       onclick={() => setMode(mode.value)}
