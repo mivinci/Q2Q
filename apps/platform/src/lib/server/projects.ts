@@ -1,11 +1,49 @@
 import { error } from '@sveltejs/kit';
 
 export type ProjectRole = 'owner' | 'member';
+export const projectCookie = 'q2q-platform-project';
 export interface Project {
   id: string;
   name: string;
   personalUserId: string | null;
   role: ProjectRole;
+}
+
+export interface ProjectMember {
+  userId: string;
+  name: string;
+  image: string | null;
+  role: ProjectRole;
+  createdAt: number;
+}
+
+export async function listProjectMembers(db: D1Database, projectId: string): Promise<ProjectMember[]> {
+  const { results } = await db.prepare(`
+    SELECT u.id AS userId, u.name, u.image, m.role, m.createdAt
+    FROM project_member m JOIN "user" u ON u.id = m.userId
+    WHERE m.projectId = ? ORDER BY CASE m.role WHEN 'owner' THEN 0 ELSE 1 END, m.createdAt, u.id
+  `).bind(projectId).all<ProjectMember>();
+  return results;
+}
+
+export async function renameProject(
+  db: D1Database, projectId: string, userId: string, name: string
+): Promise<boolean> {
+  const result = await db.prepare(`UPDATE project SET name = ?
+    WHERE id = ? AND personalUserId IS NULL
+      AND EXISTS (SELECT 1 FROM project_member WHERE projectId = ? AND userId = ? AND role = 'owner')
+    RETURNING id`).bind(name, projectId, projectId, userId).first<{ id: string }>();
+  return result !== null;
+}
+
+export async function removeProjectMember(
+  db: D1Database, projectId: string, ownerId: string, memberId: string
+): Promise<boolean> {
+  const result = await db.prepare(`DELETE FROM project_member
+    WHERE projectId = ? AND userId = ? AND role = 'member'
+      AND EXISTS (SELECT 1 FROM project_member WHERE projectId = ? AND userId = ? AND role = 'owner')
+    RETURNING userId`).bind(projectId, memberId, projectId, ownerId).first<{ userId: string }>();
+  return result !== null;
 }
 
 export async function listProjects(db: D1Database, userId: string): Promise<Project[]> {

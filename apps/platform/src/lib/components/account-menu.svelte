@@ -2,16 +2,18 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import Settings from '@lucide/svelte/icons/settings';
+  import ChartNoAxesColumn from '@lucide/svelte/icons/chart-no-axes-column';
   import LogOut from '@lucide/svelte/icons/log-out';
   import { messages } from '#lib/i18n.js';
   import { authClient } from '#lib/auth-client.js';
-  import { Button } from '#lib/components/ui/button/index.js';
+  import type { PlanId } from '#lib/server/plans.js';
   import * as Avatar from '#lib/components/ui/avatar/index.js';
   import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 
-  let { user, compact = false, onNavigate }: { user: { name: string; image: string | null }; compact?: boolean; onNavigate?: () => void } = $props();
+  let { user, planId, compact = false, onNavigate }: { user: { name: string; image: string | null }; planId: PlanId; compact?: boolean; onNavigate?: () => void } = $props();
   const text = $derived(messages[page.data.locale]);
   const initial = $derived(Array.from(user.name)[0]?.toUpperCase() ?? 'Q');
+  const planName = $derived(planId === 'creator' ? text.planCreator : planId === 'team' ? text.planTeam : text.planFree);
   let signingOut = $state(false);
   let failed = $state(false);
 
@@ -42,28 +44,22 @@
           <span class="absolute right-0 bottom-0 size-2.5 rounded-full border-2 border-sidebar bg-emerald-500" aria-hidden="true"></span>
         </span>
         <span class={compact ? "sr-only" : "min-w-0"}>
-          <span class="block truncate text-xs font-medium">{user.name}</span>
-          <span class="block truncate text-[10px] text-muted-foreground">{text.signedIn}</span>
+          <span class="block truncate text-[13px] font-medium">{user.name}</span>
+          <span class="block truncate text-xs text-muted-foreground">{planName}</span>
         </span>
       </DropdownMenu.Trigger>
       <DropdownMenu.Content side="top" align="start" sideOffset={10} class="min-w-52">
         <DropdownMenu.Label class="px-2 py-1.5">
-          <span class="block max-w-64 truncate text-xs font-medium">{user.name}</span>
-          <span class="text-[11px] font-normal text-muted-foreground">{text.signedIn}</span>
+          <span class="block max-w-64 truncate text-[13px] font-medium">{user.name}</span>
+          <span class="text-xs font-normal text-muted-foreground">{planName}</span>
         </DropdownMenu.Label>
         <DropdownMenu.Separator />
+        <DropdownMenu.Item onSelect={() => { onNavigate?.(); goto('/usage'); }}><ChartNoAxesColumn class="size-4" />{text.usage}</DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => { onNavigate?.(); goto('/settings'); }}><Settings class="size-4" />{text.settings}</DropdownMenu.Item>
         <DropdownMenu.Separator />
         <DropdownMenu.Item variant="destructive" disabled={signingOut} onSelect={signOut}><LogOut class="size-4" />{text.signOut}</DropdownMenu.Item>
       </DropdownMenu.Content>
     </DropdownMenu.Root>
-    {#if !compact}
-    <Button href="/settings" onclick={onNavigate} variant="ghost" size="icon-lg" aria-label={text.settings}
-      aria-current={page.url.pathname === '/settings' ? 'page' : undefined}
-      class={page.url.pathname === '/settings' ? 'size-11 shrink-0 bg-sidebar-accent text-sidebar-accent-foreground' : 'size-11 shrink-0 text-muted-foreground'}>
-      <Settings class="size-4" aria-hidden="true" />
-    </Button>
-    {/if}
   </div>
-  {#if failed}<p role="alert" class="px-2 pt-2 text-xs text-destructive">{text.signOutFailed}</p>{/if}
+  {#if failed}<p role="alert" class="px-2 pt-2 text-[13px] text-destructive">{text.signOutFailed}</p>{/if}
 </div>

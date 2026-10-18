@@ -21,6 +21,8 @@
     "platform:dev": "npm run dev --workspace @q2q/platform",
     "platform:dev:workers": "npm run dev:workers --workspace @q2q/platform",
     "platform:check:processing": "npm run check:processing --workspace @q2q/platform",
+    "platform:check:projects": "npm run check:projects --workspace @q2q/platform",
+    "platform:check:projects:http": "npm run check:projects:http --workspace @q2q/platform",
     "platform:check": "npm run check --workspace @q2q/platform",
     "platform:build": "npm run build --workspace @q2q/platform",
     "platform:preview": "npm run preview --workspace @q2q/platform",

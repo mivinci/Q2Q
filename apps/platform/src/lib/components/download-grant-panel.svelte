@@ -33,9 +33,9 @@
 </script>
 <div class="mt-3 w-full rounded-lg bg-muted/40 p-3">
   <Button size="sm" variant="outline" disabled={busy} onclick={exportSeed}>{text.exportDownloadSeed}</Button>
-  <p class="mt-2 text-xs text-muted-foreground">{text.downloadGrantWarning}</p>
+  <p class="mt-2 text-[13px] text-muted-foreground">{text.downloadGrantWarning}</p>
   {#each grants as grant (grant.id)}
-    <div class="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+    <div class="mt-3 flex flex-wrap items-center justify-between gap-2 text-[13px]">
       <span class="min-w-0 break-all font-mono text-muted-foreground">{grant.id}</span>
       {#if grant.revokedAt}<span>{text.downloadGrantRevoked}</span>{:else}<Button size="sm" variant="ghost" disabled={busy} onclick={() => revoke(grant.id)}>{text.revokeDownloadGrant}</Button>{/if}
     </div>

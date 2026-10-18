@@ -4,6 +4,7 @@ import { uploadPartSize, type UploadSummary, type UploadedPart } from '#lib/uplo
 import { requireFile } from './files.js';
 import { getPlatformStorage } from './storage.js';
 import { uploadStorage, storageIdentity, uploadTransport } from './upload-storage.js';
+import { requireProjectFeature } from './plans.js';
 
 interface UploadTask extends UploadSummary {
   fileId: string; transport: string; bucketIdentity: string;
@@ -45,6 +46,7 @@ export async function createUpload(userId: string, fileId: string, input: Record
   if (typeof id !== 'string' || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)) error(400, 'uploadInvalid');
   const file = await requireFile(fileId, userId, true);
   const { projectId, name, size } = file;
+  await requireProjectFeature(env.DB, projectId, 'platformStorage');
   const mode = uploadTransport();
   if (!mode) error(503, 'uploadUnavailable');
   if (mode === 'local' && size > 64 * 1024 * 1024) error(413, 'uploadLocalLimit');

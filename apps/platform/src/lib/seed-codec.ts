@@ -17,10 +17,10 @@ export async function inspectSeed(bytes: Uint8Array): Promise<DecodedSeed> {
   return seed;
 }
 
-// Never render or follow credentials from an imported file. Even path segments may be secrets.
+// Keep the endpoint readable while never rendering credentials or authorization parameters.
 export function sourceSite(value: string): string | null {
   try {
     const url = new URL(value);
-    return ['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol) ? `${url.origin}/…` : null;
+    return ['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol) ? `${url.origin}${url.pathname}` : null;
   } catch { return null; }
 }

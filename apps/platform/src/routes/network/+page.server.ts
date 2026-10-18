@@ -3,6 +3,7 @@ import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { projectNetwork, normalizeTrack } from '#lib/server/network.js';
 import { requireProject } from '#lib/server/projects.js';
+import { requireProjectFeature } from '#lib/server/plans.js';
 export const load: PageServerLoad = async ({ locals, parent }) => {
   if (!locals.user) redirect(303, '/login');
   const { currentProject } = await parent();
@@ -17,6 +18,7 @@ export const actions: Actions = {
     const projectId = form.get('projectId'), mode = form.get('mode');
     if (typeof projectId !== 'string' || (mode !== 'platform' && mode !== 'custom')) return fail(400, { error: 'networkInvalid' as const });
     await requireProject(env.DB, locals.user.id, projectId, 'owner');
+    await requireProjectFeature(env.DB, projectId, mode === 'platform' ? 'platformNetwork' : 'customTrack');
     let track: string | null = null;
     try { if (mode === 'custom') track = normalizeTrack(String(form.get('trackUrl') ?? '').trim()); }
     catch { return fail(400, { error: 'networkInvalid' as const }); }

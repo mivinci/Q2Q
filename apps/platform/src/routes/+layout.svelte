@@ -13,8 +13,8 @@
 </svelte:head>
 
 <ModeWatcher defaultMode="system" modeStorageKey="q2q-platform-mode" />
-{#if data.user && data.currentProject}
-  <AppShell user={data.user} projects={data.projects} currentProject={data.currentProject}>
+{#if data.user && data.currentProject && data.entitlements}
+  <AppShell user={data.user} projects={data.projects} currentProject={data.currentProject} entitlements={data.entitlements}>
     {@render children()}
   </AppShell>
 {:else}

@@ -43,11 +43,35 @@ OAuth 固定回到平台首页，后续桌面登录单独设计系统浏览器�
 - https://better-auth.com/docs/concepts/database
 - https://developers.cloudflare.com/d1/wrangler-commands/
 
+### 团队项目管理扩展（当前实施）
+
+前述“本轮不开放成员邀请、移交和删除”记录的是账号与项目最小闭环的原始范围；用户现已确认继续建设团队项目管理。本阶段实现项目管理页面和服务端成员流程，不包含所有权移交、项目删除或邮件发送。
+
+- 管理页面使用 `/project/settings`，作用于当前已选择项目；从项目切换菜单进入。
+- 项目 owner 可修改普通项目名称、查看成员、移除 member，并创建/撤销邀请。
+- 邀请使用一次性随机链接，数据库只保存 SHA-256 摘要；7 天过期。先提供可复制链接，不接邮件服务。接受邀请前要求登录，接受后加入项目并切换到该项目。
+- Personal 项目名称固定，不能邀请成员；团队邀请和接受均要求当前项目具备 `teamCollaboration` entitlement（Team 档）。Owner 的撤销和移除成员操作在套餐变更后仍可用于权限恢复。
+- 所有状态变更在服务端检查登录态、项目成员、owner 角色及邀请状态；成员身份和项目 ID 不从客户端角色信息推断。
+- [x] 项目管理页面：基本信息、成员列表、重命名和成员移除
+- [x] 邀请数据迁移、哈希令牌、创建/接受/撤销和过期处理
+- [x] 登录后回到邀请接受页，接受成功后切换当前项目
+- [x] 从项目切换菜单接入管理入口并补充中英文文案
+- [x] 检查所有项目资源入口在成员加入与移除后的访问边界
+- [x] 浏览器已打开登录态下的 `/project/settings`，确认页面加载、Personal 项目只读名称和 owner 成员信息正常
+- [x] 为邀请服务补充可重复的本地 D1 自动化测试，并通过本地 HTTP 流程验证创建、登录回跳、接受、撤销和移除成员
+
 ## 本轮结果
+
+- 团队项目管理已实现 `/project/settings`、成员查看/移除、普通项目重命名、创建和撤销一次性邀请链接，以及 `/invites/[token]` 登录后接受邀请和自动切换项目。
+- 邀请有效期 7 天，最多保留 10 个未过期待处理邀请；数据库仅保存令牌 SHA-256，接受动作在服务端再次检查邀请状态、项目成员和 Team entitlement。Personal 项目不能邀请成员。
+- 已检查文件、上传任务、发布版本及项目设置查询均通过成员关系授权；移除成员后，平台管理 API 不再允许其访问项目资源。此前发出的下载种子是独立的 bearer 授权，仍保持原有语义，直到 owner 撤销下载授权或撤回版本。
+- 本地 D1 已应用 `0016_project_invitations.sql`。`npm run platform:check` 通过（0 错误、0 警告）；随附 Node 24.19.0 执行 `apps/platform/scripts/check-processing.mjs`，22 个场景通过。
+- 系统 Node 22.11 运行处理器检查时因不支持 `node:sqlite` 失败；改用 Node 24.19.0 后通过。
+- 邀请测试分两层：`apps/platform/scripts/check-project-invitations.mjs` 对生产迁移和服务实现运行 7 组内存 D1 场景；`apps/platform/scripts/check-project-invitations-http.mjs` 使用本地 Worker 与随机临时数据验证完整 HTTP 流程，包括 owner 创建邀请、匿名访问暂存、登录后回跳、接受并加入、owner 查看成员、撤销以及移除后的访问撤回。验证后数据库临时用户和项目数量均为 0。
 
 - 本地 D1 的 0001_auth.sql、0002_projects.sql 迁移已应用成功。
 - platform:check 通过，0 错误、0 警告；platform:build 和 git diff --check 通过。
-- 未运行行为测试或浏览器交互验证。未配置真实 GitHub OAuth App，因此尚未完成真实登录、退出及登录后项目流程验证。
+- 未配置真实 GitHub OAuth App，因此尚未完成真实 OAuth 登录和退出流程验证。
 - 未创建远端 Cloudflare 资源，未部署。开发配置示例和 OAuth 回调说明见 apps/platform/README.md。
 
 ### 本地 OAuth 接线结果
@@ -56,7 +80,7 @@ OAuth 固定回到平台首页，后续桌面登录单独设计系统浏览器�
 - 实际启动发现 adapter-cloudflare 8 使用 cloudflare:workers 的 env 提供绑定；已修正认证和项目服务的旧 event.platform.env 读取方式。
 - 修正后 platform:check（0 错误、0 警告）和 platform:build 通过。
 - 已在浏览器完成真实 GitHub 授权与回调，进入内容库并显示自动创建的个人项目。
-- 创建/切换其他项目、退出及多用户隔离尚未进行浏览器验证；未新增或运行自动化行为测试，未部署远端服务。
+- 当时尚未验证创建/切换其他项目、退出及多用户隔离，也未运行自动化行为测试；后续验证状态以本文件上方的阶段记录为准。未部署远端服务。
 
 ### 设置页与账户栏
 

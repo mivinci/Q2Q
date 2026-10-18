@@ -55,20 +55,20 @@
 
 <div class="mb-7">
   <div class="flex flex-wrap items-start justify-between gap-4">
-    {#if !detail}<div><h1 class="text-2xl font-medium tracking-tight">{text.library}</h1><p class="mt-1 text-xs text-muted-foreground">{text.description}</p></div>{/if}
+    {#if !detail}<div><h1 class="text-2xl font-medium tracking-tight">{text.library}</h1><p class="mt-1 text-[13px] text-muted-foreground">{text.description}</p></div>{/if}
     <div class="text-right" class:hidden={detail}>
       <input bind:this={input} type="file" class="hidden" tabindex="-1" aria-label={text.upload} onchange={selected} disabled={!ready || !!active} />
       <Button disabled={!ready || !!active} onclick={() => { retryTask = null; input.click(); }}><Plus class="size-4" aria-hidden="true" />{text.upload}</Button>
-      <p class="mt-2 max-w-64 text-xs text-muted-foreground">{ready ? text.uploadLimit(formatBytes(maxSize, page.data.locale)) : storageEnabled ? text.uploadUnavailable : text.uploadStorageRequired}</p>
-      {#if !storageEnabled}<a href="/storage" class="mt-1 inline-block text-xs text-primary">{text.storage}</a>{/if}
+      <p class="mt-2 max-w-64 text-[13px] text-muted-foreground">{ready ? text.uploadLimit(formatBytes(maxSize, page.data.locale)) : storageEnabled ? text.uploadUnavailable : text.uploadStorageRequired}</p>
+      {#if !storageEnabled}<a href="/storage" class="mt-1 inline-block text-[13px] text-primary">{text.storage}</a>{/if}
     </div>
   </div>
-  {#if issue}<p role="alert" class="mt-4 text-xs text-destructive">{typeof text[issue] === 'string' ? text[issue] : text.uploadFailed}</p>{/if}
+  {#if issue}<p role="alert" class="mt-4 text-[13px] text-destructive">{typeof text[issue] === 'string' ? text[issue] : text.uploadFailed}</p>{/if}
   {#if active}
     <div class="mt-6 rounded-xl border bg-card p-4" role="status">
       <div class="flex items-center gap-3">
         <File class="size-5 shrink-0 text-primary" aria-hidden="true" />
-        <div class="min-w-0 flex-1"><p class="truncate text-sm">{active.name}</p><p class="mt-1 text-xs text-muted-foreground">{active.phase === 'initializing' ? text.uploadInitializing : active.phase === 'completing' ? text.uploadCompleting : text.uploading}</p></div>
+        <div class="min-w-0 flex-1"><p class="truncate text-sm">{active.name}</p><p class="mt-1 text-[13px] text-muted-foreground">{active.phase === 'initializing' ? text.uploadInitializing : active.phase === 'completing' ? text.uploadCompleting : text.uploading}</p></div>
         <Button variant="ghost" size="icon-sm" aria-label={text.cancelUpload} disabled={active.phase === 'completing' || cancelling} onclick={() => { cancelling = true; controller?.abort(); }}><X class="size-4" aria-hidden="true" /></Button>
       </div>
       <progress class="mt-4 h-1.5 w-full overflow-hidden rounded-full accent-primary [&::-webkit-progress-bar]:bg-muted [&::-webkit-progress-value]:bg-primary [&::-moz-progress-bar]:bg-primary" max={active.size} value={active.sent} aria-label={text.uploadProgress}></progress>
@@ -78,27 +78,40 @@
   {#if detail && retryFile && !uploads.length}
     <Button disabled={!ready || !!active} onclick={() => { retryTask = { fileId: retryFile!.id, name: retryFile!.name, size: retryFile!.size }; input.click(); }}>{text.uploadRetry}</Button>
   {/if}
+  {#snippet historyList()}
+    <ul class="divide-y">
+      {#each uploads as task (task.id)}
+        {#if task.id !== active?.id}
+          <li class="flex items-center gap-3 px-4 py-3">
+            <File class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <div class="min-w-0 flex-1"><p class="truncate text-[13px]">{task.name}</p><p class="mt-1 text-[13px] text-muted-foreground">{formatBytes(task.size, page.data.locale)} · {task.cleanupPending ? text.uploadCleanupPending : text[uploadStatusLabels[task.status]]}</p></div>
+            {#if task.canManage && (task.status === 'uploading' || ((task.status === 'cancelled' || task.status === 'failed') && task.cleanupPending))}
+              <Button variant="ghost" size="sm" disabled={actionId !== null} onclick={() => taskAction(task, 'cancel')}>{task.cleanupPending ? text.uploadRetryCleanup : text.cancelUpload}</Button>
+            {:else if task.canManage && (task.status === 'cancelled' || task.status === 'failed') && !task.cleanupPending}
+              <Button variant="outline" size="sm" disabled={!ready || !!active || uploads.some((other) => other.fileId === task.fileId && ['initializing', 'uploading', 'completing', 'uploaded'].includes(other.status))}
+                onclick={() => { retryTask = task; input.click(); }}>{text.uploadRetry}</Button>
+            {:else if task.canManage && task.status === 'completing'}
+              <Button variant="outline" size="sm" disabled={actionId !== null} onclick={() => taskAction(task, 'complete')}>{text.uploadRetryComplete}</Button>
+            {/if}
+          </li>
+        {/if}
+      {/each}
+    </ul>
+  {/snippet}
   {#if uploads.length}
+    {#if detail}
+      <details aria-label={text.uploadHistory} class="mt-7 overflow-hidden rounded-xl border" open={uploads.some((task) => task.cleanupPending || task.status === 'completing')}>
+        <summary class="cursor-pointer bg-muted/30 px-4 py-3 text-[13px] font-medium">{text.uploadHistory} · {uploads.length}</summary>
+        <div class="border-t bg-card">
+          <p class="px-4 py-3 text-[13px] text-muted-foreground">{text.uploadHistoryDescription}</p>
+          {@render historyList()}
+        </div>
+      </details>
+    {:else}
     <section aria-label={text.uploadHistory} class="mt-7 overflow-hidden rounded-xl border">
-      <div class="border-b bg-muted/30 px-4 py-3"><h2 class="text-xs font-medium">{text.uploadHistory}</h2><p class="mt-1 text-xs text-muted-foreground">{text.uploadHistoryDescription}</p></div>
-      <ul class="divide-y">
-        {#each uploads as task (task.id)}
-          {#if task.id !== active?.id}
-            <li class="flex items-center gap-3 px-4 py-3">
-              <File class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-              <div class="min-w-0 flex-1"><p class="truncate text-xs">{task.name}</p><p class="mt-1 text-[11px] text-muted-foreground">{formatBytes(task.size, page.data.locale)} · {task.cleanupPending ? text.uploadCleanupPending : text[uploadStatusLabels[task.status]]}</p></div>
-              {#if task.canManage && (task.status === 'uploading' || ((task.status === 'cancelled' || task.status === 'failed') && task.cleanupPending))}
-                <Button variant="ghost" size="sm" disabled={actionId !== null} onclick={() => taskAction(task, 'cancel')}>{task.cleanupPending ? text.uploadRetryCleanup : text.cancelUpload}</Button>
-              {:else if task.canManage && (task.status === 'cancelled' || task.status === 'failed') && !task.cleanupPending}
-                <Button variant="outline" size="sm" disabled={!ready || !!active || uploads.some((other) => other.fileId === task.fileId && ['initializing', 'uploading', 'completing', 'uploaded'].includes(other.status))}
-                  onclick={() => { retryTask = task; input.click(); }}>{text.uploadRetry}</Button>
-              {:else if task.canManage && task.status === 'completing'}
-                <Button variant="outline" size="sm" disabled={actionId !== null} onclick={() => taskAction(task, 'complete')}>{text.uploadRetryComplete}</Button>
-              {/if}
-            </li>
-          {/if}
-        {/each}
-      </ul>
+      <div class="border-b bg-muted/30 px-4 py-3"><h2 class="text-[13px] font-medium">{text.uploadHistory}</h2><p class="mt-1 text-[13px] text-muted-foreground">{text.uploadHistoryDescription}</p></div>
+      {@render historyList()}
     </section>
+    {/if}
   {/if}
 </div>

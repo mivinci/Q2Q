@@ -1,11 +1,13 @@
 <script lang="ts">
   import { page } from '$app/state';
+  import { goto } from '$app/navigation';
   import { applyAction, deserialize, enhance } from '$app/forms';
   import { Dialog } from 'bits-ui';
   import Check from '@lucide/svelte/icons/check';
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
   import Plus from '@lucide/svelte/icons/plus';
   import Layers from '@lucide/svelte/icons/layers';
+  import Settings2 from '@lucide/svelte/icons/settings-2';
   import { messages } from '#lib/i18n.js';
   import { Button } from '#lib/components/ui/button/index.js';
   import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
@@ -42,25 +44,28 @@
       title={compact ? projectName(currentProject) : undefined}
       style={`width: ${compact ? '48px' : '100%'};`}
       class="flex min-h-11 items-center gap-3 rounded-lg px-4 text-left text-sm outline-none transition-[width] duration-200 motion-reduce:transition-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring data-open:bg-sidebar-accent disabled:opacity-50">
-      <Layers class="size-4 shrink-0 text-muted-foreground" />
+      <Layers class="size-[18px] shrink-0 text-muted-foreground" />
       <span class={`min-w-0 flex-1 truncate font-medium transition-opacity duration-200 motion-reduce:transition-none ${compact ? 'opacity-0' : 'opacity-100'}`}>{projectName(currentProject)}</span>
       <ChevronsUpDown class={`size-3.5 shrink-0 text-muted-foreground transition-opacity duration-200 motion-reduce:transition-none ${compact ? 'opacity-0' : 'opacity-100'}`} />
     </DropdownMenu.Trigger>
-    <DropdownMenu.Content align="start" sideOffset={6} class="min-w-56 max-w-[calc(100vw-2rem)]" onCloseAutoFocus={(event) => { if (creating) event.preventDefault(); }}>
+    <DropdownMenu.Content align="start" sideOffset={6} class="w-64 max-w-[calc(100vw-2rem)] p-2" onCloseAutoFocus={(event) => { if (creating) event.preventDefault(); }}>
       <DropdownMenu.Label>{text.switchProject}</DropdownMenu.Label>
       {#each projects as project}
-        <DropdownMenu.Item onSelect={() => switchProject(project.id)} class="min-h-11">
+        <DropdownMenu.Item onSelect={() => switchProject(project.id)} class={project.id === currentProject.id ? 'min-h-10 py-0.5 font-medium bg-accent/70 text-accent-foreground focus:bg-accent' : 'min-h-10 py-0.5'}>
           <span class="min-w-0 flex-1 truncate">{projectName(project)}</span>
           {#if project.id === currentProject.id}<Check class="size-4 shrink-0 text-primary" /><span class="sr-only">{text.currentProject}</span>{/if}
         </DropdownMenu.Item>
       {/each}
-      <DropdownMenu.Separator />
-      <DropdownMenu.Item class="min-h-11" onSelect={() => { name = ''; error = ''; creating = true; }}>
+      <DropdownMenu.Separator class="mx-0" />
+      <DropdownMenu.Item class="min-h-10 py-0.5" onSelect={() => { name = ''; error = ''; creating = true; }}>
         <Plus class="size-4" />{text.createProject}
+      </DropdownMenu.Item>
+      <DropdownMenu.Item class="min-h-10 py-0.5" onSelect={() => goto('/project/settings')}>
+        <Settings2 class="size-4" />{text.manageProject}
       </DropdownMenu.Item>
     </DropdownMenu.Content>
   </DropdownMenu.Root>
-  {#if error && !creating}<p role="alert" class="px-2 pt-2 text-xs text-destructive">{error}</p>{/if}
+  {#if error && !creating}<p role="alert" class="px-2 pt-2 text-[13px] text-destructive">{error}</p>{/if}
 </div>
 
 <Dialog.Root bind:open={creating}>

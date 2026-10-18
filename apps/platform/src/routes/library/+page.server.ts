@@ -4,11 +4,10 @@ import type { Actions, PageServerLoad } from './$types';
 import { listFiles } from '#lib/server/files.js';
 import { uploadTransport } from '#lib/server/upload-storage.js';
 import { getPlatformStorage } from '#lib/server/storage.js';
-import { createProject, requireProject } from '#lib/server/projects.js';
+import { createProject, projectCookie, requireProject } from '#lib/server/projects.js';
 
-const projectCookie = 'q2q-platform-project';
 const returnPath = (value: FormDataEntryValue | null) =>
-  value === '/storage' || value === '/settings' || value === '/seeds' || value === '/network' ? value : '/library';
+  value === '/storage' || value === '/settings' || value === '/seeds' || value === '/network' || value === '/usage' || value === '/project/settings' ? value : '/library';
 
 export const load: PageServerLoad = async ({ locals, parent }) => {
   if (!locals.user) redirect(303, '/login');

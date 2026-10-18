@@ -56,7 +56,7 @@ npx shadcn-svelte@latest add dialog --cwd apps/platform
 
 当前支持简体中文（zh-CN）和英文（en）。首次访问按 Accept-Language 的权重选择支持的语言，未匹配时使用英文；手动选择后将偏好保存到一年有效的 HttpOnly Cookie。
 
-文案集中在 `src/lib/i18n.ts`，两种语言共享 TypeScript 键约束，数量通过语言对应的 Intl 格式化。服务端 hook 在每次请求内选择语言，layout 将语言传给组件，HTML lang、Content-Language、页面标题和无障碍标签保持一致；不使用共享的可变服务端语言状态。语言切换使用 POST 表单，关闭 JavaScript 也可生效。
+文案集中在 `src/lib/i18n/zh-CN.ts` 和 `src/lib/i18n/en.ts`，两种语言共享 TypeScript 键约束，数量通过语言对应的 Intl 格式化。服务端 hook 在每次请求内选择语言，layout 将语言传给组件，HTML lang、Content-Language、页面标题和无障碍标签保持一致；不使用共享的可变服务端语言状态。语言切换使用 POST 表单，关闭 JavaScript 也可生效。
 
 新增文案时同步补齐两个字典；新增语言时同时更新 Locale 列表和浏览器语言匹配规则。日期、大小和用量等业务格式化在相应功能接入时使用当前 locale。
 
@@ -70,7 +70,9 @@ npx shadcn-svelte@latest add dialog --cwd apps/platform
 3. GitHub OAuth App 的 Authorization callback URL 配置为 `http://localhost:5173/api/auth/callback/github`。
 4. 运行 `npm run platform:dev`，访问 `/login`。构建后 preview 使用 4173 端口时，需同步 origin 和回调地址；建议为开发和生产分别创建 OAuth App。
 
-未配置完整认证信息时，登录页显示不可用状态；不提供开发用假登录或通用账号。登录成功后首次访问自动创建个人项目，可以创建其他项目并切换。项目成员关系每次从 D1 查询，Cookie 仅保存当前项目偏好。当前未开放邀请、成员编辑、项目移交或删除。
+未配置完整认证信息时，登录页显示不可用状态；不提供开发用假登录或通用账号。登录成功后首次访问自动创建个人项目，可以创建其他项目并切换。项目成员关系每次从 D1 查询，Cookie 仅保存当前项目偏好。Team 项目 owner 可管理成员、创建和撤销 7 天有效的一次性邀请链接；接受邀请需登录，链接只保存哈希。项目所有权移交和项目删除尚未开放。
+
+订阅与套餐记录绑定项目。`/usage` 展示 Free、Creator、Team 三档和项目用量概览；服务端 entitlement 控制平台存储、分发网络和团队邀请等能力。购买与真实扣款、可信用量计量、额度和价格尚未接入。本地可显式启用 `BILLING_SIMULATION=enabled` 来切换模拟订阅，生产环境不得配置此开关。
 
 部署时先创建真实 D1 数据库并替换 `wrangler.jsonc` 中的 database_id，再通过 Wrangler secrets 配置上述认证值并显式应用远端迁移；不要提交密钥或生产 `.dev.vars`。本地迁移不会随 build 自动执行，生产应用也不会在请求中自动迁移。
 

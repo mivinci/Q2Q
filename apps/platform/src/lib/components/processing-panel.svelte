@@ -46,7 +46,7 @@
 
 <section class="mb-7 rounded-xl border bg-card p-5" aria-label={text.processingTitle}>
   <div class="flex flex-wrap items-center justify-between gap-3">
-    <div><h2 class="text-sm font-medium">{text.processingTitle}</h2><p class="mt-2 text-xs text-muted-foreground" role="status">{task ? text[labels[task.status]] : text.uploadAwaitingProcessing}</p></div>
+    <div><h2 class="text-sm font-medium">{text.processingTitle}</h2><p class="mt-2 text-[13px] text-muted-foreground" role="status">{task ? text[labels[task.status]] : text.uploadAwaitingProcessing}</p></div>
     {#if task?.status === 'ready'}
       <Button href={`/api/files/${fileId}/seed`} variant="outline" size="sm"><Download class="size-4" />{text.downloadSeed}</Button>
     {:else if canManage && retryable}
@@ -58,7 +58,7 @@
     <p class="mt-2 text-xs tabular-nums text-muted-foreground">{formatBytes(task.processedBytes, page.data.locale)} / {formatBytes(size, page.data.locale)}</p>
   {/if}
   {#if task?.infoHash}<p class="mt-4 break-all font-mono text-[11px] text-muted-foreground">{text.contentIdentity}: {task.infoHash}</p>{/if}
-  {#if issue || task?.status === 'failed'}<p role="alert" class="mt-3 text-xs text-destructive">{task?.errorCode === 'processingSourceChanged' ? text.processingSourceChanged : issue || task?.errorCode === 'processingUnavailable' ? text.processingUnavailable : text.processingFailed}</p>{/if}
-  {#if !available && task?.status !== 'ready'}<p class="mt-3 text-xs text-muted-foreground">{text.processingUnavailable}</p>{/if}
-  <p class="mt-3 text-xs text-muted-foreground">{text.processingDescription}</p>
+  {#if issue || task?.status === 'failed'}<p role="alert" class="mt-3 text-[13px] text-destructive">{task?.errorCode === 'processingSourceChanged' ? text.processingSourceChanged : issue || task?.errorCode === 'processingUnavailable' ? text.processingUnavailable : text.processingFailed}</p>{/if}
+  {#if !available && task?.status !== 'ready'}<p class="mt-3 text-[13px] text-muted-foreground">{text.processingUnavailable}</p>{/if}
+  <p class="mt-3 text-[13px] text-muted-foreground">{text.processingDescription}</p>
 </section>
