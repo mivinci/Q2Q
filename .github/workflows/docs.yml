@@ -46,9 +46,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: '.node-version'
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: 安装构建依赖
-        run: npm ci
+        run: |
+          for attempt in 1 2 3; do
+            if npm ci --fetch-retries=5 --fetch-retry-mintimeout=20000 --fetch-retry-maxtimeout=120000; then
+              exit 0
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              echo "npm ci failed (attempt $attempt/3); retrying in 10 seconds..."
+              sleep 10
+            fi
+          done
+
+          exit 1
 
       - name: 构建并自检
         # e2e 用 playwright 驱动 runner 自带的 Chrome，不额外下载浏览器
