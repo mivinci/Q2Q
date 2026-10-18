@@ -1,8 +1,8 @@
 import wasmModule from '@q2q/wasm/module.wasm';
 import { initSync, SeedBuilder, publication_proof } from '@q2q/wasm';
-import { processSeed } from './src/lib/server/seed-worker.js';
-import { processPublication, cleanupPublication, sweepPublications } from './src/lib/server/publication-worker.js';
-import type { ProcessingMessage } from './src/lib/processing.js';
+import { processSeed } from './seed-worker.js';
+import { processPublication, cleanupPublication, sweepPublications } from './publication-worker.js';
+import type { ProcessingMessage } from '@q2q/seed-processing-contract';
 
 initSync({ module: wasmModule });
 
@@ -30,7 +30,7 @@ export default {
           ? await processPublication(env.DB, config, body.publicationId, publication_proof)
           : body.kind === 'publication-cleanup' && typeof body.publicationId === 'string'
             ? await cleanupPublication(env.DB, config, body.publicationId)
-            : await processSeed(env.DB, config, body, (size) => new SeedBuilder(size));
+            : await processSeed(env.DB, config, { fileId: body.fileId }, (size) => new SeedBuilder(size));
         if (state === 'busy') message.retry({ delaySeconds: 60 });
         else message.ack();
       } catch {

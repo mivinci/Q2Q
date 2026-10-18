@@ -1,6 +1,7 @@
 import { AwsClient, AwsV4Signer } from 'aws4fetch';
 import { XMLParser } from 'fast-xml-parser';
-import type { PartGrant, UploadedPart } from '../upload.js';
+export interface UploadedPart { partNumber: number; etag: string }
+export interface PartGrant { url: string; headers: Record<string, string> }
 
 export interface S3Config {
   endpoint: string; region: string; bucket: string; accessKeyId: string; secretAccessKey: string;

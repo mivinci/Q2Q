@@ -1,0 +1,20 @@
+{
+  "name": "@q2q/seed-processing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "types": "wrangler types",
+    "check": "npm run types && tsc --project tsconfig.json",
+    "build": "npm run wasm:build --prefix ../.. && wrangler deploy --dry-run --outdir .wrangler/build"
+  },
+  "dependencies": {
+    "@q2q/wasm": "*",
+    "@q2q/s3-storage": "*",
+    "@q2q/seed-processing-contract": "*"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "wrangler": "^4.97.0"
+  }
+}

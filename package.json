@@ -21,10 +21,13 @@
     "platform:dev": "npm run dev --workspace @q2q/platform",
     "platform:dev:workers": "npm run dev:workers --workspace @q2q/platform",
     "platform:check:processing": "npm run check:processing --workspace @q2q/platform",
+    "platform:check:storage": "npm run check:storage --workspace @q2q/platform",
     "platform:check:projects": "npm run check:projects --workspace @q2q/platform",
     "platform:check:projects:http": "npm run check:projects:http --workspace @q2q/platform",
     "platform:check": "npm run check --workspace @q2q/platform",
     "platform:build": "npm run build --workspace @q2q/platform",
+    "seed-processing:check": "npm run check --workspace @q2q/seed-processing",
+    "seed-processing:build": "npm run build --workspace @q2q/seed-processing",
     "platform:preview": "npm run preview --workspace @q2q/platform",
     "platform:types": "npm run types --workspace @q2q/platform",
     "platform:db:migrate": "npm run db:migrate --workspace @q2q/platform"

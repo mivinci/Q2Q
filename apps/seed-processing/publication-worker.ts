@@ -1,4 +1,4 @@
-import { createS3Storage, type S3Config } from './s3-storage.js';
+import { createS3Storage, type S3Config } from '@q2q/s3-storage';
 
 interface Snapshot {
   id: string; fileId: string; status: string; size: number; transport: string; bucketIdentity: string;

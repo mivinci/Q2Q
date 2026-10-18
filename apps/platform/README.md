@@ -117,7 +117,7 @@ node --env-file=.dev.vars --experimental-strip-types scripts/check-s3.mjs
 
 ### 文件与上传会话 API
 
-内容库按文件展示名称、状态、大小和最近更新时间，目前显示最近 50 个文件。点击文件进入 `/files/:id`，查看元数据及上传尝试，执行取消、重新选择同名同大小文件重传、重试完成确认和删除。详情页仅展示当前选中项目内的文件，切换项目后返回内容库。
+内容库按文件展示名称、状态、大小和最近更新时间，目前显示最近 50 个文件。点击文件进入 `/library/:id`，查看元数据及上传尝试，执行取消、重新选择同名同大小文件重传、重试完成确认和删除。详情页仅展示当前选中项目内的文件，切换项目后返回内容库。
 
 删除前需要确认；上传中或存在待清理分片时禁止删除。`已上传 · 待处理` 表示对象已存储，尚未生成种子与证明，不能分发。
 
@@ -138,7 +138,7 @@ node --env-file=.dev.vars --experimental-strip-types scripts/check-s3.mjs
 
 发布版本的模型与引用保护已接线，见 `todos/platform-publication.md`。目前 `POST /api/files/:id/publications` 仅幂等登记 creating 意图，`GET` 查询版本，`GET/DELETE /api/publications/:id` 查询或撤回。接口要求项目成员关系，写操作限文件创建者或 owner。尚未接入独立发布产物复制、发布界面或分享授权，不应把 202 当作发布完成。
 
-S3 上传完成后，平台在 D1 登记任务并发送到 `PROCESSING_QUEUE`。`processing-worker.ts` 消费 Cloudflare Queue，从固定版本/ETag 的 S3 对象流式读取，通过工作区包 `@q2q/wasm` 生成 Seed 和原始叶子表，将产物写回相同存储。页面服务和消费入口是两个 Cloudflare Workers，共用 D1 与 S3 配置。
+S3 上传完成后，平台在 D1 登记任务并发送到 `PROCESSING_QUEUE`。`apps/seed-processing/worker.ts` 消费 Cloudflare Queue，从固定版本/ETag 的 S3 对象流式读取，通过工作区包 `@q2q/wasm` 生成 Seed 和原始叶子表，将产物写回相同存储。页面服务和消费者是两个独立 workspace 和 Cloudflare Workers，共用 D1 与 S3 配置。S3 适配器放在 `packages/s3-storage`，队列消息和处理状态契约放在 `packages/seed-processing-contract`。
 
 - 任务状态为 pending / running / ready / failed，具有 120 秒租约和读取期间的续约；重复消息和过期执行者通过条件更新隔离。
 - 队列自动重试失败，最终失败保留在 D1，文件创建者或 owner 可在详情重试；处理期间禁止删除。
@@ -155,11 +155,13 @@ npm run platform:build
 npm run platform:dev:workers
 ```
 
-Workers 模式在 localhost:5173 同时运行页面与消费者，使用现有 `.dev.vars` 与本地数据库；启动前停止占用端口的 Vite。`platform:preview` 使用 4173，OAuth 验证时必须把 AUTH_ORIGIN 与回调地址配置成一致的实际地址。
+Workers 模式在 localhost:5173 同时运行页面与消费者，共用 `apps/platform/.wrangler/state` 本地数据库；两个 Worker 分别从各自目录的 `.dev.vars` 读取 secrets。消费者需按 `apps/seed-processing/.dev.vars.example` 配置相同 S3 凭据。启动前停止占用端口的 Vite。`platform:preview` 使用 4173，OAuth 验证时必须把 AUTH_ORIGIN 与回调地址配置成一致的实际地址。
 
-`platform:build` 生成 Wasm 包、页面 Worker，并对消费 Worker 做 dry run，不部署远端资源。`npm run platform:check:processing` 使用本地内存 SQLite、模拟 S3 与真实 Wasm 检查任务边界，不访问测试桶。
+`platform:build` 生成 Wasm 包与页面 Worker；`seed-processing:build` 独立构建并对消费者做 Wrangler dry run，`seed-processing:check` 检查其类型。这些命令不部署远端资源。`npm run platform:check:processing` 使用本地内存 SQLite、模拟 S3 与真实 Wasm 检查任务边界，不访问测试桶。
 
-线上需预先创建队列，配置两个 Workers 的真实 D1 ID 与相同 S3 secrets，再分别部署。消费者配置有 300000ms CPU 上限及最多 2 个并发执行，本地成功不代表账号套餐和线上资源限制已验证。D1 与 S3 没有跨服务事务；运行时强制终止可能遗留本次尝试的对象，定时扫描和孤立产物清理仍待完善。
+线上需预先创建队列，配置两个 Workers 的真实 D1 ID 与相同 S3 secrets，再分别部署。消费者使用账号默认 CPU 上限及最多 2 个并发执行，本地成功不代表账号套餐和线上资源限制已验证。D1 与 S3 没有跨服务事务；运行时强制终止可能遗留本次尝试的对象，需依赖产物记录和定时扫描恢复。
+
+合并到 main 后，`Platform` 工作流只部署页面 Worker，`Seed Processing Worker` 工作流只部署消费者。修改 `apps/platform` 或 `apps/seed-processing` 分别触发对应工作流；修改共享的 `packages/s3-storage`、`packages/seed-processing-contract`、Wasm/core、根依赖或公共编译配置时触发两者。D1 迁移影响双方，也触发两者；迁移仍需显式应用，不随部署自动执行。两个工作流均支持单独手动触发，Worker 名称、队列及生产 secrets 沿用现有资源。
 
 ## 分发网络
 
@@ -193,6 +195,6 @@ Workers 模式在 localhost:5173 同时运行页面与消费者，使用现有 `
 
 ## 自适应导航
 
-内容库页面为 `/library`，文件详情为 `/library/[id]`。根路径暂时重定向到内容库，旧 `/files/[id]` 页面地址保留重定向；文件资源 API 继续使用 `/api/files`。项目创建与切换表单提交到内容库页面的命名 action。
+项目概览页为 `/`，按当前项目展示文件数量、存储用量、套餐和最近文件；内容库页面为 `/library`，文件详情为 `/library/[id]`。文件资源 API 继续使用 `/api/files`。项目创建与切换表单提交到内容库页面的命名 action，并返回发起操作的页面。
 
 应用框架集中在 `app-shell.svelte`：手机使用 Sheet 抽屉，平板和桌面共用可折叠侧栏，默认分别为 72px 和 232px。按钮切换时宽度平滑变化、文字渐显，图标保持原位；手动选择在当前页面会话内优先于断点默认值。项目选择组件使用实例唯一 ID，账户组件支持紧凑模式。手机抽屉在导航后或切换到平板尺寸时关闭，支持减少动态效果偏好。

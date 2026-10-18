@@ -8,6 +8,7 @@ import { uploadTransport } from '#lib/server/upload-storage.js';
 import { processingSummary } from '#lib/server/seed-tasks.js';
 import { publicationBlocksDeletion, listPublications } from '#lib/server/publications.js';
 import { projectNetwork } from '#lib/server/network.js';
+import { getStorageUsage } from '#lib/server/storage-quota.js';
 
 export const load: PageServerLoad = async ({ locals, params, parent }) => {
   if (!locals.user) redirect(303, '/login');
@@ -17,6 +18,7 @@ export const load: PageServerLoad = async ({ locals, params, parent }) => {
   if (!currentProject || !entitlements || record.projectId !== currentProject.id) error(404, 'fileNotFound');
   const connection = await getPlatformStorage(env.DB, currentProject.id);
   const transport = uploadTransport();
+  const usage = await getStorageUsage(env.DB, currentProject.id);
   return {
     network: await projectNetwork(record.projectId),
     publications: await listPublications(record.id, locals.user.id),
@@ -27,6 +29,7 @@ export const load: PageServerLoad = async ({ locals, params, parent }) => {
     canManage: record.createdBy === locals.user.id || currentProject.role === 'owner',
     uploads: await listUploads(currentProject.id, locals.user.id, record.id),
     uploadReady: !!connection && !!transport, storageEnabled: !!connection, localUploads: transport === 'local',
-    maxFileSize: entitlements.limits.maxFileSizeBytes
+    maxFileSize: entitlements.limits.maxFileSizeBytes,
+    storageRemainingBytes: Math.max(0, entitlements.limits.storageBytes - usage.usedBytes - usage.reservedBytes)
   };
 };

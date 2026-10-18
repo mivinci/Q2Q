@@ -1,7 +1,7 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "q2q-platform-processing",
-  "main": "processing-worker.ts",
+  "main": "worker.ts",
   "compatibility_date": "2026-10-17",
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
   "vars": {
@@ -10,6 +10,6 @@
     "S3_BUCKET": "q2q-platform-storage"
   },
   "triggers": { "crons": ["*/5 * * * *"] },
-  "d1_databases": [{ "binding": "DB", "database_name": "q2q-platform", "database_id": "51440a97-9d98-4b3d-a2f9-77af80b5afe1", "migrations_dir": "migrations" }],
+  "d1_databases": [{ "binding": "DB", "database_name": "q2q-platform", "database_id": "51440a97-9d98-4b3d-a2f9-77af80b5afe1", "migrations_dir": "../platform/migrations" }],
   "queues": { "consumers": [{ "queue": "q2q-seed-processing", "max_batch_size": 1, "max_retries": 5, "max_concurrency": 2 }] }
 }

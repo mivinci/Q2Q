@@ -4,7 +4,7 @@
   import Languages from '@lucide/svelte/icons/languages';
   import { messages } from '#lib/i18n.js';
   import ThemeToggle from '#lib/components/theme-toggle.svelte';
-  import LanguageToggle from '#lib/components/language-toggle.svelte';
+  import LanguageSelect from '#lib/components/language-select.svelte';
   const text = $derived(messages[page.data.locale]);
 </script>
 
@@ -27,7 +27,7 @@
           <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-violet-500/10 text-violet-500 dark:text-violet-400"><Languages class="size-4" aria-hidden="true" /></span>
           <div><h3 class="text-sm font-medium">{text.language}</h3><p class="mt-1 text-[13px] leading-relaxed text-muted-foreground">{text.languageDescription}</p></div>
         </div>
-        <div class="w-full shrink-0 rounded-lg bg-muted p-0.5 lg:w-64"><LanguageToggle /></div>
+        <div class="w-full shrink-0 lg:w-64"><LanguageSelect /></div>
       </div>
     </div>
     <p class="mt-3 px-1 text-[13px] text-muted-foreground">{text.preferencesLocal}</p>

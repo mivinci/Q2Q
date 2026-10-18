@@ -13,8 +13,7 @@ export interface UploadSummary {
   createdAt: number;
   updatedAt: number;
 }
-export interface UploadedPart { partNumber: number; etag: string }
-export interface PartGrant { url: string; headers: Record<string, string> }
+export type { UploadedPart, PartGrant } from '@q2q/s3-storage';
 
 export const uploadStatusLabels = {
   initializing: 'uploadInitializing', uploading: 'uploadInterrupted', completing: 'uploadCompleting',
@@ -31,7 +30,7 @@ export function fileStatusLabel(status: string, uploadStatus?: UploadStatus | nu
 }
 
 export function formatBytes(bytes: number, locale: string): string {
-  const unit = bytes >= 1024 ** 3 ? 'GiB' : bytes >= 1024 ** 2 ? 'MiB' : bytes >= 1024 ? 'KiB' : 'B';
-  const divisor = unit === 'GiB' ? 1024 ** 3 : unit === 'MiB' ? 1024 ** 2 : unit === 'KiB' ? 1024 : 1;
+  const unit = bytes >= 1024 ** 4 ? 'TiB' : bytes >= 1024 ** 3 ? 'GiB' : bytes >= 1024 ** 2 ? 'MiB' : bytes >= 1024 ? 'KiB' : 'B';
+  const divisor = unit === 'TiB' ? 1024 ** 4 : unit === 'GiB' ? 1024 ** 3 : unit === 'MiB' ? 1024 ** 2 : unit === 'KiB' ? 1024 : 1;
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: unit === 'B' ? 0 : 1 }).format(bytes / divisor)} ${unit}`;
 }

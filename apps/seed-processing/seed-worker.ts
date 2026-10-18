@@ -1,5 +1,5 @@
-import { createS3Storage, type S3Config } from './s3-storage.js';
-import type { ProcessingMessage } from '../processing.js';
+import { createS3Storage, type S3Config } from '@q2q/s3-storage';
+import type { SeedProcessingMessage } from '@q2q/seed-processing-contract';
 
 interface Source {
   fileId: string; uploadId: string; name: string; size: number;
@@ -24,7 +24,7 @@ async function deleteUnusedArtifact(db: D1Database, storage: ReturnType<typeof c
   if (!referenced) await storage.delete(key);
 }
 
-export async function processSeed(db: D1Database, config: S3Config, message: ProcessingMessage, create: (size: number) => SeedComputer) {
+export async function processSeed(db: D1Database, config: S3Config, message: SeedProcessingMessage, create: (size: number) => SeedComputer) {
   const now = Date.now();
   const token = crypto.randomUUID();
   const task = await db.prepare(`UPDATE seed_task SET status = 'running', leaseToken = ?, leaseUntil = ?,

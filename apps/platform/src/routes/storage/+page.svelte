@@ -5,6 +5,7 @@
   import { messages } from '#lib/i18n.js';
   import { Button } from '#lib/components/ui/button/index.js';
   import type { PageProps } from './$types';
+  import StorageUsage from '#lib/components/storage-usage.svelte';
   let { data, form }: PageProps = $props();
   const text = $derived(messages[data.locale]);
   const enabledDate = $derived(data.storageConnection
@@ -33,12 +34,12 @@
         <p class="mt-2 text-[13px] leading-relaxed text-muted-foreground">{text.platformStorageDescription}</p>
       </div>
     </div>
-    <dl class="grid gap-5 border-t px-5 py-5 text-[13px] sm:grid-cols-2 sm:px-6 lg:grid-cols-4">
+    <dl class="grid gap-5 border-t px-5 py-5 text-[13px] sm:grid-cols-2 sm:px-6 lg:grid-cols-3">
       <div><dt class="text-muted-foreground">{text.storageProvider}</dt><dd class="mt-2">{text.s3Compatible}</dd></div>
       <div><dt class="text-muted-foreground">{text.storageScopeLabel}</dt><dd class="mt-2">{text.storageScope}</dd></div>
-      <div><dt class="text-muted-foreground">{text.storageQuota}</dt><dd class="mt-2">{text.storageQuotaUnset}</dd></div>
       {#if enabledDate}<div><dt class="text-muted-foreground">{text.storageEnabledAt}</dt><dd class="mt-2">{enabledDate}</dd></div>{/if}
     </dl>
+    <div class="border-t px-5 py-4 sm:px-6"><StorageUsage usage={data.storageUsage} limit={data.entitlements.limits.storageBytes} /><a class="mt-2 inline-block text-[13px] text-primary" href="/usage">{text.viewPlans}</a></div>
     <div class="flex flex-col items-start justify-between gap-4 border-t bg-muted/30 px-5 py-4 sm:flex-row sm:items-center sm:px-6">
       <p class="text-[13px] leading-relaxed text-muted-foreground">{data.storageConnection ? text.storageReadyDescription : text.storageStartDescription}</p>
       {#if !data.storageConnection}

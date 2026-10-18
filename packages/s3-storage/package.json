@@ -1,0 +1,11 @@
+{
+  "name": "@q2q/s3-storage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./index.ts" },
+  "dependencies": {
+    "aws4fetch": "^1.0.20",
+    "fast-xml-parser": "^5.11.2"
+  }
+}

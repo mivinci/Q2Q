@@ -42,11 +42,11 @@
   <DropdownMenu.Root>
     <DropdownMenu.Trigger disabled={busy} aria-label={text.switchProject}
       title={compact ? projectName(currentProject) : undefined}
-      style={`width: ${compact ? '48px' : '100%'};`}
-      class="flex min-h-11 items-center gap-3 rounded-lg px-4 text-left text-sm outline-none transition-[width] duration-200 motion-reduce:transition-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring data-open:bg-sidebar-accent disabled:opacity-50">
+      style={`width: ${compact ? '40px' : '100%'};`}
+      class={`mx-auto flex items-center rounded-lg text-left text-sm outline-none transition-[width] duration-200 motion-reduce:transition-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring data-open:bg-sidebar-accent disabled:opacity-50 ${compact ? 'min-h-10 justify-center gap-0 px-0' : 'min-h-11 gap-3 px-4'}`}>
       <Layers class="size-[18px] shrink-0 text-muted-foreground" />
-      <span class={`min-w-0 flex-1 truncate font-medium transition-opacity duration-200 motion-reduce:transition-none ${compact ? 'opacity-0' : 'opacity-100'}`}>{projectName(currentProject)}</span>
-      <ChevronsUpDown class={`size-3.5 shrink-0 text-muted-foreground transition-opacity duration-200 motion-reduce:transition-none ${compact ? 'opacity-0' : 'opacity-100'}`} />
+      <span class={`truncate font-medium transition-opacity duration-200 motion-reduce:transition-none ${compact ? 'hidden' : 'min-w-0 flex-1 opacity-100'}`}>{projectName(currentProject)}</span>
+      <ChevronsUpDown class={`size-3.5 shrink-0 text-muted-foreground transition-opacity duration-200 motion-reduce:transition-none ${compact ? 'hidden' : 'opacity-100'}`} />
     </DropdownMenu.Trigger>
     <DropdownMenu.Content align="start" sideOffset={6} class="w-64 max-w-[calc(100vw-2rem)] p-2" onCloseAutoFocus={(event) => { if (creating) event.preventDefault(); }}>
       <DropdownMenu.Label>{text.switchProject}</DropdownMenu.Label>

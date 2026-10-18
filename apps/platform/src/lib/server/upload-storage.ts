@@ -2,7 +2,7 @@ import { dev } from '$app/env';
 import { env } from 'cloudflare:workers';
 import { error } from '@sveltejs/kit';
 import type { PartGrant } from '#lib/upload.js';
-import { createS3Storage, signS3Part, type S3Config, type UploadStorage } from './s3-storage.js';
+import { createS3Storage, signS3Part, type S3Config, type UploadStorage } from '@q2q/s3-storage';
 
 export function uploadTransport(): 'local' | 's3' | null {
   // Local proxying must never silently become the production data path.
