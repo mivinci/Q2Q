@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { goto, invalidateAll } from '$app/navigation';
+  import { goto, refreshAll } from '$app/navigation';
   import { page } from '$app/state';
   import AlertCircle from '@lucide/svelte/icons/circle-alert';
   import Check from '@lucide/svelte/icons/check';
@@ -62,14 +62,14 @@
     } catch (cause) {
       const key = cause instanceof Error ? cause.message : '';
       issue = key === 'fileUploadActive' ? text.fileUploadActive : key === 'publicationInUse' ? text.publicationInUse : text.projectActionFailed;
-      await invalidateAll();
+      await refreshAll();
     } finally { deleting = false; }
   }
 </script>
 
 <svelte:head><title>{data.file.name} · Q2Q</title></svelte:head>
 <div class="mx-auto w-full max-w-4xl px-4 py-8 sm:px-7">
-  <div class="mb-5 flex items-center gap-3"><File class="size-7 shrink-0 text-primary" /><h1 class="min-w-0 break-words text-2xl font-medium tracking-tight">{data.file.name}</h1></div>
+  <div class="mb-5 flex items-center gap-3"><File class="size-7 shrink-0 text-primary" /><h1 class="min-w-0 wrap-break-word text-2xl font-medium tracking-tight">{data.file.name}</h1></div>
   <section class="mb-5 rounded-xl border bg-card p-5" aria-label={text.fileFlow}>
     <h2 class="mb-4 text-sm font-medium">{text.fileFlow}</h2>
     <ol class="grid gap-3 sm:grid-cols-3">

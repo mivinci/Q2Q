@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { invalidateAll } from '$app/navigation';
+  import { refreshAll } from '$app/navigation';
   import { page } from '$app/state';
   import Plus from '@lucide/svelte/icons/plus';
   import File from '@lucide/svelte/icons/file';
@@ -41,7 +41,7 @@
     controller = new AbortController();
     try { await uploadFile(file, projectId, controller.signal, (progress) => { active = progress; }, retry?.fileId); }
     catch (cause) { if (!(cause instanceof DOMException && cause.name === 'AbortError')) showError(cause); }
-    finally { active = null; controller = null; cancelling = false; await invalidateAll(); }
+    finally { active = null; controller = null; cancelling = false; await refreshAll(); }
   }
   async function taskAction(task: UploadSummary, operation: 'cancel' | 'complete') {
     actionId = task.id;
@@ -49,7 +49,7 @@
     try {
       await uploadRequest(`/api/uploads/${task.id}${operation === 'complete' ? '/complete' : ''}`, operation === 'complete' ? {} : undefined, operation === 'complete' ? 'POST' : 'DELETE');
     } catch (cause) { showError(cause); }
-    finally { actionId = null; await invalidateAll(); }
+    finally { actionId = null; await refreshAll(); }
   }
   onDestroy(() => controller?.abort());
 </script>

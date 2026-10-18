@@ -74,8 +74,6 @@ const zh = {
 };
 
 export default defineConfig({
-  // 部署在 le0.me/Q2Q/ 子路径下，资源链接要带这个前缀，否则全 404
-  base: '/Q2Q/',
   title: 'Q2Q',
   description: 'Q2Q：开源 P2P 网络框架，控制面、数据面与种子格式',
   srcDir: '.',
