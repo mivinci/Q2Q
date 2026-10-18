@@ -21,7 +21,7 @@
 <div
   role="group"
   aria-label={text.appearanceSettings}
-  class={`flex items-center rounded-lg bg-border/60 ${showLabels ? 'p-0.5' : 'gap-0.5 p-1'}`}
+  class={`flex items-center rounded-lg bg-border/60 ${showLabels ? 'p-0.5' : 'h-10 gap-0.5 p-1'}`}
 >
   {#each modes as mode}
     <Button
