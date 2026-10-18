@@ -38,7 +38,9 @@ export const handle: Handle = async ({ event, resolve }) => {
     : await resolvePage(event);
   const response = new Response(result.body, result);
   response.headers.set('Cache-Control', 'private, no-store');
-  response.headers.set('Referrer-Policy', 'no-referrer');
+  // Same-origin HTML form POSTs need a non-opaque Origin for SvelteKit's CSRF
+  // check. `no-referrer` makes browsers send `Origin: null` on those requests.
+  response.headers.set('Referrer-Policy', 'same-origin');
   response.headers.set('Content-Language', event.locals.locale);
   // HTML depends on both the explicit preference and browser language.
   response.headers.append('Vary', 'Cookie, Accept-Language');
