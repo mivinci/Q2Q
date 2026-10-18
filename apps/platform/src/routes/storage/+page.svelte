@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { enhance } from '$app/forms';
   import Cloud from '@lucide/svelte/icons/cloud';
   import HardDrive from '@lucide/svelte/icons/hard-drive';
   import Check from '@lucide/svelte/icons/check';
@@ -44,7 +45,7 @@
       <p class="text-[13px] leading-relaxed text-muted-foreground">{data.storageConnection ? text.storageReadyDescription : text.storageStartDescription}</p>
       {#if !data.storageConnection}
         {#if data.currentProject?.role === 'owner'}
-          <form method="POST" action="?/enable" class="shrink-0">
+          <form method="POST" action="?/enable" class="shrink-0" use:enhance>
             <input type="hidden" name="projectId" value={data.currentProject.id} />
             <Button type="submit" disabled={!data.storageAvailable}>{text.enableStorage}</Button>
           </form>
