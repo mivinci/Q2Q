@@ -3,6 +3,7 @@ import { error } from '@sveltejs/kit';
 import { uploadMaxSize } from '#lib/upload.js';
 import { requireProject } from './projects.js';
 import { uploadStorage } from './upload-storage.js';
+import { getProjectEntitlements } from './plans.js';
 
 export interface FileRecord {
   id: string; projectId: string; createdBy: string; name: string; size: number;
@@ -31,6 +32,8 @@ export async function createFile(userId: string, input: Record<string, unknown>)
       typeof projectId !== 'string' || typeof name !== 'string' || !name.trim() || name.length > 255 ||
       /[\x00-\x1f\x7f]/.test(name) || typeof size !== 'number' || !Number.isSafeInteger(size) || size < 1 || size > uploadMaxSize) error(400, 'uploadInvalid');
   await requireProject(env.DB, userId, projectId);
+  const entitlements = await getProjectEntitlements(env.DB, projectId);
+  if (size > entitlements.limits.maxFileSizeBytes) error(413, 'uploadPlanLimit');
   const now = Date.now();
   await env.DB.prepare(`INSERT INTO file_record (id, projectId, createdBy, name, size, status, createdAt, updatedAt)
     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?) ON CONFLICT(id) DO NOTHING`)

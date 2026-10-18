@@ -1,4 +1,5 @@
 import { error } from '@sveltejs/kit';
+import { uploadMaxSize } from '#lib/upload.js';
 
 export const planIds = ['free', 'creator', 'team'] as const;
 export type PlanId = (typeof planIds)[number];
@@ -7,21 +8,25 @@ export type SubscriptionStatus = 'simulated' | 'active' | 'past_due' | 'cancelle
 type PlanNameKey = 'planFree' | 'planCreator' | 'planTeam';
 type PlanDescriptionKey = 'planFreeDescription' | 'planCreatorDescription' | 'planTeamDescription';
 
-export const planCatalog: Record<PlanId, { nameKey: PlanNameKey; descriptionKey: PlanDescriptionKey; features: PlanFeature[] }> = {
+export const planCatalog: Record<PlanId, { nameKey: PlanNameKey; descriptionKey: PlanDescriptionKey; features: PlanFeature[]; maxFileSizeBytes: number }> = {
   free: {
     nameKey: 'planFree',
     descriptionKey: 'planFreeDescription',
-    features: ['platformStorage', 'platformNetwork', 'customTrack']
+    features: ['platformStorage', 'platformNetwork', 'customTrack'],
+    // Leave CPU headroom for Free-tier seed generation under the 10 ms Worker budget.
+    maxFileSizeBytes: 2 * 1024 * 1024
   },
   creator: {
     nameKey: 'planCreator',
     descriptionKey: 'planCreatorDescription',
-    features: ['platformStorage', 'platformNetwork', 'customTrack', 'higherLimits']
+    features: ['platformStorage', 'platformNetwork', 'customTrack', 'higherLimits'],
+    maxFileSizeBytes: uploadMaxSize
   },
   team: {
     nameKey: 'planTeam',
     descriptionKey: 'planTeamDescription',
-    features: ['platformStorage', 'platformNetwork', 'customTrack', 'higherLimits', 'teamCollaboration']
+    features: ['platformStorage', 'platformNetwork', 'customTrack', 'higherLimits', 'teamCollaboration'],
+    maxFileSizeBytes: uploadMaxSize
   }
 };
 
@@ -41,7 +46,7 @@ export interface ProjectEntitlements {
   cancelAtPeriodEnd: boolean;
   features: Record<PlanFeature, boolean>;
   // Null means the product limit has not been decided; it does not mean unlimited.
-  limits: { storageBytes: null; retentionDays: null; monthlyEgressBytes: null; monthlyTurnBytes: null; concurrentTransfers: null };
+  limits: { maxFileSizeBytes: number; storageBytes: null; retentionDays: null; monthlyEgressBytes: null; monthlyTurnBytes: null; concurrentTransfers: null };
 }
 
 export async function getProjectEntitlements(db: D1Database, projectId: string): Promise<ProjectEntitlements> {
@@ -65,7 +70,7 @@ export async function getProjectEntitlements(db: D1Database, projectId: string):
       higherLimits: included.has('higherLimits'),
       teamCollaboration: included.has('teamCollaboration')
     },
-    limits: { storageBytes: null, retentionDays: null, monthlyEgressBytes: null, monthlyTurnBytes: null, concurrentTransfers: null }
+    limits: { maxFileSizeBytes: planCatalog[planId].maxFileSizeBytes, storageBytes: null, retentionDays: null, monthlyEgressBytes: null, monthlyTurnBytes: null, concurrentTransfers: null }
   };
 }
 

@@ -25,7 +25,8 @@ export const load: PageServerLoad = async ({ locals, parent }) => {
       id: id as PlanId,
       nameKey: planCatalog[id].nameKey,
       descriptionKey: planCatalog[id].descriptionKey,
-      features: [...planCatalog[id].features] as PlanFeature[]
+      features: [...planCatalog[id].features] as PlanFeature[],
+      maxFileSizeBytes: planCatalog[id].maxFileSizeBytes
     }))
   };
 };

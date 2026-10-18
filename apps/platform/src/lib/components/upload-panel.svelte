@@ -7,14 +7,14 @@
   import X from '@lucide/svelte/icons/x';
   import { Button } from '#lib/components/ui/button/index.js';
   import { messages } from '#lib/i18n.js';
-  import { formatBytes, uploadMaxSize, uploadStatusLabels, type UploadSummary } from '#lib/upload.js';
+  import { formatBytes, uploadStatusLabels, type UploadSummary } from '#lib/upload.js';
   import { uploadFile, uploadRequest, type UploadProgress } from '#lib/upload-client.js';
 
-  let { projectId, ready, storageEnabled, localUploads, uploads, detail = false, retryFile, onActiveChange }: {
-    projectId: string; ready: boolean; storageEnabled: boolean; localUploads: boolean; uploads: UploadSummary[]; detail?: boolean; retryFile?: { id: string; name: string; size: number }; onActiveChange?: (active: boolean) => void;
+  let { projectId, ready, storageEnabled, localUploads, maxFileSize, uploads, detail = false, retryFile, onActiveChange }: {
+    projectId: string; ready: boolean; storageEnabled: boolean; localUploads: boolean; maxFileSize: number; uploads: UploadSummary[]; detail?: boolean; retryFile?: { id: string; name: string; size: number }; onActiveChange?: (active: boolean) => void;
   } = $props();
   const text = $derived(messages[page.data.locale]);
-  const maxSize = $derived(localUploads ? 64 * 1024 * 1024 : uploadMaxSize);
+  const maxSize = $derived(localUploads ? Math.min(64 * 1024 * 1024, maxFileSize) : maxFileSize);
   let input: HTMLInputElement;
   let active = $state<UploadProgress | null>(null);
   let controller: AbortController | null = null;
@@ -36,7 +36,8 @@
     retryTask = null;
     issue = null;
     if (retry && (file.name.trim() !== retry.name || file.size !== retry.size)) { issue = 'uploadRetryFileMismatch'; return; }
-    if (!file.size || file.size > maxSize) { issue = 'uploadInvalid'; return; }
+    if (!file.size) { issue = 'uploadInvalid'; return; }
+    if (file.size > maxSize) { issue = localUploads && file.size > 64 * 1024 * 1024 ? 'uploadLocalLimit' : 'uploadPlanLimit'; return; }
     controller = new AbortController();
     try { await uploadFile(file, projectId, controller.signal, (progress) => { active = progress; }, retry?.fileId); }
     catch (cause) { if (!(cause instanceof DOMException && cause.name === 'AbortError')) showError(cause); }

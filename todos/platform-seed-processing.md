@@ -37,6 +37,7 @@
 - 薄绑定放在 `crates/q2q-wasm`，同时作为 npm 工作区包 `@q2q/wasm`，使用 wasm-bindgen；产物位于忽略的 `pkg/` 并通过包导出提供，业务代码不访问 Cargo target，根脚本 `wasm:build` / `wasm:check` 可重现。
 - JS 运行实际 Wasm，独立核对原始叶子表、Merkle 根、Seed 编码内容和 info_hash，并验证长度错误。
 - 本机 release Wasm 最终接口合成流基准：64 MiB 约 115 ms，256 MiB 约 460 ms，8 GiB 约 14.6 s；8 GiB 原始叶子表为 1 MiB，Wasm 线性内存约 5.4 MiB。重复送入固定 1 MiB 缓冲区，未创建大文件，未包含 S3 读取或全部 JS 内存。
+- Cloudflare Free 每次 Worker CPU 默认上限为 10 ms；9 MiB 本地 Wasm 基准约 16 ms。生产处理 Worker 使用 Free 默认上限，Free 先按 2 MiB 单文件上限验证；大于 Free 上限的 Creator/Team 文件需付费 CPU 额度或未来分段处理改造。
 - core/SDK/Wasm Clippy 通过，Wasm 编译通过；新增 Wasm CI 配置，尚未运行远端 CI。
 - 上述基准属于计算层验证；平台接线见下节，没有验证 Cloudflare 线上限制。
 

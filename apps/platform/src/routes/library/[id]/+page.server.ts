@@ -11,10 +11,10 @@ import { projectNetwork } from '#lib/server/network.js';
 
 export const load: PageServerLoad = async ({ locals, params, parent }) => {
   if (!locals.user) redirect(303, '/login');
-  const { currentProject } = await parent();
+  const { currentProject, entitlements } = await parent();
   const record = await requireFile(params.id, locals.user.id);
   // A valid membership in another project must not mix its data into the selected workspace.
-  if (!currentProject || record.projectId !== currentProject.id) error(404, 'fileNotFound');
+  if (!currentProject || !entitlements || record.projectId !== currentProject.id) error(404, 'fileNotFound');
   const connection = await getPlatformStorage(env.DB, currentProject.id);
   const transport = uploadTransport();
   return {
@@ -26,6 +26,7 @@ export const load: PageServerLoad = async ({ locals, params, parent }) => {
     file: { id: record.id, name: record.name, size: record.size, status: record.status, createdAt: record.createdAt, updatedAt: record.updatedAt },
     canManage: record.createdBy === locals.user.id || currentProject.role === 'owner',
     uploads: await listUploads(currentProject.id, locals.user.id, record.id),
-    uploadReady: !!connection && !!transport, storageEnabled: !!connection, localUploads: transport === 'local'
+    uploadReady: !!connection && !!transport, storageEnabled: !!connection, localUploads: transport === 'local',
+    maxFileSize: entitlements.limits.maxFileSizeBytes
   };
 };

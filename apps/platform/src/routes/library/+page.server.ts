@@ -11,12 +11,12 @@ const returnPath = (value: FormDataEntryValue | null) =>
 
 export const load: PageServerLoad = async ({ locals, parent }) => {
   if (!locals.user) redirect(303, '/login');
-  const { currentProject } = await parent();
-  if (!currentProject) redirect(303, '/login');
+  const { currentProject, entitlements } = await parent();
+  if (!currentProject || !entitlements) redirect(303, '/login');
   const connection = await getPlatformStorage(env.DB, currentProject.id);
   const transport = uploadTransport();
   return { files: await listFiles(currentProject.id, locals.user.id), uploadReady: !!connection && !!transport,
-    storageEnabled: !!connection, localUploads: transport === 'local' };
+    storageEnabled: !!connection, localUploads: transport === 'local', maxFileSize: entitlements.limits.maxFileSizeBytes };
 };
 
 export const actions: Actions = {

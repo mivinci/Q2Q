@@ -3,6 +3,7 @@
   import { Button } from '#lib/components/ui/button/index.js';
   import type { PageProps } from './$types';
   import type { PlanFeature, PlanId } from '#lib/server/plans.js';
+  import { formatBytes } from '#lib/upload.js';
 
   let { data, form }: PageProps = $props();
   const text = $derived(messages[data.locale]);
@@ -29,17 +30,17 @@
 
   {#if form?.error}<p role="alert" class="mt-5 text-sm text-destructive">{text[form.error]}</p>{/if}
 
-  <section class="mt-7 grid gap-4 rounded-xl border bg-card p-5 sm:grid-cols-3 sm:p-6" aria-label={text.currentPlan}>
-    <div><p class="text-[13px] text-muted-foreground">{text.currentProject}</p><p class="mt-2 text-sm font-medium">{data.currentProject.name}</p></div>
-    <div><p class="text-[13px] text-muted-foreground">{text.currentPlan}</p><p class="mt-2 text-sm font-medium">{text[planNameKey[data.entitlements.planId]]}</p></div>
-    <div><p class="text-[13px] text-muted-foreground">{text.subscriptionStatus}</p><p class="mt-2 text-sm font-medium">{statusLabel}</p></div>
+  <section class="mt-6 grid gap-3 rounded-xl border bg-card p-4 sm:grid-cols-3 sm:p-5" aria-label={text.currentPlan}>
+    <div><p class="text-[13px] text-muted-foreground">{text.currentProject}</p><p class="mt-1.5 text-sm font-medium">{data.currentProject.name}</p></div>
+    <div><p class="text-[13px] text-muted-foreground">{text.currentPlan}</p><p class="mt-1.5 text-sm font-medium">{text[planNameKey[data.entitlements.planId]]}</p></div>
+    <div><p class="text-[13px] text-muted-foreground">{text.subscriptionStatus}</p><p class="mt-1.5 text-sm font-medium">{statusLabel}</p></div>
   </section>
 
-  <section class="mt-5 grid gap-4 sm:grid-cols-2" aria-label={text.usageSummary}>
-    <div class="rounded-xl border bg-card p-5"><p class="text-[13px] text-muted-foreground">{text.recordedFiles}</p><p class="mt-2 text-xl font-medium tabular-nums">{new Intl.NumberFormat(data.locale).format(data.usage.files)}</p></div>
-    <div class="rounded-xl border bg-card p-5"><p class="text-[13px] text-muted-foreground">{text.recordedStorage}</p><p class="mt-2 text-xl font-medium tabular-nums">{bytesLabel} MiB</p></div>
+  <section class="mt-4 grid gap-3 sm:grid-cols-2" aria-label={text.usageSummary}>
+    <div class="rounded-xl border bg-card p-4"><p class="text-[13px] text-muted-foreground">{text.recordedFiles}</p><p class="mt-1.5 text-xl font-medium tabular-nums">{new Intl.NumberFormat(data.locale).format(data.usage.files)}</p></div>
+    <div class="rounded-xl border bg-card p-4"><p class="text-[13px] text-muted-foreground">{text.recordedStorage}</p><p class="mt-1.5 text-xl font-medium tabular-nums">{bytesLabel} MiB</p></div>
   </section>
-  <p class="mt-3 text-[13px] leading-relaxed text-muted-foreground">{text.usageNotQuota}</p>
+  <p class="mt-2 text-[13px] leading-relaxed text-muted-foreground">{text.usageNotQuota}</p>
 
   <section class="mt-8" aria-labelledby="plan-options">
     <div class="mb-4"><h2 id="plan-options" class="text-base font-medium">{text.availablePlans}</h2><p class="mt-1 text-[13px] text-muted-foreground">{text.planLimitsPending}</p></div>
@@ -59,6 +60,12 @@
                 <span aria-hidden="true" class="mt-px w-4 text-center">{included ? '✓' : '—'}</span>
                 <span>{featureLabels[feature]}{#if feature === 'higherLimits' || feature === 'teamCollaboration'} <span class="text-muted-foreground">· {text.planFeaturePending}</span>{/if}</span>
               </li>
+              {#if feature === 'customTrack'}
+                <li class="flex items-start gap-2">
+                  <span class="mt-px w-4 shrink-0 text-center" aria-hidden="true">✓</span>
+                  <span>{text.uploadLimit(formatBytes(plan.maxFileSizeBytes, data.locale))}</span>
+                </li>
+              {/if}
             {/each}
           </ul>
           <div class="mt-5 border-t pt-4">

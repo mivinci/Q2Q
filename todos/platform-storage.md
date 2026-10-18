@@ -48,7 +48,7 @@
 
 ## 上传阶段实施约定
 
-- 8 MiB 分片，浏览器最多并发 3 片；初期生产单文件上限 8 GiB，本地适配上限 64 MiB，不将此实现限制当作套餐配额。暂不接收空文件。
+- 8 MiB 分片，浏览器最多并发 3 片；技术单文件上限 8 GiB，本地适配上限 64 MiB。套餐单文件限制由项目 entitlement 决定：Free 2 MiB，Creator/Team 8 GiB。暂不接收空文件。
 - 生产由平台签发有效期不超过 10 分钟的 S3 UploadPart URL，绑定对象键、multipart ID、片号、Content-Type 和准确 Content-Length。长期凭据仅服务端持有。
 - 本地仅在 Vite dev 且 UPLOAD_LOCAL_PROXY=true 时接受分片字节，经显式本地路由写入模拟 R2；生产构建没有此数据路径回退。
 - D1 记录上传生命周期：initializing → uploading → completing → uploaded；uploading 与取消通过条件更新互斥。完成冻结分片清单，重复完成从同一对象恢复并验证大小及任务元数据，保存 object version 和 ETag。
