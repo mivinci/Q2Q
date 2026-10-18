@@ -65,6 +65,8 @@ jobs:
       - run: npm run platform:check:processing
       - run: npm run platform:check:storage
       - run: npm run platform:build
+        env:
+          Q2Q_PUBLIC_ORIGIN: https://platform.q2q.app
 
       # Deploy only after successful checks on main. PR builds never receive Cloudflare credentials.
       - name: Verify Cloudflare deployment credentials
