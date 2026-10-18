@@ -1,15 +1,39 @@
 {
-	"$schema": "../../node_modules/wrangler/config-schema.json",
-	"name": "q2q-platform",
-	"compatibility_date": "2026-10-18",
-	"compatibility_flags": [
-		"nodejs_als"
-	],
-	"main": ".svelte-kit/cloudflare/_worker.js",
-	"assets": {
-		"binding": "ASSETS",
-		"directory": ".svelte-kit/cloudflare"
-	},
-	"workers_dev": true,
-	"preview_urls": true
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "q2q-platform",
+  "compatibility_date": "2026-10-17",
+  "compatibility_flags": [
+    "nodejs_als"
+  ],
+  "main": ".svelte-kit/cloudflare/_worker.js",
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".svelte-kit/cloudflare"
+  },
+  "workers_dev": true,
+  "preview_urls": true,
+  "vars": {
+    "AUTH_ORIGIN": "https://q2q-platform.mivinci.workers.dev",
+    "PLATFORM_TRACK_URL": "",
+    "S3_ENDPOINT": "https://8f1f7af05a63e463c0cda7659ee830ab.r2.cloudflarestorage.com",
+    "S3_REGION": "auto",
+    "S3_BUCKET": "q2q-platform-storage"
+  },
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false } },
+  "queues": { "producers": [{ "binding": "PROCESSING_QUEUE", "queue": "q2q-seed-processing" }] },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "q2q-platform",
+      "database_id": "51440a97-9d98-4b3d-a2f9-77af80b5afe1",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "STORAGE",
+      "bucket_name": "q2q-platform-storage",
+      "remote": false
+    }
+  ]
 }

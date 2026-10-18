@@ -128,3 +128,10 @@
 		@apply font-sans;
 	}
 }
+
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="sheet-content"], [data-slot="sheet-overlay"] {
+    animation: none !important;
+    transition: none !important;
+  }
+}

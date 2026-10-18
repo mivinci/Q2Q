@@ -9,6 +9,8 @@
   import { messages } from '#lib/i18n.js';
   const text = $derived(messages[page.data.locale]);
 
+  let { showLabels = false }: { showLabels?: boolean } = $props();
+
   const modes = [
     { value: 'light', label: 'light', icon: Sun },
     { value: 'dark', label: 'dark', icon: Moon },
@@ -20,7 +22,7 @@
   {#each modes as mode}
     <Button
       variant="ghost"
-      size="icon-sm"
+      size={showLabels ? "sm" : "icon-sm"}
       class={userPrefersMode.current === mode.value
         ? 'flex-1 bg-background text-foreground shadow-sm hover:bg-background'
         : 'flex-1 text-muted-foreground'}
@@ -29,6 +31,7 @@
       onclick={() => setMode(mode.value)}
     >
       <mode.icon class="size-3.5" aria-hidden="true" />
+      {#if showLabels}<span>{text[mode.label]}</span>{/if}
     </Button>
   {/each}
 </div>

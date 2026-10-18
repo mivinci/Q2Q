@@ -5,21 +5,29 @@
   "type": "module",
   "description": "Q2Q：开源 P2P 网络框架，发布者无需自建后端",
   "workspaces": [
+    "crates/q2q-wasm",
     "apps/*",
     "docs",
     "packages/*"
   ],
   "scripts": {
+    "wasm:build": "npm run build --workspace @q2q/wasm",
+    "wasm:check": "npm run check --workspace @q2q/wasm --",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "e2e": "node e2e/check-site.mjs",
     "test": "npm run docs:build && npm run e2e",
     "platform:dev": "npm run dev --workspace @q2q/platform",
+    "platform:dev:workers": "npm run dev:workers --workspace @q2q/platform",
+    "platform:check:processing": "npm run check:processing --workspace @q2q/platform",
+    "platform:check:projects": "npm run check:projects --workspace @q2q/platform",
+    "platform:check:projects:http": "npm run check:projects:http --workspace @q2q/platform",
     "platform:check": "npm run check --workspace @q2q/platform",
     "platform:build": "npm run build --workspace @q2q/platform",
     "platform:preview": "npm run preview --workspace @q2q/platform",
-    "platform:types": "npm run types --workspace @q2q/platform"
+    "platform:types": "npm run types --workspace @q2q/platform",
+    "platform:db:migrate": "npm run db:migrate --workspace @q2q/platform"
   },
   "devDependencies": {
     "playwright-core": "^1.57.0"

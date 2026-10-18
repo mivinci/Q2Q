@@ -346,7 +346,13 @@ fn endpoint(addr: SocketAddr, public_key: [u8; 32]) -> Result<quinn::Endpoint, C
   };
   let mut endpoint =
     quinn::Endpoint::client(bind).map_err(|e| ControlError::Transport(e.to_string()))?;
-  endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(config)));
+  // Track's application heartbeat may be 30s, equal to QUIC's default idle limit.
+  // Transport keepalives prevent that timing race without extending binding authorization.
+  let mut transport = quinn::TransportConfig::default();
+  transport.keep_alive_interval(Some(Duration::from_secs(5)));
+  let mut client = quinn::ClientConfig::new(Arc::new(config));
+  client.transport_config(Arc::new(transport));
+  endpoint.set_default_client_config(client);
   Ok(endpoint)
 }
 

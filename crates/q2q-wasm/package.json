@@ -1,0 +1,12 @@
+{
+  "name": "@q2q/wasm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": ["pkg", "module.d.ts"],
+  "exports": {
+    ".": { "types": "./pkg/q2q_wasm.d.ts", "import": "./pkg/q2q_wasm.js" },
+    "./module.wasm": { "types": "./module.d.ts", "default": "./pkg/q2q_wasm_bg.wasm" }
+  },
+  "scripts": { "build": "node scripts/build.mjs", "check": "node scripts/check.mjs" }
+}

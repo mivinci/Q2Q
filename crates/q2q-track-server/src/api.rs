@@ -1,4 +1,4 @@
-//! The three HTTP endpoints, plus TURN credential minting.
+//! Peer HTTP endpoints, public service health, and TURN credential minting.
 //!
 //! Track never issues identity tickets — clients sign their own. The one thing
 //! it *does* issue is a TURN credential, because relay capacity costs money and
@@ -134,6 +134,19 @@ pub fn router_with<S: TrackState + 'static>(
     .route_layer(RateLimitLayer::new(limits.clone(), RULE_ANNOUNCE));
 
   let read_routes = Router::new()
+    .route(
+      "/health",
+      get(|| async {
+        // Only public service identity is readable cross-origin; other APIs keep their policy.
+        (
+          [
+            ("access-control-allow-origin", "*"),
+            ("cache-control", "no-store"),
+          ],
+          Json(serde_json::json!({ "service": "q2q-track", "version": env!("CARGO_PKG_VERSION") })),
+        )
+      }),
+    )
     .route("/peers/{peer_id}/heartbeat", post(heartbeat::<S>))
     .route("/files/{info_hash}/peers", get(query::<S>))
     .route_layer(RateLimitLayer::new(limits.clone(), RULE_QUERY));

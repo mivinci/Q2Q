@@ -31,6 +31,8 @@ pub struct Block {
   pub(crate) bitmap: Vec<u64>,
 }
 
+// Mutation is crate-private and used by the optional disk store.
+#[cfg_attr(not(feature = "storage"), allow(dead_code))]
 impl Block {
   pub(crate) fn new(len: usize) -> Self {
     let pieces = len.div_ceil(PIECE_SIZE);

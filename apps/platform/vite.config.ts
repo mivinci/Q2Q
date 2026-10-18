@@ -4,6 +4,8 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  // Workspace-hoisted Svelte source packages must be compiled during SSR too.
+  ssr: { noExternal: ['bits-ui'] },
 	plugins: [
 		tailwindcss(),
 		sveltekit({

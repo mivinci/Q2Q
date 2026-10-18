@@ -17,10 +17,15 @@ const NODE_PREFIX: u8 = 0x01;
 
 /// SHA-256(0x00 || block)
 pub fn leaf_hash(block: &[u8]) -> Hash {
-  let mut h = Sha256::new();
-  h.update([LEAF_PREFIX]);
+  let mut h = leaf_hasher();
   h.update(block);
   h.finalize().into()
+}
+
+pub(crate) fn leaf_hasher() -> Sha256 {
+  let mut hash = Sha256::new();
+  hash.update([LEAF_PREFIX]);
+  hash
 }
 
 /// SHA-256(0x01 || left || right)
