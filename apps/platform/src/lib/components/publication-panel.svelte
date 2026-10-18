@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invalidateAll } from '$app/navigation';
+  import { refreshAll } from '$app/navigation';
   import { page } from '$app/state';
   import { messages } from '#lib/i18n.js';
   import { uploadRequest } from '#lib/upload-client.js';
@@ -15,7 +15,7 @@
   const active = $derived(!!activePublication);
   $effect(() => {
     if (!publications.some((version) => version.status === 'creating' || (version.status === 'withdrawn' && version.cleanupPending))) return;
-    const timer = setInterval(() => { void invalidateAll(); }, 2500);
+    const timer = setInterval(() => { void refreshAll(); }, 2500);
     return () => clearInterval(timer);
   });
   async function publish(id?: string) {
@@ -24,14 +24,14 @@
     try {
       await uploadRequest(`/api/files/${fileId}/publications`, { id: id ?? requestId });
       requestId = null;
-      await invalidateAll();
+      await refreshAll();
     } catch { issue = text.projectActionFailed; }
     finally { busy = false; }
   }
   async function withdraw(id: string) {
     if (publications.find((version) => version.id === id)?.status !== 'withdrawn' && !window.confirm(text.publicationWithdrawConfirm)) return;
     busy = true; issue = '';
-    try { await uploadRequest(`/api/publications/${id}`, undefined, 'DELETE'); await invalidateAll(); }
+    try { await uploadRequest(`/api/publications/${id}`, undefined, 'DELETE'); await refreshAll(); }
     catch { issue = text.projectActionFailed; }
     finally { busy = false; }
   }
