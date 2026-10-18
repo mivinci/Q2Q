@@ -14,6 +14,9 @@ hero:
     - theme: brand
       text: 指南
       link: /zh/guide/what-is-q2q
+    - theme: alt
+      text: 开放平台
+      link: https://platform.q2q.app
 
 features:
   - icon: 🔑

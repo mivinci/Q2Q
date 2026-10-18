@@ -44,7 +44,7 @@ export const en: Messages = {
   general: 'General', appearanceDescription: 'Choose light, dark, or match your system appearance.',
   languageDescription: 'Choose the language used throughout the interface.',
   preferencesLocal: 'These preferences are saved in this browser.',
-  accountMenu: 'Account menu', account: 'Account',
+  accountMenu: 'Account menu', account: 'Account', documentation: 'Documentation',
   signOutFailed: 'Could not sign out. Please try again.',
   signIn: 'Continue with GitHub', signOut: 'Sign out', welcome: 'Your content. Everywhere.',
   loginDescription: 'Sign in to Q2Q to manage projects, files, and distribution sources.',

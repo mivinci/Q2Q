@@ -3,6 +3,7 @@
   import { goto } from '$app/navigation';
   import Settings from '@lucide/svelte/icons/settings';
   import ChartNoAxesColumn from '@lucide/svelte/icons/chart-no-axes-column';
+  import BookOpenText from '@lucide/svelte/icons/book-open-text';
   import LogOut from '@lucide/svelte/icons/log-out';
   import { messages } from '#lib/i18n.js';
   import { authClient } from '#lib/auth-client.js';
@@ -56,6 +57,7 @@
         <DropdownMenu.Separator />
         <DropdownMenu.Item onSelect={() => { onNavigate?.(); goto('/usage'); }}><ChartNoAxesColumn class="size-4" />{text.usage}</DropdownMenu.Item>
         <DropdownMenu.Item onSelect={() => { onNavigate?.(); goto('/settings'); }}><Settings class="size-4" />{text.settings}</DropdownMenu.Item>
+        <DropdownMenu.Item onSelect={() => { window.open('https://docs.q2q.app', '_blank', 'noopener,noreferrer'); }}><BookOpenText class="size-4" />{text.documentation}</DropdownMenu.Item>
         <DropdownMenu.Separator />
         <DropdownMenu.Item variant="destructive" disabled={signingOut} onSelect={signOut}><LogOut class="size-4" />{text.signOut}</DropdownMenu.Item>
       </DropdownMenu.Content>

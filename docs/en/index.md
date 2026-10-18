@@ -14,6 +14,9 @@ hero:
     - theme: brand
       text: Guide
       link: /guide/what-is-q2q
+    - theme: alt
+      text: Platform
+      link: https://platform.q2q.app
 
 features:
   - icon: 🔑
