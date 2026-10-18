@@ -35,8 +35,8 @@ Track, so the fallback does not weaken server authentication.
 This fallback covers Punch's binding and signalling control plane. Peer file
 data still uses WebRTC DataChannels and its own ICE path; WSS alone does not make
 a transfer work when UDP is blocked. See [Deploy](./deploy) for the optional
-listener and [the WSS fallback plan](../../../todos/punch-websocket-fallback.md)
-for the remaining data-plane work and acceptance boundary.
+listener configuration. Supporting file transfers on UDP-blocked networks
+requires a separate data-plane path such as TURN over TCP/TLS.
 
 ## Bindings
 
