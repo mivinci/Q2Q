@@ -6,6 +6,7 @@
   import ThemeToggle from '#lib/components/theme-toggle.svelte';
   import LanguageSelect from '#lib/components/language-select.svelte';
   const text = $derived(messages[page.data.locale]);
+  const buildCommit = import.meta.env.VITE_BUILD_COMMIT?.trim() || 'dev';
 </script>
 
 <svelte:head><title>{text.settings} · Q2Q</title></svelte:head>
@@ -31,5 +32,13 @@
       </div>
     </div>
     <p class="mt-3 px-1 text-[13px] text-muted-foreground">{text.preferencesLocal}</p>
+  </section>
+  <section aria-labelledby="platform-info" class="mt-9">
+    <h2 id="platform-info" class="mb-3 px-1 text-[13px] font-medium text-muted-foreground">{text.platformInfo}</h2>
+    <div class="rounded-xl border bg-card p-5">
+      <h3 class="text-sm font-medium">{text.buildCommit}</h3>
+      <p class="mt-1 text-[13px] text-muted-foreground">{text.buildCommitDescription}</p>
+      <code class="mt-3 block break-all rounded-lg bg-muted px-3 py-2 font-mono text-xs select-all">{buildCommit}</code>
+    </div>
   </section>
 </div>
