@@ -21,6 +21,7 @@ registerHooks({ resolve(specifier, context, next) {
 const { processSeed } = await import('../src/lib/server/seed-worker.ts');
 const { processPublication, cleanupPublication, sweepPublications } = await import('../src/lib/server/publication-worker.ts');
 const grants = await import('../src/lib/server/download-grant-store.ts');
+const { normalizeTrackUrl, localPlatformOrigin } = await import('../src/lib/network-url.ts');
 initSync({ module: readFileSync(new URL('../../../crates/q2q-wasm/pkg/q2q_wasm_bg.wasm', import.meta.url)) });
 const bytes = Buffer.alloc(256 * 1024 + 17, 42);
 const objects = new Map();
@@ -120,6 +121,16 @@ async function check(name, body) {
   console.log(`PASS ${name}`);
 }
 try {
+  await check('Track URL policy supports local Wrangler and rejects credential-bearing URLs', async () => {
+    const local = localPlatformOrigin('http://localhost:5173');
+    assert.equal(local, true);
+    assert.equal(localPlatformOrigin('https://platform.example'), false);
+    assert.equal(normalizeTrackUrl('http://127.0.0.1:18089/', local), 'http://127.0.0.1:18089');
+    assert.equal(normalizeTrackUrl('http://[::1]:18089/', local), 'http://[::1]:18089');
+    assert.equal(normalizeTrackUrl('https://track.example/prefix/', false), 'https://track.example/prefix');
+    for (const url of ['http://127.0.0.1:18089', 'http://track.example', 'https://user:password@track.example', 'https://track.example?secret=fixture', 'https://track.example#fragment', 'https://track.example?', 'ftp://track.example']) assert.throws(() => normalizeTrackUrl(url, false));
+    assert.throws(() => normalizeTrackUrl('http://192.168.1.1', true));
+  });
   await check('streaming output, inline proof and ready-message idempotency', async () => {
     const f = fixture();
     try {

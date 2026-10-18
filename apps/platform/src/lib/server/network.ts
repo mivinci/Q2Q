@@ -1,12 +1,10 @@
 import { env } from 'cloudflare:workers';
 import { dev } from '$app/env';
+import { localPlatformOrigin, normalizeTrackUrl } from '../network-url.js';
 
 export function normalizeTrack(value: string): string {
-  const url = new URL(value);
-  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  if (value.length > 2048 || url.username || url.password || url.search || url.hash ||
-    (url.protocol !== 'https:' && !(dev && local && url.protocol === 'http:'))) throw new Error('networkInvalid');
-  return url.toString().replace(/\/+$/, '');
+  // Wrangler serves a production build locally, where Svelte's dev flag is false.
+  return normalizeTrackUrl(value, dev || localPlatformOrigin(env.AUTH_ORIGIN ?? ''));
 }
 
 export function platformTrack(): string | null {

@@ -163,7 +163,7 @@ Workers 模式在 localhost:5173 同时运行页面与消费者，使用现有 `
 
 项目 owner 可在 `/network` 选择平台托管或单个自定义 Track，成员只读。平台地址通过 `PLATFORM_TRACK_URL` 配置；默认留空并显示未配置。当前仅提供地址接线，托管项目隔离、接入凭据、套餐与配额还未实现，不代表托管生产服务已开放。
 
-地址不允许携带用户信息、query 或 fragment，生产使用 HTTPS，开发允许 loopback HTTP。连接检查由浏览器直接请求 Track `/health`，限制响应大小、不携带 Cookie、不跟随跳转。Track 新增只读健康接口，CORS 仅对健康接口开放；检查只确认服务自报身份，不验证 Punch/TURN 或 TLS 之外的服务真实性，旧集群需升级或由代理提供兼容接口。
+地址不允许携带用户信息、query 或 fragment，生产使用 HTTPS；开发模式或 AUTH_ORIGIN 为本机 HTTP 时允许 loopback Track（兼容 Wrangler 本地生产构建）。连接检查由浏览器直接请求 Track `/health`，限制响应大小、不携带 Cookie、不跟随跳转。Track 新增只读健康接口，CORS 仅对健康接口开放；检查只确认服务自报身份，不验证 Punch/TURN 或 TLS 之外的服务真实性，旧集群需升级或由代理提供兼容接口。
 
 发布创建在 D1 条件写中读取项目网络并保存不可变快照，导出种子时通过 Wasm 写入对应 track_list。配置更改只影响新版本，迁移前版本保持未配置；CDN 授权下载仍可在没有 Track 时使用。migration 0014 已加入本地迁移，部署时需应用。
 

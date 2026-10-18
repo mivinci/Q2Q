@@ -1,7 +1,6 @@
 use super::*;
 
-#[tokio::test]
-async fn cancelling_a_signal_wait_preserves_a_partly_received_quic_push() {
+fn punch_server(idle: Option<Duration>) -> (quinn::Endpoint, PunchWire) {
   let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
   let cert = rcgen::CertificateParams::new(Vec::<String>::new())
     .unwrap()
@@ -18,15 +17,41 @@ async fn cancelling_a_signal_wait_preserves_a_partly_received_quic_push() {
     rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
   )
   .unwrap();
-  let config = quinn::ServerConfig::with_crypto(Arc::new(
+  let mut config = quinn::ServerConfig::with_crypto(Arc::new(
     quinn::crypto::rustls::QuicServerConfig::try_from(crypto).unwrap(),
   ));
+  if let Some(idle) = idle {
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_idle_timeout(Some(idle.try_into().unwrap()));
+    config.transport_config(Arc::new(transport));
+  }
   let server = quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap()).unwrap();
   let assignment = PunchWire {
     punch_id: "test-punch".into(),
     url: format!("quic://{}", server.local_addr().unwrap()),
     public_key: B64.encode(key.public_key_raw()),
   };
+  (server, assignment)
+}
+
+#[tokio::test]
+async fn idle_punch_connection_survives_without_application_heartbeats() {
+  let (server, assignment) = punch_server(Some(Duration::from_secs(7)));
+  let (accepted, connected) = tokio::join!(
+    async { server.accept().await.unwrap().await.unwrap() },
+    connect_quic(&assignment)
+  );
+  let (_endpoint, connection) = connected.unwrap();
+  // Longer than the negotiated idle timeout; no RPC or heartbeat is sent by this test.
+  tokio::time::sleep(Duration::from_secs(9)).await;
+  assert!(connection.close_reason().is_none());
+  assert!(accepted.close_reason().is_none());
+  connection.close(0u32.into(), b"test complete");
+}
+
+#[tokio::test]
+async fn cancelling_a_signal_wait_preserves_a_partly_received_quic_push() {
+  let (server, assignment) = punch_server(None);
   let expected = SignalRequest {
     kind: q2q_punch::message::SignalType::Candidate,
     connection_id: "cancel-safe".into(),
