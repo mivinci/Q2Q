@@ -1,4 +1,5 @@
 import type { ProcessingSummary } from '../processing.js';
+import type { SeedProcessingMessage } from '@q2q/seed-processing-contract';
 
 export async function processingSummary(db: D1Database, fileId: string) {
   return db.prepare(`SELECT status, processedBytes, errorCode, infoHash, leaseUntil, updatedAt FROM seed_task WHERE fileId = ?`)
@@ -14,7 +15,7 @@ export async function enqueueSeed(db: D1Database, queue: Queue | undefined, file
   // D1 is the durable intent. Retrying dispatch may duplicate messages; the consumer fences execution.
   try {
     if (!queue) throw new Error('processingUnavailable');
-    await queue.send({ fileId });
+    await queue.send({ fileId } satisfies SeedProcessingMessage);
   } catch {
     await db.prepare(`UPDATE seed_task SET status = 'failed', errorCode = 'processingUnavailable', updatedAt = ? WHERE fileId = ? AND status = 'pending'`)
       .bind(Date.now(), fileId).run();

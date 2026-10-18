@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "dev:workers": "wrangler dev -c wrangler.jsonc -c wrangler.processing.jsonc --ip localhost --port 5173 --log-level warn",
-    "build": "npm run wasm:build --prefix ../.. && npm run types && vite build && wrangler deploy --dry-run -c wrangler.processing.jsonc --outdir .wrangler/processing-build",
-    "preview": "wrangler dev -c wrangler.jsonc -c wrangler.processing.jsonc --port 4173 --log-level warn",
+    "dev:workers": "wrangler dev -c wrangler.jsonc -c ../seed-processing/wrangler.jsonc --persist-to .wrangler/state --ip localhost --port 5173 --log-level warn",
+    "build": "npm run wasm:build --prefix ../.. && npm run types && vite build",
+    "preview": "wrangler dev -c wrangler.jsonc -c ../seed-processing/wrangler.jsonc --persist-to .wrangler/state --port 4173 --log-level warn",
     "check:processing": "node --experimental-strip-types scripts/check-processing.mjs",
+    "check:storage": "node --experimental-strip-types scripts/check-storage-quota.mjs",
     "check:projects": "node --experimental-strip-types scripts/check-project-invitations.mjs",
     "check:projects:http": "node --experimental-strip-types scripts/check-project-invitations-http.mjs",
     "prepare": "svelte-kit sync",
@@ -43,9 +44,9 @@
   },
   "dependencies": {
     "@q2q/wasm": "*",
-    "aws4fetch": "^1.0.20",
+    "@q2q/s3-storage": "*",
+    "@q2q/seed-processing-contract": "*",
     "better-auth": "^1.7.10",
-    "fast-xml-parser": "^5.11.2",
     "mode-watcher": "^1.1.0"
   }
 }

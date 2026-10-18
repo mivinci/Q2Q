@@ -44,7 +44,7 @@
 ## 平台接线
 
 - `@q2q/wasm` npm 工作区包提供 JS、类型及 `module.wasm` 导出，生成目录为 crate 内忽略的 pkg；业务代码不访问 Cargo target。
-- 页面 Worker 在上传完成后登记 D1 intent 并发往 Cloudflare Queue，独立消费入口仍在 apps/platform 内。Vite 页面开发与完整 Workers 联调分开，启动方式见平台 README。
+- 页面 Worker 在上传完成后登记 D1 intent 并发往 Cloudflare Queue；消费者现已移到独立的 `apps/seed-processing` workspace。Vite 页面开发与完整 Workers 联调分开，启动方式见平台 README。
 - 消费任务固定上传 ID、对象版本、ETag 和存储配置；流式计算，通过 leaseToken、120 秒租约、续约及条件提交抵御重复消息和过期任务。
 - 产物使用每次尝试独立的对象键；提交 ready 前保存对象，并记录种子大小、SHA-256 摘要及 info_hash。提交结果不确定时先读取 D1 状态，不能删除可能已提交的产物。
 - 详情展示状态、进度、内容身份和重试；成员可下载种子，写操作限创建者或 owner。下载前限制读取大小并校验摘要，处理期间禁止删除。
@@ -58,3 +58,12 @@
 - 平台类型检查、页面构建及消费端 Wrangler dry run 通过。新增 CI 接线，未运行远端 CI。
 - 浏览器从失败状态点击重试后重新入队并完成，摘要校验版本的种子下载成功，和原始文件重算的结果一致。用户明确选择保留 `q2q-seed-processing-test.bin` 的 9 MiB 本地测试记录及 S3 原文件、种子、证明，供查看界面。
 - 还需线上验证 Queue 和 CPU 额度；定时补发丢失的入队通知、强制终止后的孤立产物扫描、跨账号故障注入尚未覆盖。当前由持久任务状态与人工重试恢复，没有宣称完全自动恢复。
+
+## 独立部署与共享包（2026-10-18）
+
+- 消费入口、种子处理、发布产物及回收实现移到 `apps/seed-processing`，拥有独立 package、TypeScript 配置和 Wrangler 配置；不再由平台构建脚本打包。
+- 两个 Workers 共用的 S3 实现移到 `packages/s3-storage`，处理状态和队列消息类型移到 `packages/seed-processing-contract`；生产者使用相同消息类型校验发送内容。
+- GitHub Actions 按两个应用目录分别部署；上述共享包、Wasm/core、根依赖和 D1 迁移变更触发双方。Worker 名称、D1、Queue 和生产 secrets 沿用现有资源。
+- 本地完整联调继续由 `platform:dev:workers` 启动双方，显式共用平台的本地状态目录；两个 Worker 分别从各自目录加载 secrets。
+- 平台类型检查零错误/警告，平台生产构建、独立消费者类型检查与 Wrangler dry run 通过；22 项 SQLite/模拟 S3/真实 Wasm 回归通过。部署路径规则验证了平台专属、消费者专属、共享包、迁移、工作流与 docs 的触发范围；本地双 Worker 启动通过。
+- 本轮未部署生产或运行远端 CI。原工作目录已接回最新 main 基线；切换前的旧文档改动保存在 stash。

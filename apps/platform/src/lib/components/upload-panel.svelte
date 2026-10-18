@@ -10,8 +10,8 @@
   import { formatBytes, uploadStatusLabels, type UploadSummary } from '#lib/upload.js';
   import { uploadFile, uploadRequest, type UploadProgress } from '#lib/upload-client.js';
 
-  let { projectId, ready, storageEnabled, localUploads, maxFileSize, uploads, detail = false, retryFile, onActiveChange }: {
-    projectId: string; ready: boolean; storageEnabled: boolean; localUploads: boolean; maxFileSize: number; uploads: UploadSummary[]; detail?: boolean; retryFile?: { id: string; name: string; size: number }; onActiveChange?: (active: boolean) => void;
+  let { projectId, ready, storageEnabled, localUploads, maxFileSize, storageRemainingBytes, uploads, detail = false, retryFile, onActiveChange }: {
+    projectId: string; ready: boolean; storageEnabled: boolean; localUploads: boolean; maxFileSize: number; storageRemainingBytes: number; uploads: UploadSummary[]; detail?: boolean; retryFile?: { id: string; name: string; size: number }; onActiveChange?: (active: boolean) => void;
   } = $props();
   const text = $derived(messages[page.data.locale]);
   const maxSize = $derived(localUploads ? Math.min(64 * 1024 * 1024, maxFileSize) : maxFileSize);
@@ -38,6 +38,7 @@
     if (retry && (file.name.trim() !== retry.name || file.size !== retry.size)) { issue = 'uploadRetryFileMismatch'; return; }
     if (!file.size) { issue = 'uploadInvalid'; return; }
     if (file.size > maxSize) { issue = localUploads && file.size > 64 * 1024 * 1024 ? 'uploadLocalLimit' : 'uploadPlanLimit'; return; }
+    if (file.size > storageRemainingBytes) { issue = 'uploadStorageLimit'; return; }
     controller = new AbortController();
     try { await uploadFile(file, projectId, controller.signal, (progress) => { active = progress; }, retry?.fileId); }
     catch (cause) { if (!(cause instanceof DOMException && cause.name === 'AbortError')) showError(cause); }
@@ -54,13 +55,14 @@
   onDestroy(() => controller?.abort());
 </script>
 
-<div class="mb-7">
+<div id="upload" class="mb-7 scroll-mt-20">
   <div class="flex flex-wrap items-start justify-between gap-4">
     {#if !detail}<div><h1 class="text-2xl font-medium tracking-tight">{text.library}</h1><p class="mt-1 text-[13px] text-muted-foreground">{text.description}</p></div>{/if}
     <div class="text-right" class:hidden={detail}>
       <input bind:this={input} type="file" class="hidden" tabindex="-1" aria-label={text.upload} onchange={selected} disabled={!ready || !!active} />
-      <Button disabled={!ready || !!active} onclick={() => { retryTask = null; input.click(); }}><Plus class="size-4" aria-hidden="true" />{text.upload}</Button>
+      <Button disabled={!ready || !!active || storageRemainingBytes <= 0} onclick={() => { retryTask = null; input.click(); }}><Plus class="size-4" aria-hidden="true" />{text.upload}</Button>
       <p class="mt-2 max-w-64 text-[13px] text-muted-foreground">{ready ? text.uploadLimit(formatBytes(maxSize, page.data.locale)) : storageEnabled ? text.uploadUnavailable : text.uploadStorageRequired}</p>
+      {#if ready}<a href="/usage" class="mt-1 inline-block text-[13px] text-muted-foreground">{storageRemainingBytes <= 0 ? text.uploadStorageLimit : text.storageRemaining(formatBytes(storageRemainingBytes, page.data.locale))}</a>{/if}
       {#if !storageEnabled}<a href="/storage" class="mt-1 inline-block text-[13px] text-primary">{text.storage}</a>{/if}
     </div>
   </div>

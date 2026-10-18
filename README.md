@@ -95,6 +95,8 @@ Useful checks and builds:
 ```sh
 npm run platform:check
 npm run platform:build
+npm run seed-processing:check
+npm run seed-processing:build
 npm run docs:build
 ```
 

@@ -1,8 +1,7 @@
 // Opt-in live check. Uses synthetic data under a unique prefix and cleans up only its own resources.
 import assert from 'node:assert/strict';
 import { randomFillSync, randomUUID, createHash } from 'node:crypto';
-import { AwsClient } from 'aws4fetch';
-import { createS3Storage, signS3Part, s3ObjectUrl } from '../src/lib/server/s3-storage.ts';
+import { createS3Storage, signS3Part } from '@q2q/s3-storage';
 
 const config = {
   endpoint: process.env.S3_ENDPOINT, region: process.env.S3_REGION, bucket: process.env.S3_BUCKET,
@@ -11,7 +10,6 @@ const config = {
 };
 if (Object.entries(config).some(([, value]) => value === undefined || value === '')) throw new Error('Configure S3_* environment variables first');
 const storage = createS3Storage(config);
-const client = new AwsClient({ accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey, region: config.region, service: 's3', retries: 0 });
 const prefix = `q2q-integration/${randomUUID()}`;
 const key = `${prefix}/encoded%3A/complete.bin`;
 const cancelKey = `${prefix}/cancel.bin`;
@@ -49,7 +47,7 @@ try {
   const object = await storage.resumeMultipartUpload(key, created.uploadId).complete(receipts);
   assert.equal(object.size, bytes.length);
   assert.equal(object.customMetadata?.uploadTask, 'live-check');
-  const response = await client.fetch(s3ObjectUrl(config, key).toString());
+  const response = await storage.get(key);
   assert(response.ok, `Readback HTTP ${response.status}`);
   assert.equal(hash(Buffer.from(await response.arrayBuffer())), hash(bytes));
   results.completionAndByteIntegrity = true;

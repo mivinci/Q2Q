@@ -12,14 +12,14 @@ import { initSync, SeedBuilder, publication_proof } from '@q2q/wasm';
 registerHooks({ resolve(specifier, context, next) {
   try { return next(specifier, context); }
   catch (cause) {
-    if (context.parentURL?.startsWith(new URL('../src/', import.meta.url).href) && specifier.startsWith('.') && specifier.endsWith('.js')) {
+    if ((context.parentURL?.startsWith(new URL('../src/', import.meta.url).href) || context.parentURL?.startsWith(new URL('../../seed-processing/', import.meta.url).href)) && specifier.startsWith('.') && specifier.endsWith('.js')) {
       return next(specifier.slice(0, -3) + '.ts', context);
     }
     throw cause;
   }
 } });
-const { processSeed } = await import('../src/lib/server/seed-worker.ts');
-const { processPublication, cleanupPublication, sweepPublications } = await import('../src/lib/server/publication-worker.ts');
+const { processSeed } = await import('../../seed-processing/seed-worker.ts');
+const { processPublication, cleanupPublication, sweepPublications } = await import('../../seed-processing/publication-worker.ts');
 const grants = await import('../src/lib/server/download-grant-store.ts');
 const { normalizeTrackUrl, localPlatformOrigin } = await import('../src/lib/network-url.ts');
 initSync({ module: readFileSync(new URL('../../../crates/q2q-wasm/pkg/q2q_wasm_bg.wasm', import.meta.url)) });

@@ -3,30 +3,34 @@ import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { requireProject } from '#lib/server/projects.js';
 import { getProjectEntitlements, isPlanId, planCatalog, planIds, type PlanFeature, type PlanId } from '#lib/server/plans.js';
+import { getStorageUsage } from '#lib/server/storage-quota.js';
 
 export const load: PageServerLoad = async ({ locals, parent }) => {
   if (!locals.user) redirect(303, '/login');
   const { currentProject } = await parent();
   if (!currentProject) redirect(303, '/library');
 
-  const [entitlements, usage] = await Promise.all([
+  const [entitlements, usage, storageUsage] = await Promise.all([
     getProjectEntitlements(env.DB, currentProject.id),
     env.DB.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS recordedBytes
       FROM file_record WHERE projectId = ? AND status = 'uploaded'`)
-      .bind(currentProject.id).first<{ files: number; recordedBytes: number }>()
+      .bind(currentProject.id).first<{ files: number; recordedBytes: number }>(),
+    getStorageUsage(env.DB, currentProject.id)
   ]);
 
   return {
     currentProject,
     entitlements,
     usage: usage ?? { files: 0, recordedBytes: 0 },
+    storageUsage,
     simulationEnabled: env.BILLING_SIMULATION === 'enabled',
     plans: planIds.map((id) => ({
       id: id as PlanId,
       nameKey: planCatalog[id].nameKey,
       descriptionKey: planCatalog[id].descriptionKey,
       features: [...planCatalog[id].features] as PlanFeature[],
-      maxFileSizeBytes: planCatalog[id].maxFileSizeBytes
+      maxFileSizeBytes: planCatalog[id].maxFileSizeBytes,
+      storageBytes: planCatalog[id].storageBytes
     }))
   };
 };

@@ -5,13 +5,16 @@ import { uploadTransport } from '#lib/server/upload-storage.js';
 import { requireProject } from '#lib/server/projects.js';
 import { enablePlatformStorage, getPlatformStorage } from '#lib/server/storage.js';
 import { requireProjectFeature } from '#lib/server/plans.js';
+import { getStorageUsage } from '#lib/server/storage-quota.js';
 
 export const load: PageServerLoad = async ({ locals, parent }) => {
   if (!locals.user) redirect(303, '/login');
-  const { currentProject } = await parent();
-  if (!currentProject) redirect(303, '/library');
+  const { currentProject, entitlements } = await parent();
+  if (!currentProject || !entitlements) redirect(303, '/library');
   return {
+    entitlements,
     storageConnection: await getPlatformStorage(env.DB, currentProject.id),
+    storageUsage: await getStorageUsage(env.DB, currentProject.id),
     storageAvailable: uploadTransport() !== null
   };
 };

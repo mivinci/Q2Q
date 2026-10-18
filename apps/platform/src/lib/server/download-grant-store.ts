@@ -1,5 +1,5 @@
 import { error } from '@sveltejs/kit';
-import { createS3Storage, signS3Download, type S3Config } from './s3-storage.js';
+import { createS3Storage, signS3Download, type S3Config } from '@q2q/s3-storage';
 
 const digest = async (value: string) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))), (byte) => byte.toString(16).padStart(2, '0')).join('');
 const columns = 'id, publicationId, createdAt, revokedAt';

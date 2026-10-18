@@ -57,7 +57,7 @@ export const actions: Actions = {
         cookies.set(projectCookie, invite.projectId, {
           path: '/', sameSite: 'lax', secure: url.protocol === 'https:', maxAge: 60 * 60 * 24 * 365
         });
-        redirect(303, '/library');
+        redirect(303, '/');
       }
       const errorCode: 'inviteExpired' | 'inviteRevokedPublic' | 'inviteAlreadyAccepted' =
         status === 'expired' ? 'inviteExpired' : status === 'revoked' ? 'inviteRevokedPublic' : 'inviteAlreadyAccepted';
@@ -68,7 +68,7 @@ export const actions: Actions = {
       cookies.set(projectCookie, invite.projectId, {
         path: '/', sameSite: 'lax', secure: url.protocol === 'https:', maxAge: 60 * 60 * 24 * 365
       });
-      redirect(303, '/library');
+      redirect(303, '/');
     }
     const entitlements = await getProjectEntitlements(env.DB, invite.projectId);
     if (!entitlements.features.teamCollaboration) return fail(403, { error: 'teamPlanRequired' as const });
@@ -78,6 +78,6 @@ export const actions: Actions = {
     cookies.set(projectCookie, projectId, {
       path: '/', sameSite: 'lax', secure: url.protocol === 'https:', maxAge: 60 * 60 * 24 * 365
     });
-    redirect(303, '/library');
+    redirect(303, '/');
   }
 };

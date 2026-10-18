@@ -124,6 +124,7 @@ export default defineConfig({
             items: guide('/'),
           },
           { text: 'API', link: '/api/' },
+          { text: 'Privacy', link: '/privacy' },
         ],
 
         // 每页底部的「编辑此页」链接
@@ -157,6 +158,7 @@ export default defineConfig({
             ],
           },
           { text: 'API 参考', link: '/zh/api/' },
+          { text: '隐私政策', link: '/zh/privacy' },
         ],
 
         editLink: {

@@ -5,6 +5,7 @@ import { requireFile } from './files.js';
 import { getPlatformStorage } from './storage.js';
 import { uploadStorage, storageIdentity, uploadTransport } from './upload-storage.js';
 import { getProjectEntitlements, requireProjectFeature } from './plans.js';
+import { getStorageUsage, reserveUpload } from './storage-quota.js';
 
 interface UploadTask extends UploadSummary {
   fileId: string; transport: string; bucketIdentity: string;
@@ -45,7 +46,13 @@ export async function createUpload(userId: string, fileId: string, input: Record
   const { id } = input;
   if (typeof id !== 'string' || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(id)) error(400, 'uploadInvalid');
   const file = await requireFile(fileId, userId, true);
-  const { projectId, name, size } = file;
+  const { projectId, size } = file;
+  const existing = await env.DB.prepare('SELECT id FROM upload_task WHERE id = ?').bind(id).first();
+  if (existing) {
+    const task = await requireUpload(id, userId);
+    if (task.fileId !== fileId || task.createdBy !== userId) error(409, 'uploadConflict');
+    return { id: task.id, partSize: task.partSize, status: task.status };
+  }
   await requireProjectFeature(env.DB, projectId, 'platformStorage');
   const entitlements = await getProjectEntitlements(env.DB, projectId);
   if (size > entitlements.limits.maxFileSizeBytes) error(413, 'uploadPlanLimit');
@@ -54,26 +61,20 @@ export async function createUpload(userId: string, fileId: string, input: Record
   if (mode === 'local' && size > 64 * 1024 * 1024) error(413, 'uploadLocalLimit');
   const connection = await getPlatformStorage(env.DB, projectId);
   if (!connection) error(409, 'uploadStorageRequired');
-  const existing = await env.DB.prepare('SELECT id FROM upload_task WHERE id = ?').bind(id).first();
-  if (existing) {
-    const task = await requireUpload(id, userId);
-    if (task.fileId !== fileId || task.createdBy !== userId) error(409, 'uploadConflict');
-    return { id: task.id, partSize: task.partSize, status: task.status };
-  }
   if (file.status !== 'pending') error(409, 'uploadConflict');
   const now = Date.now();
   const key = `projects/${encodeURIComponent(projectId)}/uploads/${id}/object`;
   // Persist intent before creating provider state. A stranded initializing task is visible for cleanup.
-  const inserted = await env.DB.prepare(`INSERT INTO upload_task
-    (id, projectId, connectionId, createdBy, name, size, objectKey, partSize, status, createdAt, updatedAt, expiresAt, transport, bucketIdentity, fileId)
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?, 'initializing', ?, ?, ?, ?, ?, ?
-    FROM file_record f WHERE f.id = ? AND f.status = 'pending' AND NOT EXISTS
-    (SELECT 1 FROM upload_task WHERE fileId = f.id AND status IN ('initializing', 'uploading', 'completing'))
-    ON CONFLICT(id) DO NOTHING`)
-    .bind(id, projectId, connection.id, userId, name.trim(), size, key, uploadPartSize, now, now, now + 86400000, mode, storageIdentity(mode), fileId, fileId).run();
+  const inserted = await reserveUpload(env.DB, { id, fileId, userId, connectionId: connection.id,
+    objectKey: key, transport: mode, bucketIdentity: storageIdentity(mode), now });
   if (!inserted.meta.changes) {
     const found = await env.DB.prepare('SELECT id FROM upload_task WHERE id = ?').bind(id).first();
-    if (!found) error(409, 'uploadConflict');
+    if (!found) {
+      const [usage, current] = await Promise.all([getStorageUsage(env.DB, projectId), getProjectEntitlements(env.DB, projectId)]);
+      if (usage.usedBytes + usage.reservedBytes + size > current.limits.storageBytes) error(413, 'uploadStorageLimit');
+      if (size > current.limits.maxFileSizeBytes) error(413, 'uploadPlanLimit');
+      error(409, 'uploadConflict');
+    }
     const task = await requireUpload(id, userId);
     if (task.fileId !== fileId || task.createdBy !== userId) error(409, 'uploadConflict');
     return { id: task.id, partSize: task.partSize, status: task.status };

@@ -8,6 +8,8 @@ export interface AuthEnvironment {
   BETTER_AUTH_SECRET?: string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
 }
 
 export function authConfigured(env: AuthEnvironment | undefined): env is AuthEnvironment & {
@@ -27,7 +29,10 @@ export function createAuth(env: Parameters<typeof authConfigured>[0]) {
     database: env.DB,
     trustedOrigins: [new URL(env.AUTH_ORIGIN).origin],
     socialProviders: {
-      github: { clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET }
+      github: { clientId: env.GITHUB_CLIENT_ID, clientSecret: env.GITHUB_CLIENT_SECRET },
+      ...(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET
+        ? { google: { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET } }
+        : {})
     },
     account: { encryptOAuthTokens: true, accountLinking: { enabled: false } },
     session: { expiresIn: 60 * 60 * 24 * 7, updateAge: 60 * 60 * 24 },

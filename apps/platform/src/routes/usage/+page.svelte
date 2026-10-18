@@ -2,22 +2,20 @@
   import { messages } from '#lib/i18n.js';
   import { Button } from '#lib/components/ui/button/index.js';
   import type { PageProps } from './$types';
-  import type { PlanFeature, PlanId } from '#lib/server/plans.js';
+  import type { PlanId } from '#lib/server/plans.js';
   import { formatBytes } from '#lib/upload.js';
+  import StorageUsage from '#lib/components/storage-usage.svelte';
 
   let { data, form }: PageProps = $props();
   const text = $derived(messages[data.locale]);
-  const featureLabels = $derived<Record<PlanFeature, string>>({
+  const featureLabels = $derived({
     platformStorage: text.planFeatureStorage,
     platformNetwork: text.planFeaturePlatformNetwork,
-    customTrack: text.planFeatureCustomNetwork,
-    higherLimits: text.planFeatureHigherLimits,
-    teamCollaboration: text.planFeatureTeam
+    customTrack: text.planFeatureCustomNetwork
   });
   const statusLabel = $derived(data.entitlements.status === 'simulated'
     ? text.planStatusSimulation
     : data.entitlements.status === 'active' ? text.planStatusActive : text.planStatusFree);
-  const bytesLabel = $derived(new Intl.NumberFormat(data.locale, { maximumFractionDigits: 1 }).format(data.usage.recordedBytes / (1024 * 1024)));
   const planNameKey: Record<PlanId, 'planFree' | 'planCreator' | 'planTeam'> = {
     free: 'planFree', creator: 'planCreator', team: 'planTeam'
   };
@@ -38,7 +36,7 @@
 
   <section class="mt-4 grid gap-3 sm:grid-cols-2" aria-label={text.usageSummary}>
     <div class="rounded-xl border bg-card p-4"><p class="text-[13px] text-muted-foreground">{text.recordedFiles}</p><p class="mt-1.5 text-xl font-medium tabular-nums">{new Intl.NumberFormat(data.locale).format(data.usage.files)}</p></div>
-    <div class="rounded-xl border bg-card p-4"><p class="text-[13px] text-muted-foreground">{text.recordedStorage}</p><p class="mt-1.5 text-xl font-medium tabular-nums">{bytesLabel} MiB</p></div>
+    <div class="rounded-xl border bg-card p-4"><StorageUsage usage={data.storageUsage} limit={data.entitlements.limits.storageBytes} /></div>
   </section>
   <p class="mt-2 text-[13px] leading-relaxed text-muted-foreground">{text.usageNotQuota}</p>
 
@@ -54,19 +52,26 @@
             {#if selected}<span class="shrink-0 rounded-full bg-primary/10 px-2 py-1 text-xs text-primary">{text.currentPlanBadge}</span>{/if}
           </div>
           <ul class="mt-5 flex-1 space-y-3 text-[13px]">
-            {#each (['platformStorage', 'platformNetwork', 'customTrack', 'higherLimits', 'teamCollaboration'] as PlanFeature[]) as feature}
-              {@const included = plan.features.includes(feature)}
-              <li class={`flex items-start gap-2 ${included ? '' : 'text-muted-foreground'}`}>
-                <span aria-hidden="true" class="mt-px w-4 text-center">{included ? '✓' : '—'}</span>
-                <span>{featureLabels[feature]}{#if feature === 'higherLimits' || feature === 'teamCollaboration'} <span class="text-muted-foreground">· {text.planFeaturePending}</span>{/if}</span>
+            {#each (['platformStorage', 'platformNetwork', 'customTrack'] as const) as feature}
+              <li class="flex items-start gap-2">
+                <span aria-hidden="true" class="mt-px w-4 shrink-0 text-center">✓</span>
+                <span>{featureLabels[feature]}</span>
               </li>
-              {#if feature === 'customTrack'}
-                <li class="flex items-start gap-2">
-                  <span class="mt-px w-4 shrink-0 text-center" aria-hidden="true">✓</span>
-                  <span>{text.uploadLimit(formatBytes(plan.maxFileSizeBytes, data.locale))}</span>
-                </li>
-              {/if}
             {/each}
+            <li class="flex items-start gap-2">
+              <span class="mt-px w-4 shrink-0 text-center" aria-hidden="true">✓</span>
+              <span>{text.uploadLimit(formatBytes(plan.maxFileSizeBytes, data.locale))}</span>
+            </li>
+            <li class="flex items-start gap-2">
+              <span class="mt-px w-4 shrink-0 text-center" aria-hidden="true">✓</span>
+              <span>{text.planStorageLimit(formatBytes(plan.storageBytes, data.locale))}</span>
+            </li>
+            {#if plan.features.includes('teamCollaboration')}
+              <li class="flex items-start gap-2">
+                <span class="mt-px w-4 shrink-0 text-center" aria-hidden="true">✓</span>
+                <span>{text.planFeatureTeam}</span>
+              </li>
+            {/if}
           </ul>
           <div class="mt-5 border-t pt-4">
             {#if data.simulationEnabled && data.currentProject.role === 'owner'}

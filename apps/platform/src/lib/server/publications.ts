@@ -3,6 +3,7 @@ import { error } from '@sveltejs/kit';
 import { requireFile } from './files.js';
 import type { PublicationSummary } from '../publication.js';
 import { platformTrack } from './network.js';
+import type { PublicationProcessingMessage, PublicationCleanupMessage } from '@q2q/seed-processing-contract';
 
 // Never serialize provider object keys, storage identity or pending artifact references.
 const summaryColumns = `p.id, p.projectId, p.fileId, p.status, p.name, p.size, p.infoHash,
@@ -82,7 +83,7 @@ export async function createPublication(fileId: string, userId: string, input: R
 async function dispatchPublication(id: string, fileId: string) {
   try {
     if (!env.PROCESSING_QUEUE) throw new Error('processingUnavailable');
-    await env.PROCESSING_QUEUE.send({ kind: 'publication', publicationId: id, fileId });
+    await env.PROCESSING_QUEUE.send({ kind: 'publication', publicationId: id, fileId } satisfies PublicationProcessingMessage);
   } catch {
     await env.DB.prepare(`UPDATE content_publication SET status = 'failed', errorCode = 'processingUnavailable', updatedAt = ?
       WHERE id = ? AND status = 'creating' AND leaseUntil = 0`).bind(Date.now(), id).run();
@@ -99,6 +100,6 @@ export async function withdrawPublication(id: string, userId: string) {
       SELECT 1 FROM file_record f JOIN project_member m ON m.projectId = f.projectId
       WHERE f.id = content_publication.fileId AND m.userId = ? AND (f.createdBy = ? OR m.role = 'owner'))`)
     .bind(now, now, id, userId, userId).run();
-  await env.PROCESSING_QUEUE?.send({ kind: 'publication-cleanup', publicationId: id, fileId: publication.fileId }).catch(() => {});
+  await env.PROCESSING_QUEUE?.send({ kind: 'publication-cleanup', publicationId: id, fileId: publication.fileId } satisfies PublicationCleanupMessage).catch(() => {});
   return requirePublication(id, userId, true);
 }

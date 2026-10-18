@@ -5,9 +5,10 @@ import { listFiles } from '#lib/server/files.js';
 import { uploadTransport } from '#lib/server/upload-storage.js';
 import { getPlatformStorage } from '#lib/server/storage.js';
 import { createProject, projectCookie, requireProject } from '#lib/server/projects.js';
+import { getStorageUsage } from '#lib/server/storage-quota.js';
 
 const returnPath = (value: FormDataEntryValue | null) =>
-  value === '/storage' || value === '/settings' || value === '/seeds' || value === '/network' || value === '/usage' || value === '/project/settings' ? value : '/library';
+  value === '/' || value === '/storage' || value === '/settings' || value === '/seeds' || value === '/network' || value === '/usage' || value === '/project/settings' ? value : '/library';
 
 export const load: PageServerLoad = async ({ locals, parent }) => {
   if (!locals.user) redirect(303, '/login');
@@ -15,8 +16,10 @@ export const load: PageServerLoad = async ({ locals, parent }) => {
   if (!currentProject || !entitlements) redirect(303, '/login');
   const connection = await getPlatformStorage(env.DB, currentProject.id);
   const transport = uploadTransport();
+  const usage = await getStorageUsage(env.DB, currentProject.id);
   return { files: await listFiles(currentProject.id, locals.user.id), uploadReady: !!connection && !!transport,
-    storageEnabled: !!connection, localUploads: transport === 'local', maxFileSize: entitlements.limits.maxFileSizeBytes };
+    storageEnabled: !!connection, localUploads: transport === 'local', maxFileSize: entitlements.limits.maxFileSizeBytes,
+    storageRemainingBytes: Math.max(0, entitlements.limits.storageBytes - usage.usedBytes - usage.reservedBytes) };
 };
 
 export const actions: Actions = {

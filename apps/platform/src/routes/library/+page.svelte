@@ -19,7 +19,7 @@
   {#if form?.error}<p role="alert" class="mb-5 text-sm text-destructive">{text[form.error]}</p>{/if}
   {#if data.currentProject}
     {#key data.currentProject.id}
-      <UploadPanel projectId={data.currentProject.id} ready={data.uploadReady} storageEnabled={data.storageEnabled} localUploads={data.localUploads} maxFileSize={data.maxFileSize} uploads={[]} />
+      <UploadPanel projectId={data.currentProject.id} ready={data.uploadReady} storageEnabled={data.storageEnabled} localUploads={data.localUploads} maxFileSize={data.maxFileSize} storageRemainingBytes={data.storageRemainingBytes} uploads={[]} />
     {/key}
   {/if}
   <section aria-label={text.contentList}>
