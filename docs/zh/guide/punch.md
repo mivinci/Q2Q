@@ -11,9 +11,11 @@ Punch 不解析经手的 SDP，只把它视作不透明字符串；它不签发�
 1. **连接迁移。** Peer 可能运行在手机或家庭网络中。Wi-Fi 与蜂窝网络切换通常会中断 TCP 连接；QUIC 使用连接 ID 标识连接，而不只依赖网络地址，因此可以继续使用原连接。
 2. **底层就是 UDP。** Punch 的一项职责是帮助 Peer 保持 NAT 映射，这需要定期发送 UDP 数据包。QUIC 基于 UDP，无需再维护另一条 UDP 通道。
 
-因此，屏蔽 UDP 的网络无法使用当前传输方式。传输被封装在较小的接口后，未来可以在确有需要时增加 TCP 回退。
+QUIC 仍是首选传输。部署方也可以发布可选的 WSS 地址：SDK 会先尝试 QUIC，只有链路无法建立时才回退到 TLS 上的 WebSocket。Track 通过可选字段 `websocket_url` 下发该地址；未配置时，现有部署和客户端仍只使用 QUIC。
 
-心跳通过 QUIC datagram 发送，数据小、频率高；丢失时下次再发即可。其他消息（`join`、`exit` 和全部信令）则使用双向 stream，确保消息送达。
+QUIC 心跳通过 datagram 发送，数据小、频率高；丢失时下次再发即可。WSS 上的心跳则使用有界 WebSocket 控制帧。其他消息（`join`、`exit` 和全部信令）在两种传输上都使用可靠消息。两种方式都复用 Track 下发的 Punch 公钥验证服务身份。
+
+WSS 只覆盖 Punch 绑定和信令控制面。文件数据仍通过 WebRTC DataChannel 和 ICE 传输；仅启用 WSS 不代表 UDP 被阻断时文件也能传完。要在这种网络中完成传输，还需单独验证 TURN/TCP 或 TURN/TLS 数据通路。
 
 ## 在线绑定
 

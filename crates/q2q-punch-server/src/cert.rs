@@ -13,6 +13,7 @@ use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_ED25519}
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CertError {
@@ -87,9 +88,23 @@ impl PunchIdentity {
   }
 
   pub fn server_config(&self) -> Result<ServerConfig, CertError> {
+    let tls = self.tls_server_config()?;
+    let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)
+      .map_err(|e| CertError::Generate(e.to_string()))?;
+    Ok(ServerConfig::with_crypto(Arc::new(crypto)))
+  }
+
+  pub fn tls_server_config(&self) -> Result<rustls::ServerConfig, CertError> {
     let chain = vec![CertificateDer::from(self.cert_der.clone())];
     let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(self.key_der.clone()));
-    ServerConfig::with_single_cert(chain, key).map_err(|e| CertError::Generate(e.to_string()))
+    rustls::ServerConfig::builder_with_provider(Arc::new(
+      rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| CertError::Generate(e.to_string()))?
+    .with_no_client_auth()
+    .with_single_cert(chain, key)
+    .map_err(|e| CertError::Generate(e.to_string()))
   }
 }
 

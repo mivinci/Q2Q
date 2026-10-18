@@ -16,26 +16,76 @@ use parking_lot::Mutex;
 use q2q_core::identity::PeerId;
 use q2q_punch::message::{Request, Response, SignalResponse};
 use q2q_punch::signal::{SignalError, SignalRequest, SignalType, verify_connect};
-use quinn::Connection;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::{mpsc, oneshot};
+
+static NEXT_SINK_ID: AtomicU64 = AtomicU64::new(1);
+
+/// A transport-neutral route for signals pushed to a live Punch channel.
+/// The transport adapter owns the receiver and performs the actual QUIC stream
+/// or WebSocket frame write.
+#[derive(Clone)]
+pub struct ChannelSink {
+  id: u64,
+  sender: mpsc::Sender<PendingPush>,
+}
+
+pub struct PendingPush {
+  pub signal: SignalRequest,
+  pub(crate) delivered: oneshot::Sender<bool>,
+}
+
+impl ChannelSink {
+  pub fn channel(capacity: usize) -> (ChannelSink, mpsc::Receiver<PendingPush>) {
+    let (sender, receiver) = mpsc::channel(capacity.max(1));
+    (
+      ChannelSink {
+        id: NEXT_SINK_ID.fetch_add(1, Ordering::Relaxed),
+        sender,
+      },
+      receiver,
+    )
+  }
+
+  fn is_same(&self, other: &ChannelSink) -> bool {
+    self.id == other.id
+  }
+
+  async fn push(&self, signal: &SignalRequest) -> bool {
+    let (delivered, result) = oneshot::channel();
+    if self
+      .sender
+      .send(PendingPush {
+        signal: signal.clone(),
+        delivered,
+      })
+      .await
+      .is_err()
+    {
+      return false;
+    }
+    result.await.unwrap_or(false)
+  }
+}
 
 #[derive(Default)]
 pub struct Sinks {
-  standing: Mutex<HashMap<String, Connection>>,
-  ephemeral: Mutex<HashMap<String, Connection>>,
+  standing: Mutex<HashMap<String, ChannelSink>>,
+  ephemeral: Mutex<HashMap<String, ChannelSink>>,
 }
 
 impl Sinks {
-  pub fn put_standing(&self, peer: &PeerId, conn: Connection) {
-    self.standing.lock().insert(peer.as_str().to_string(), conn);
+  pub fn put_standing(&self, peer: &PeerId, sink: ChannelSink) {
+    self.standing.lock().insert(peer.as_str().to_string(), sink);
   }
 
-  pub fn drop_standing_if_current(&self, peer: &PeerId, conn: &Connection) {
+  pub fn drop_standing_if_current(&self, peer: &PeerId, sink: &ChannelSink) {
     let mut standing = self.standing.lock();
     if standing
       .get(peer.as_str())
-      .is_some_and(|current| current.stable_id() == conn.stable_id())
+      .is_some_and(|current| current.is_same(sink))
     {
       standing.remove(peer.as_str());
     }
@@ -46,30 +96,30 @@ impl Sinks {
     self.standing.lock().contains_key(peer.as_str())
   }
 
-  pub fn put_ephemeral(&self, connection_id: &str, conn: Connection) {
+  pub fn put_ephemeral(&self, connection_id: &str, sink: ChannelSink) {
     self
       .ephemeral
       .lock()
-      .insert(connection_id.to_string(), conn);
+      .insert(connection_id.to_string(), sink);
   }
 
   pub fn drop_ephemeral(&self, connection_id: &str) {
     self.ephemeral.lock().remove(connection_id);
   }
 
-  pub fn ephemeral_is_current(&self, connection_id: &str, conn: &Connection) -> bool {
+  pub fn ephemeral_is_current(&self, connection_id: &str, sink: &ChannelSink) -> bool {
     self
       .ephemeral
       .lock()
       .get(connection_id)
-      .is_some_and(|current| current.stable_id() == conn.stable_id())
+      .is_some_and(|current| current.is_same(sink))
   }
 
-  pub fn drop_ephemeral_if_current(&self, connection_id: &str, conn: &Connection) {
+  pub fn drop_ephemeral_if_current(&self, connection_id: &str, sink: &ChannelSink) {
     let mut ephemeral = self.ephemeral.lock();
     if ephemeral
       .get(connection_id)
-      .is_some_and(|current| current.stable_id() == conn.stable_id())
+      .is_some_and(|current| current.is_same(sink))
     {
       ephemeral.remove(connection_id);
     }
@@ -80,31 +130,21 @@ impl Sinks {
   }
 
   /// Push onto B's channel. False means B went away.
-  pub async fn to_peer(&self, peer: &PeerId, bytes: &[u8]) -> bool {
+  pub async fn to_peer(&self, peer: &PeerId, signal: &SignalRequest) -> bool {
     let conn = self.standing.lock().get(peer.as_str()).cloned();
     match conn {
-      Some(conn) => push(&conn, bytes).await,
+      Some(conn) => conn.push(signal).await,
       None => false,
     }
   }
 
-  pub async fn to_initiator(&self, connection_id: &str, bytes: &[u8]) -> bool {
+  pub async fn to_initiator(&self, connection_id: &str, signal: &SignalRequest) -> bool {
     let conn = self.ephemeral.lock().get(connection_id).cloned();
     match conn {
-      Some(conn) => push(&conn, bytes).await,
+      Some(conn) => conn.push(signal).await,
       None => false,
     }
   }
-}
-
-async fn push(conn: &Connection, bytes: &[u8]) -> bool {
-  let Ok(mut send) = conn.open_uni().await else {
-    return false;
-  };
-  if send.write_all(bytes).await.is_err() {
-    return false;
-  }
-  send.finish().is_ok()
 }
 
 /// Identity bound to the channel the message arrived on, if any.
@@ -123,7 +163,7 @@ pub enum Recipient {
 #[derive(Debug, Clone)]
 pub struct Forward {
   pub to: Recipient,
-  pub message: String,
+  pub signal: SignalRequest,
 }
 
 pub struct Outcome {
@@ -192,10 +232,6 @@ fn connect(state: &crate::server::State, req: &Request, sig: &SignalRequest, now
     Err(e) => return Outcome::err(req, e),
   };
 
-  let message = match serde_json::to_string(sig) {
-    Ok(m) => m,
-    Err(_) => return Outcome::err(req, SignalError::MissingTicket),
-  };
   tracing::info!(
     connection = %connection.connection_id,
     from = %connection.a.as_str(),
@@ -212,7 +248,7 @@ fn connect(state: &crate::server::State, req: &Request, sig: &SignalRequest, now
     },
     vec![Forward {
       to: Recipient::Peer(target),
-      message,
+      signal: sig.clone(),
     }],
   );
   outcome.ephemeral = Some(connection.connection_id);
@@ -245,10 +281,6 @@ fn reject(
   let Some(from) = caller.peer.as_ref() else {
     return Outcome::err(req, SignalError::NotAParticipant);
   };
-  let message = match serde_json::to_string(sig) {
-    Ok(message) => message,
-    Err(_) => return Outcome::err(req, SignalError::MissingTicket),
-  };
   if let Err(e) = state.connections.reject(&sig.connection_id, from) {
     return Outcome::err(req, e);
   }
@@ -262,7 +294,7 @@ fn reject(
     },
     vec![Forward {
       to: Recipient::Initiator(sig.connection_id.clone()),
-      message,
+      signal: sig.clone(),
     }],
   )
 }
@@ -308,10 +340,6 @@ fn offer(
     Err(e) => return Outcome::err(req, e),
   };
 
-  let message = match serde_json::to_string(sig) {
-    Ok(m) => m,
-    Err(_) => return Outcome::err(req, SignalError::MissingTicket),
-  };
   let target = connection.b.clone();
   let mut outcome = Outcome::ok(
     req,
@@ -322,7 +350,7 @@ fn offer(
     },
     vec![Forward {
       to: Recipient::Peer(target),
-      message,
+      signal: sig.clone(),
     }],
   );
   outcome.ephemeral = Some(sig.connection_id.clone());
@@ -379,11 +407,6 @@ fn forward_to_other(
   from: &PeerId,
   what: &str,
 ) -> Outcome {
-  let message = match serde_json::to_string(sig) {
-    Ok(m) => m,
-    Err(_) => return Outcome::err(req, SignalError::MissingTicket),
-  };
-
   let other = state.connections.peer_of(&sig.connection_id, from);
   let Some(other) = other else {
     return Outcome::err(req, SignalError::NotAParticipant);
@@ -407,6 +430,10 @@ fn forward_to_other(
   if let Recipient::Initiator(cid) = &to
     && !state.sinks.has_ephemeral(cid)
   {
+    let message = match serde_json::to_string(sig) {
+      Ok(message) => message,
+      Err(_) => return Outcome::err(req, SignalError::MissingTicket),
+    };
     state.connections.buffer_for_a(cid, &message);
     tracing::debug!(connection = %cid, what, "buffered for the initiator");
     return Outcome::ok(
@@ -427,7 +454,10 @@ fn forward_to_other(
       signal_key: None,
       pending: Vec::new(),
     },
-    vec![Forward { to, message }],
+    vec![Forward {
+      to,
+      signal: sig.clone(),
+    }],
   )
 }
 
@@ -435,8 +465,8 @@ fn forward_to_other(
 pub async fn deliver(sinks: &Arc<Sinks>, forwards: Vec<Forward>) {
   for f in forwards {
     let delivered = match &f.to {
-      Recipient::Peer(peer) => sinks.to_peer(peer, f.message.as_bytes()).await,
-      Recipient::Initiator(cid) => sinks.to_initiator(cid, f.message.as_bytes()).await,
+      Recipient::Peer(peer) => sinks.to_peer(peer, &f.signal).await,
+      Recipient::Initiator(cid) => sinks.to_initiator(cid, &f.signal).await,
     };
     if !delivered {
       tracing::debug!(?f.to, "forward dropped: channel is gone");

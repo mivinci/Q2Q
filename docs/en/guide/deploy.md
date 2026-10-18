@@ -18,6 +18,7 @@ where a direct connection cannot be established.
 flowchart LR
   P[Peer] -->|HTTPS| T[Track]
   P -->|QUIC over UDP| PS[Punch]
+  P -.->|optional WSS over TCP/TLS| PS
   P -->|relay| CT[coturn]
 ```
 
@@ -54,7 +55,11 @@ will reject it.
 
 - **`bind` must be `0.0.0.0`.** The default is loopback, which inside a container
   is unreachable from outside.
-- **Punch is UDP.** Map `4433:4433/udp`; a TCP mapping silently does nothing.
+- **Punch's primary listener is UDP.** Map `4433:4433/udp`; a TCP mapping does
+  not expose QUIC. To enable the optional fallback, set `websocket_bind` in
+  `punch.toml`, expose that TCP port with TLS, and set the matching
+  `websocket_url = "wss://.../punch"` on the same Punch entry in `track.toml`.
+  The listener uses the same persisted Ed25519 identity as QUIC.
 - **TURN secret must match.** Track signs relay credentials with
   `HMAC-SHA1(secret, "<expiry>:<user>")` and coturn verifies with the same
   secret. If they differ, direct connections still work and only relaying fails

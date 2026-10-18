@@ -1,6 +1,10 @@
 # Punch configuration. Mounted into the container at /etc/q2q/punch.toml.
 
 bind = "0.0.0.0:4433"
+# Optional WSS/TCP listener for networks where UDP is blocked. The public
+# websocket_url in Track must point at this listener through a TLS passthrough
+# or a TLS endpoint using the same pinned Punch identity.
+# websocket_bind = "0.0.0.0:443"
 # Must match the punch_id Track assigns in track.toml.
 punch_id = "punch-1"
 ttl_secs = 300

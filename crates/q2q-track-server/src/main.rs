@@ -143,6 +143,8 @@ impl TrackState for StateBackend {
 struct PunchServer {
   punch_id: String,
   url: String,
+  #[serde(default)]
+  websocket_url: Option<String>,
   /// base64 of the Punch Server's public key; clients use it to authenticate
   /// the server they are told to talk to.
   public_key: String,
@@ -198,6 +200,7 @@ impl Config {
       out.push(PunchAssignment {
         punch_id: p.punch_id.clone(),
         url: p.url.clone(),
+        websocket_url: p.websocket_url.clone(),
         public_key: key,
       });
     }

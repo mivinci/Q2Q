@@ -40,6 +40,9 @@ pub struct AnnounceResponse {
 pub struct PunchWire {
   pub punch_id: String,
   pub url: String,
+  /// Optional stream transport for networks that block UDP/QUIC.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub websocket_url: Option<String>,
   pub public_key: String,
 }
 

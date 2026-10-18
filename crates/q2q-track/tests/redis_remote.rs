@@ -47,6 +47,7 @@ async fn separate_connections_share_sessions_and_holdings() {
     punch: PunchAssignment {
       punch_id: "probe-punch".into(),
       url: String::new(),
+      websocket_url: None,
       public_key: Vec::new(),
     },
     expires_at,

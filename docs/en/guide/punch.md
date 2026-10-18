@@ -20,12 +20,23 @@ The control channel is QUIC rather than TCP, for two reasons:
    mapping alive, which only periodic UDP packets can do. QUIC is UDP, so no
    second path is needed.
 
-The price is that networks blocking UDP are out of luck. The transport is kept
-behind a small interface so a TCP fallback can be added where that matters.
+QUIC remains the preferred transport. A deployment can also publish a WSS
+endpoint for networks that block UDP: the SDK tries QUIC first and falls back to
+WebSocket over TLS when the QUIC link cannot be established. Track publishes
+this optional endpoint as `websocket_url`; existing configurations without it
+continue to use QUIC only.
 
 Heartbeats ride QUIC datagrams — small, frequent, and a lost one is simply
-followed by another. Everything else (`join`, `exit`, and all signalling) uses a
-bidirectional stream, because it must arrive.
+followed by another. On WSS, heartbeats are ordinary bounded WebSocket frames.
+Everything else (`join`, `exit`, and all signalling) uses reliable messages on
+both transports. Both endpoints use the same Punch identity key published by
+Track, so the fallback does not weaken server authentication.
+
+This fallback covers Punch's binding and signalling control plane. Peer file
+data still uses WebRTC DataChannels and its own ICE path; WSS alone does not make
+a transfer work when UDP is blocked. See [Deploy](./deploy) for the optional
+listener and [the WSS fallback plan](../../../todos/punch-websocket-fallback.md)
+for the remaining data-plane work and acceptance boundary.
 
 ## Bindings
 
@@ -122,6 +133,7 @@ See [Deploy](./deploy). A Punch needs:
 
 - a `punch_id` that matches what Track lists
 - a persisted identity keypair
-- inbound **UDP** on its advertised port
+- inbound **UDP** on its QUIC port; optionally, a **TCP/TLS** WebSocket listener
+  when publishing `websocket_url` in Track
 - `cluster_size` set to the number of instances, so the rate limit is split
   rather than multiplied
