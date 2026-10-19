@@ -78,3 +78,11 @@ Track 配置与协议响应不再包含单独的 WSS 地址；`url` 始终表示
 - [ ] 完整 QUIC/WSS 真实网络矩阵、旧版本兼容与身份失败集成验收；完成后再做生产渐进上线。
 
 本轮未部署生产 Punch。SDK 的现有真实 QUIC/UDP 测试已在本地测试套件中通过；WSS 自动化测试使用内存 WebSocket stream，未覆盖真实 TLS 握手。WSS 目前只打通控制与信令；UDP 全封锁下的数据面仍需独立验证 TURN/TCP/TLS。
+
+## 心跳与控制面健壮性复查
+
+- [x] SDK 的 QUIC 心跳复用可靠双向 RPC stream；服务端保留 heartbeat datagram 兼容通路。
+- [x] Binding 的 ID 索引、认证与序列推进在同一个锁内处理；旧连接清理不会删除替换后的 Binding。过期与 exit 同时撤销 standing 授权。
+- [x] connect/offer 校验票据范围；exit 独立 MAC 域及完整防重放校验；畸形 MAC 安全拒绝。exit 线协议兼容说明见 [Punch 指南](../docs/zh/guide/punch.md)。
+- [x] 按连接串行处理信令状态与路由切换；投递失败缓冲或明确报错，补发队列有条数和字节上限。QUIC 并发握手、连接额度、首次认证与请求读写期限已覆盖。
+- [x] 验证：Punch 库 38 项、Punch server 37 项；SDK 135 项及公开 API 集成 10 项；CLI 11 项。临时本地 Track/Punch（1 秒心跳、默认 Binding TTL）上的 SDK 并发上传/VOD/清理和 CLI 发布/下载/中断续传/撤回用例各 1 项通过；严格 Clippy、格式检查和文档构建通过。其他外部服务用例及手动 benchmark 未运行。

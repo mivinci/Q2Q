@@ -164,6 +164,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       if closed > 0 {
         tracing::info!(closed, "swept finished connections");
       }
+      sweep_state
+        .sinks
+        .sweep(&sweep_state.bindings, &sweep_state.connections, now());
       // buckets idle for ten minutes, so a scan cannot keep them forever
       let dropped = sweep_state.limits.sweep(limits::now_ms(), 600_000);
       if dropped > 0 {
