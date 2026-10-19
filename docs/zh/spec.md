@@ -229,7 +229,7 @@ MAC 固定为 `HMAC-SHA-256(session_key, peer_id || seq || timestamp)`，服务�
 
 客户端使用自签票据（`aud=punch:<punch_id>`）建立 Binding。票据内嵌公钥（见 3.1.2），Punch 按四步校验即可确认请求方控制该身份——不需要 Track 预先下发令牌，也不需要 Punch 预存 `peer_id → public_key` 映射。防重放依赖票据的一次性 `cid`——Punch 维护已消费 `cid` 记录（覆盖票据 `exp` 两倍时长），首次 join 消费 `cid`，后续同 `cid` 的请求**必须**拒绝；客户端重连或 binding 过期时重新自签一个票据即可，不需要任何网络往返。`timestamp` 仍纳入签名内容以约束签名时效，超出短窗口的请求**必须**拒绝。Punch 验签并验证该证明后创建 `binding_id`，并通过该加密信道的已认证响应返回随机生成的会话级 `binding_key`。此 Binding 代表"该 peer 当前可通过这个 Punch 被联系到"。
 
-之后的保活使用 `heartbeat(binding_id, seq, MAC)`，而不是每次发送完整票据。MAC 固定为 `HMAC-SHA-256(binding_key, binding_id || seq || timestamp || transport_generation)`；服务端仅接受递增序列号（允许一个有限乱序窗口）且 timestamp 在短窗口内的请求。Binding 到期、客户端重新 join、或网络切换时，旧 `binding_key` 和旧序列号空间立即失效。这样既刷新 NAT 映射和在线 TTL，也避免频繁验签与较大的 UDP 包。
+之后的保活使用 `heartbeat(binding_id, seq, MAC)`，而不是每次发送完整票据。MAC 固定为 `HMAC-SHA-256(binding_key, binding_id || seq || timestamp || transport_generation)`；服务端仅接受递增序列号（允许一个有限乱序窗口）且 timestamp 在短窗口内的请求。Binding 到期、客户端重新 join、或网络切换时，旧 `binding_key` 和旧序列号空间立即失效。这样既刷新 NAT 映射和在线 TTL，也避免频繁验签与较大的控制消息。
 
 主动下线使用 `exit(binding_id, seq, MAC)`，复用 heartbeat 的 MAC 与序列号机制，无需新凭据；成功后 Binding 立即删除、`binding_key` 作废。客户端下线时**应当**先通过 `announce` 的 `del` 撤下自己的全部文件。Track 不提供 session 吊销（本设计整体没有吊销机制，见 3.1.4）：凭据短 `exp` 已把泄露损失框在有限时间内，"下线"的语义由 `exit` 与文件撤下共同承担。
 
@@ -275,7 +275,7 @@ Track 的查询结果仅包含 B 的 `peer_id`、B 的身份公钥、B 所在 Pu
 
 A 一侧的信令走**连接范围的瞬时加密信道**：随 A 的首个 `signal`（offer）建立，生命周期与 Punch B 上的连接记录一致（连接建立成功或超时即关闭），answer、trickle candidate、cancel 与错误都经它双向传递。首个 `signal` 以 connect 票据 认证；此后同一信道上的消息不再重复验证票据——信道即凭据，relay 回退阶段的 candidate 交换因此不受票据 `exp` 限制。Punch B 在首个 `signal` 的响应中同时下发随机生成的 `signal_key`（对称密钥，只在加密信道内出现，有效期与连接记录一致）；这与 Binding 的模式同构：join 票据 之于 `binding_key`，正如 connect 票据 之于 `signal_key`。若瞬时信道意外断开，A 重连 Punch B 并出示 `connection_id` 与 `signal_key` 即可恢复该连接的信令；Punch B 在连接记录中保留已收到但未送达 A 的信令（通常是 answer 与少量 candidate），重连后按序补发，送达或超时后丢弃。
 
-B 一侧的信令送达依赖 B 与 Punch B 之间在 join 时建立的常驻加密信道；信道断开即视为 Binding 失效，Punch 对后续连接请求返回可区分的"目标不可达"错误。注意 `heartbeat` 与常驻信道是**两条独立的路径**：heartbeat 走 UDP（见 7.2.2 节），职责是维持 NAT 映射与刷新 Binding TTL；常驻信道的存活由传输层自身判定（TCP keepalive、QUIC idle timeout 或 DTLS 超时），不由 heartbeat 承载——否则 Punch 无法区分"信道断了但 NAT 映射还在"与"两者都断了"。两类信道的具体传输均不作限定，TCP+TLS、UDP+DTLS 或 QUIC 均可，硬性要求相同——机密性与完整性（`binding_key`、`signal_key` 与 connect 票据 均只经此类信道传输）、服务器认证（防止假 Punch 接管信令面；验证锚点为 announce / query 响应下发的 Punch 公钥，客户端连接 Punch 时校验其证书与公钥匹配）、以及网络切换后的可恢复性（常驻信道凭重新 join 与 `transport_generation` 语义恢复，瞬时信道凭 `signal_key` 重连）。
+B 一侧的信令送达依赖 B 与 Punch B 之间在 join 时建立的常驻加密信道；信道断开即视为 Binding 失效，Punch 对后续连接请求返回可区分的"目标不可达"错误。`heartbeat` 负责维持 NAT 映射与刷新 Binding TTL；常驻信道是否存活由传输层自身判定。当前 SDK 在 QUIC 下通过 UDP datagram 发送 heartbeat，在 WSS 回退下则通过 TLS WebSocket 控制帧发送；即使复用同一 WSS 连接，heartbeat 的有效性仍不替代对常驻信道的存活检查。常驻信道的具体传输可为 TCP+TLS、UDP+DTLS 或 QUIC，硬性要求相同——机密性与完整性（`binding_key`、`signal_key` 与 connect 票据均只经此类信道传输）、服务器认证（防止假 Punch 接管信令面；验证锚点为 announce / query 响应下发的 Punch 公钥，客户端连接 Punch 时校验其证书与公钥匹配）、以及网络切换后的可恢复性（常驻信道凭重新 join 与 `transport_generation` 语义恢复，瞬时信道凭 `signal_key` 重连）。
 
 这也是部署前提：Punch 的容量需按两类连接估算——面向 B 的常驻 Binding 数（小时级），以及面向 A 的挂起瞬时信道数（数十秒级，受 connect 票据 有效期与连接超时共同框定），并对单个 peer/IP 的并发挂起信道数设上限，防止批量挂连接耗尽资源。
 
@@ -574,7 +574,7 @@ Track **可以**部署为无状态多实例：实例间共享一致的状态存�
 
 **两者的存储扩展模型是相反的**：Track 多实例**必须**共享状态存储（在线记录、`session_key`、`peer_id → public_key` 缓存、文件索引）；Punch 侧的状态（Binding、已消费 `cid`、连接记录）**不必**跨实例共享——票据的 `aud` 绑定到单个 Punch（`punch_id` / `punch_b_id`），每张票只可能被那一台消费。只有当同一个 `punch_id` 需要多实例容灾时，才需要为 Binding 引入共享存储或粘性路由。
 
-`punch.join` / `punch.exit` / `punch.signal` 的请求响应控制面经加密认证信道传输（TCP+TLS、UDP+DTLS 或 QUIC 均可，客户端与 Punch 间的常驻与瞬时信令信道同此要求）；为维持 NAT 映射的 `punch.heartbeat` 可以使用 UDP，但**必须**遵循前述 MAC、时钟窗口和序列号校验。消息使用版本化 schema；未知必填字段、超出大小限制的 candidate 列表和不匹配的 `connection_id` 都**必须**拒绝。每个响应至少带协议版本、请求 ID 和明确的错误码。所有时钟校验（`nbf`/`exp`、heartbeat 的时间戳窗口）使用统一的服务端可配置容差（如 ±60 秒），客户端**应当**与可信时间源对时，容差需计入 Punch/Track 的 `cid` 去重窗口与序列号乱序窗口的计算。
+`punch.join` / `punch.exit` / `punch.signal` 的请求响应控制面经加密认证信道传输（TCP+TLS、UDP+DTLS 或 QUIC 均可，客户端与 Punch 间的常驻与瞬时信令信道同此要求）；为维持 NAT 映射的 `punch.heartbeat` **必须**遵循前述 MAC、时钟窗口和序列号校验。当前 SDK 在 QUIC 下使用 UDP datagram，在 WSS 回退下使用同一 TLS WebSocket 连接上的控制帧。消息使用版本化 schema；未知必填字段、超出大小限制的 candidate 列表和不匹配的 `connection_id` 都**必须**拒绝。每个响应至少带协议版本、请求 ID 和明确的错误码。所有时钟校验（`nbf`/`exp`、heartbeat 的时间戳窗口）使用统一的服务端可配置容差（如 ±60 秒），客户端**应当**与可信时间源对时，容差需计入 Punch/Track 的 `cid` 去重窗口与序列号乱序窗口的计算。
 
 ### 7.2 接口契约表
 
@@ -786,7 +786,7 @@ sequenceDiagram
 
 **为什么票据必须内嵌公钥并由私钥签名**：Punch 是独立服务，对客户端**零先验**，也没有任何预存的 `peer_id → public_key` 映射。票据内嵌 `pub` 且携带签名，使 Punch 能独立确认"请求方持有 `iss` 对应身份的私钥"——不需要信任任何第三方，也不需要查询 Track。
 
-**为什么 join 后改用 HMAC**：join 时已经用非对称签名建立了 binding_key，后续 heartbeat 每隔几秒发一次（维持 NAT 映射），用对称 HMAC 比 Ed25519 签名快 10-50 倍，UDP 包也更小。binding_key 只在加密信道内传输，泄露面小。
+**为什么 join 后改用 HMAC**：join 时已经用非对称签名建立了 binding_key，后续 heartbeat 每隔几秒发一次（维持 NAT 映射），用对称 HMAC 比 Ed25519 签名快 10-50 倍，认证字段也更小。binding_key 只在加密信道内传输，泄露面小。
 
 ##### `punch.heartbeat`
 
@@ -816,7 +816,7 @@ sequenceDiagram
     Note over C: seq = 上次 seq + 1
     Note over C: mac = HMAC(binding_key,<br/>binding_id || seq || timestamp || generation)
 
-    C->>P: heartbeat(binding_id, seq, timestamp, mac)<br/>(走 UDP, 不需加密信道)
+    C->>P: heartbeat(binding_id, seq, timestamp, mac)<br/>(QUIC 下走 UDP datagram；WSS 回退下走 TLS WebSocket 控制帧)
     Note over P: 查 binding_id 有效?
     Note over P: 校验 mac: 重算 HMAC(binding_key, ...), 比对
     Note over P: 校验 timestamp 在 ±60s 窗口内
@@ -827,7 +827,7 @@ sequenceDiagram
 
 **为什么用 HMAC 不用签名**：heartbeat 每隔几秒发一次（保活 + 刷新 NAT），用 Ed25519 每次验签成本高。HMAC 是对称运算，快 10-50 倍。binding_key 在 join 时通过加密信道下发，只有客户端和 Punch 持有。
 
-**为什么走 UDP**：heartbeat 的目的是刷新 NAT 映射（让路由器保持端口转发），UDP 天然适合——不需要 TCP 的握手开销。UDP 不加密但 MAC 已防篡改和防重放。
+**为什么 QUIC 下使用 UDP**：UDP datagram 无需额外握手和可靠传输开销，适合频繁刷新 NAT 映射。WSS 回退时 heartbeat 通过已建立的 TLS WebSocket 连接传送；两种方式都由 MAC 防止伪造和重放。
 
 **为什么有 transport_generation**：ICE restart（网络切换）时 candidate 地址会变，generation 递增。MAC 覆盖 generation，防止旧 generation 的 heartbeat 被用来维持已失效的 NAT 映射。
 

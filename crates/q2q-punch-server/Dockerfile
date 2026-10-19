@@ -40,8 +40,8 @@ FROM alpine:3.21
 RUN apk add --no-cache ca-certificates
 COPY --from=build /src/target/release/q2q-punch-server /usr/local/bin/q2q-punch-server
 
-# QUIC is UDP: exposing TCP here would be misleading
-EXPOSE 4433/udp
+# QUIC uses UDP and WSS uses TCP on the same port.
+EXPOSE 4433/udp 4433/tcp
 WORKDIR /etc/q2q
 ENTRYPOINT ["q2q-punch-server"]
 CMD ["/etc/q2q/punch.toml"]

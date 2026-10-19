@@ -31,8 +31,6 @@ struct Args {
 #[derive(Debug, serde::Deserialize)]
 struct Config {
   bind: SocketAddr,
-  #[serde(default)]
-  websocket_bind: Option<SocketAddr>,
   punch_id: String,
   #[serde(default = "default_ttl")]
   ttl_secs: u64,
@@ -131,8 +129,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     "server identity"
   );
 
+  let websocket_listener = TcpListener::bind(config.bind).await?;
   let endpoint = server::endpoint(&identity, config.bind)?;
-  tracing::info!(bind = %config.bind, "listening");
+  tracing::info!(bind = %config.bind, "QUIC and WebSocket listeners ready");
 
   let state = Arc::new(server::State {
     bindings: Bindings::new(config.ttl_secs),
@@ -176,15 +175,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
   });
 
-  if let Some(bind) = config.websocket_bind {
-    let listener = TcpListener::bind(bind).await?;
-    let acceptor = TlsAcceptor::from(Arc::new(identity.tls_server_config()?));
-    tracing::info!(%bind, "WebSocket listener ready");
-    let quic_state = state.clone();
-    tokio::spawn(server::serve(endpoint, quic_state));
-    server::serve_websocket(listener, acceptor, state).await?;
-  } else {
-    server::serve(endpoint, state).await;
-  }
+  let acceptor = TlsAcceptor::from(Arc::new(identity.tls_server_config()?));
+  tokio::spawn(server::serve(endpoint, state.clone()));
+  server::serve_websocket(websocket_listener, acceptor, state).await?;
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[tokio::test]
+  async fn tcp_and_udp_listeners_share_the_configured_address() {
+    let identity = cert::PunchIdentity::generate("punch-1").unwrap();
+    let requested = "127.0.0.1:0".parse().unwrap();
+    let quic = server::endpoint(&identity, requested).unwrap();
+    let bind = quic.local_addr().unwrap();
+    let websocket = TcpListener::bind(bind).await.unwrap();
+
+    assert_eq!(websocket.local_addr().unwrap(), bind);
+    assert_eq!(quic.local_addr().unwrap(), bind);
+  }
 }

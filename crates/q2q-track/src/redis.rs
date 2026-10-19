@@ -209,7 +209,6 @@ impl TrackState for RedisState {
       punch: PunchAssignment {
         punch_id: punch,
         url: String::new(),
-        websocket_url: None,
         public_key: Vec::new(),
       },
       expires_at: expiry,

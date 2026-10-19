@@ -11,11 +11,11 @@ Punch 不解析经手的 SDP，只把它视作不透明字符串；它不签发�
 1. **连接迁移。** Peer 可能运行在手机或家庭网络中。Wi-Fi 与蜂窝网络切换通常会中断 TCP 连接；QUIC 使用连接 ID 标识连接，而不只依赖网络地址，因此可以继续使用原连接。
 2. **底层就是 UDP。** Punch 的一项职责是帮助 Peer 保持 NAT 映射，这需要定期发送 UDP 数据包。QUIC 基于 UDP，无需再维护另一条 UDP 通道。
 
-QUIC 仍是首选传输。部署方也可以发布可选的 WSS 地址：SDK 会先尝试 QUIC，只有链路无法建立时才回退到 TLS 上的 WebSocket。Track 通过可选字段 `websocket_url` 下发该地址；未配置时，现有部署和客户端仍只使用 QUIC。
+QUIC 仍是首选传输。Punch 在同一个 `bind` 地址上分别监听 UDP/QUIC 与 TCP/WSS。SDK 从 Track 下发的 `quic://host:port` 派生 `wss://host:port/`，先尝试 QUIC，只有链路无法建立时才回退到 TLS 上的 WebSocket。Track 无需单独配置 WSS 地址。
 
 QUIC 心跳通过 datagram 发送，数据小、频率高；丢失时下次再发即可。WSS 上的心跳则使用有界 WebSocket 控制帧。其他消息（`join`、`exit` 和全部信令）在两种传输上都使用可靠消息。两种方式都复用 Track 下发的 Punch 公钥验证服务身份。
 
-WSS 只覆盖 Punch 绑定和信令控制面。文件数据仍通过 WebRTC DataChannel 和 ICE 传输；仅启用 WSS 不代表 UDP 被阻断时文件也能传完。要在这种网络中完成传输，还需单独验证 TURN/TCP 或 TURN/TLS 数据通路。
+WSS 只覆盖 Punch 绑定和信令控制面，握手使用根路径 `/`。文件数据仍通过 WebRTC DataChannel 和 ICE 传输；仅启用 WSS 不代表 UDP 被阻断时文件也能传完。要在这种网络中完成传输，还需单独验证 TURN/TCP 或 TURN/TLS 数据通路。
 
 ## 在线绑定
 
@@ -78,7 +78,7 @@ sequenceDiagram
 - **常驻通道（Standing）。** Peer 在 `join` 时建立并持续绑定。通道关闭后，该 Peer 不可达；连接请求会收到可区分的“目标离线”错误。
 - **临时通道（Ephemeral）。** 发起方在创建连接时建立，连接结束后关闭。首个 offer 的响应会携带 `signal_key`；通道中断后，发起方可以带连接 ID 和该密钥重新连接并恢复，离线期间积压的消息会重放。
 
-心跳与常驻通道是两条不同路径：维持通道存活由传输层负责，心跳用于维持 NAT 映射并刷新 TTL。若把两者混为一谈，就无法区分“通道已断、NAT 映射仍在”和“两者都已失效”。
+心跳的作用与常驻通道的存活检测不同：它负责维持 NAT 映射并刷新 TTL。QUIC 将心跳作为 datagram 发送；WSS 则通过 TLS WebSocket 连接发送控制帧。Punch 会分别判断心跳是否有效、通道是否断开。
 
 ## 运行服务
 
@@ -86,5 +86,5 @@ sequenceDiagram
 
 - 与 Track 配置一致的 `punch_id`
 - 已持久化的身份密钥对
-- 在对外声明的端口上接收 **UDP**
+- 在对外声明的同一端口上接收 **UDP 和 TCP**，分别用于 QUIC 与 WSS
 - 将 `cluster_size` 设为实例总数，以便拆分限流配额，而不是让每个实例都获得完整配额

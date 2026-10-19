@@ -50,17 +50,16 @@ fn query_options_reject_invalid_limits_and_oversized_cursors() {
 }
 
 #[test]
-fn punch_assignment_detects_websocket_endpoint_changes() {
+fn punch_assignment_detects_endpoint_changes() {
   let current = q2q_track::wire::PunchWire {
     punch_id: "punch-1".into(),
     url: "quic://punch.example:4433".into(),
-    websocket_url: Some("wss://punch.example/punch".into()),
     public_key: "key".into(),
   };
   let mut next = current.clone();
-  next.websocket_url = Some("wss://new-punch.example/punch".into());
+  next.url = "quic://new-punch.example:4433".into();
   assert!(punch_assignment_changed(&current, &next));
 
-  next.websocket_url = current.websocket_url.clone();
+  next.url = current.url.clone();
   assert!(!punch_assignment_changed(&current, &next));
 }

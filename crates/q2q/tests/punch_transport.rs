@@ -30,10 +30,34 @@ fn punch_server(idle: Option<Duration>) -> (quinn::Endpoint, PunchWire) {
   let assignment = PunchWire {
     punch_id: "test-punch".into(),
     url: format!("quic://{}", server.local_addr().unwrap()),
-    websocket_url: None,
     public_key: B64.encode(key.public_key_raw()),
   };
   (server, assignment)
+}
+
+#[test]
+fn websocket_endpoint_uses_the_quic_authority_and_root_path() {
+  let assignment = PunchWire {
+    punch_id: "test-punch".into(),
+    url: "quic://user:secret@[2001:db8::1]:4433/old-path?ignored=yes#fragment".into(),
+    public_key: B64.encode([0; 32]),
+  };
+
+  assert_eq!(
+    websocket_url(&assignment).unwrap(),
+    "wss://[2001:db8::1]:4433/"
+  );
+}
+
+#[test]
+fn websocket_endpoint_rejects_non_quic_punch_addresses() {
+  let assignment = PunchWire {
+    punch_id: "test-punch".into(),
+    url: "https://punch.example:4433".into(),
+    public_key: B64.encode([0; 32]),
+  };
+
+  assert!(websocket_url(&assignment).is_err());
 }
 
 #[tokio::test]
@@ -130,7 +154,6 @@ async fn transport_factory_prefers_quic_and_does_not_start_websocket() {
   let websocket_attempts = Arc::new(AtomicUsize::new(0));
   let attempts = websocket_attempts.clone();
   let transport = connect_transport_with(
-    true,
     || async { Ok(fake_transport(PunchTransportKind::Quic)) },
     || async move {
       attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -152,7 +175,6 @@ async fn transport_factory_falls_back_after_a_quic_transport_error() {
   let websocket_attempts = Arc::new(AtomicUsize::new(0));
   let attempts = websocket_attempts.clone();
   let transport = connect_transport_with(
-    true,
     || async { Err(ControlError::Transport("UDP unavailable".into())) },
     || async move {
       attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -186,7 +208,6 @@ async fn transport_factory_does_not_hide_auth_or_protocol_errors_with_fallback()
     let websocket_attempts = Arc::new(AtomicUsize::new(0));
     let attempts = websocket_attempts.clone();
     let result = connect_transport_with(
-      true,
       || async move { Err(error) },
       || async move {
         attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

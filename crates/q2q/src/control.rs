@@ -390,7 +390,6 @@ impl ControlSession {
 fn punch_assignment_changed(current: &PunchWire, next: &PunchWire) -> bool {
   current.punch_id != next.punch_id
     || current.url != next.url
-    || current.websocket_url != next.websocket_url
     || current.public_key != next.public_key
 }
 
