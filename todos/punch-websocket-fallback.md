@@ -73,7 +73,7 @@ Track 配置兼容地增加可选 WSS 地址，协议响应也以可选字段下
 - [x] Punch WSS/TLS listener、共用 Ed25519 身份、有限帧大小和 PunchFrame envelope。
 - [x] SDK QUIC/WSS transport 与 QUIC 链路失败回退；身份校验错误和远端业务错误不会触发回退。
 - [x] 中英文 Punch/Deploy 文档和示例配置已更新。
-- [x] PR 复审修复：WSS 独立 writer 避免双向转发和自转发死锁；连接总量/单 IP 配额、握手和首次认证超时；SDK 队列溢出失败策略、全程 RPC/关闭期限与取消安全 waiter；WSS envelope 版本校验及 `websocket_url` assignment 更新检测。
+- [x] PR 复审修复：WSS 独立 writer 避免双向转发和自转发死锁；连接总量/单 IP 配额、握手和首次认证超时；SDK 队列溢出会关闭整个 WSS transport 并使 heartbeat/RPC 失败，全程 RPC/关闭期限与取消安全 waiter；WSS envelope 版本校验及 `websocket_url` assignment 更新检测。部署文档说明代理/SNAT 后按监听器观察到的出口 IP 共用单 IP 配额。
 - [x] `cargo check --workspace` 通过；`cargo test -p q2q-punch-server` 29 项通过；`cargo test -p q2q --lib` 132 项通过、1 项手动基准忽略。
 - [ ] 完整 QUIC/WSS 真实网络矩阵、旧版本兼容与身份失败集成验收；完成后再做生产渐进上线。
 

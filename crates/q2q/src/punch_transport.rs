@@ -22,7 +22,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as SyncMutex};
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::{Connector, WebSocketStream, connect_async_tls_with_config};
@@ -134,6 +134,32 @@ enum WsCommand {
 
 type PendingResponses = Arc<SyncMutex<HashMap<String, oneshot::Sender<Response>>>>;
 
+fn publish_transport_failure(failure: &watch::Sender<Option<String>>, error: String) -> String {
+  failure.send_if_modified(|current| {
+    if current.is_some() {
+      return false;
+    }
+    *current = Some(error.clone());
+    true
+  });
+  failure.borrow().clone().unwrap_or(error)
+}
+
+async fn wait_for_transport_failure(failure: &mut watch::Receiver<Option<String>>) -> String {
+  loop {
+    if let Some(error) = failure.borrow_and_update().clone() {
+      return error;
+    }
+    if failure.changed().await.is_err() {
+      return "failure channel closed".into();
+    }
+  }
+}
+
+fn transport_failure(error: String) -> ControlError {
+  ControlError::Transport(format!("Punch WebSocket transport failed: {error}"))
+}
+
 fn lock_pending(
   pending: &PendingResponses,
 ) -> std::sync::MutexGuard<'_, HashMap<String, oneshot::Sender<Response>>> {
@@ -153,10 +179,14 @@ impl Drop for PendingResponseGuard {
   }
 }
 
+/// A fatal reader or writer error closes the whole socket and wakes every
+/// signal receiver, RPC, and heartbeat that shares this transport.
 struct WebSocketPunchTransport {
   outgoing: mpsc::Sender<WsCommand>,
   pending: PendingResponses,
   signals: Mutex<mpsc::Receiver<Result<SignalRequest, ControlError>>>,
+  failure_tx: watch::Sender<Option<String>>,
+  failure: watch::Receiver<Option<String>>,
   reader: tokio::task::AbortHandle,
   writer: tokio::task::AbortHandle,
 }
@@ -210,26 +240,75 @@ impl WebSocketPunchTransport {
     let pending = Arc::new(SyncMutex::new(
       HashMap::<String, oneshot::Sender<Response>>::new(),
     ));
+    let (failure_tx, failure) = watch::channel(None::<String>);
+    let writer_failure_tx = failure_tx.clone();
+    let mut writer_failure = failure.clone();
     let writer_pending = pending.clone();
     let writer_task = tokio::spawn(async move {
-      while let Some(command) = commands.recv().await {
-        let result = match command {
-          WsCommand::Frame(frame) => match serde_json::to_vec(&frame) {
-            Ok(bytes) => writer.send(Message::Binary(bytes.into())).await,
-            Err(error) => {
-              tracing::debug!(%error, "could not encode Punch WebSocket frame");
+      loop {
+        if writer_failure.borrow().is_some() {
+          let _ =
+            tokio::time::timeout(Duration::from_secs(1), writer.send(Message::Close(None))).await;
+          break;
+        }
+        let command = tokio::select! {
+          biased;
+          changed = writer_failure.changed() => {
+            if changed.is_err() || writer_failure.borrow().is_some() {
+              let _ = tokio::time::timeout(
+                Duration::from_secs(1),
+                writer.send(Message::Close(None)),
+              )
+              .await;
               break;
             }
+            continue;
+          }
+          command = commands.recv() => command,
+        };
+        let Some(command) = command else {
+          break;
+        };
+        let (result, stop) = match command {
+          WsCommand::Frame(frame) => match serde_json::to_vec(&frame) {
+            Ok(bytes) => (
+              writer
+                .send(Message::Binary(bytes.into()))
+                .await
+                .map_err(|error| error.to_string()),
+              false,
+            ),
+            Err(error) => (Err(error.to_string()), false),
           },
-          WsCommand::Pong(bytes) => writer.send(Message::Pong(bytes.into())).await,
+          WsCommand::Pong(bytes) => (
+            writer
+              .send(Message::Pong(bytes.into()))
+              .await
+              .map_err(|error| error.to_string()),
+            false,
+          ),
           WsCommand::Close(ack) => {
-            let _ = writer.send(Message::Close(None)).await;
+            let result =
+              match tokio::time::timeout(Duration::from_secs(1), writer.send(Message::Close(None)))
+                .await
+              {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(error.to_string()),
+                Err(_) => Err("WebSocket close frame timed out".into()),
+              };
             let _ = ack.send(());
-            break;
+            (result, true)
           }
         };
         if let Err(error) = result {
           tracing::debug!(%error, "Punch WebSocket write failed");
+          publish_transport_failure(
+            &writer_failure_tx,
+            format!("WebSocket write failed: {error}"),
+          );
+          break;
+        }
+        if stop {
           break;
         }
       }
@@ -238,14 +317,33 @@ impl WebSocketPunchTransport {
 
     let reader_pending = pending.clone();
     let reader_outgoing = outgoing.clone();
+    let reader_failure_tx = failure_tx.clone();
+    let mut reader_failure = failure.clone();
     let (signal_tx, signals) = mpsc::channel(64);
     let reader_task = tokio::spawn(async move {
-      let mut failure = None;
-      while let Some(incoming) = reader.next().await {
+      let mut error = None;
+      loop {
+        if reader_failure.borrow().is_some() {
+          break;
+        }
+        let incoming = tokio::select! {
+          biased;
+          changed = reader_failure.changed() => {
+            if changed.is_err() || reader_failure.borrow().is_some() {
+              break;
+            }
+            continue;
+          }
+          incoming = reader.next() => incoming,
+        };
         let message = match incoming {
-          Ok(message) => message,
-          Err(error) => {
-            failure = Some(error.to_string());
+          Some(Ok(message)) => message,
+          Some(Err(failure)) => {
+            error = Some(failure.to_string());
+            break;
+          }
+          None => {
+            error = Some("WebSocket connection closed".into());
             break;
           }
         };
@@ -253,8 +351,8 @@ impl WebSocketPunchTransport {
           Message::Binary(bytes) => {
             let frame = match serde_json::from_slice::<PunchFrame>(&bytes) {
               Ok(frame) => frame,
-              Err(error) => {
-                failure = Some(format!("invalid Punch WebSocket frame: {error}"));
+              Err(failure) => {
+                error = Some(format!("invalid Punch WebSocket frame: {failure}"));
                 break;
               }
             };
@@ -267,13 +365,13 @@ impl WebSocketPunchTransport {
               PunchFrame::Signal(signal) => match signal_tx.try_send(Ok(signal)) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                  failure = Some("Punch WebSocket signal queue is full".into());
+                  error = Some("Punch WebSocket signal queue is full".into());
                   break;
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => break,
               },
               PunchFrame::Request(_) => {
-                failure = Some("server sent a Punch request frame".into());
+                error = Some("server sent a Punch request frame".into());
                 break;
               }
             }
@@ -281,29 +379,35 @@ impl WebSocketPunchTransport {
           Message::Ping(bytes) => match reader_outgoing.try_send(WsCommand::Pong(bytes.to_vec())) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
-              failure = Some("Punch WebSocket writer queue is full".into());
+              error = Some("Punch WebSocket writer queue is full".into());
               break;
             }
             Err(mpsc::error::TrySendError::Closed(_)) => break,
           },
-          Message::Close(_) => break,
+          Message::Close(_) => {
+            error = Some("Punch WebSocket closed by server".into());
+            break;
+          }
           Message::Pong(_) | Message::Frame(_) => {}
           Message::Text(_) => {
-            failure = Some("server sent a text WebSocket frame".into());
+            error = Some("server sent a text WebSocket frame".into());
             break;
           }
         }
       }
-      lock_pending(&reader_pending).clear();
-      if let Some(error) = failure {
-        let _ = signal_tx.send(Err(ControlError::Transport(error))).await;
+      if let Some(error) = error {
+        let error = publish_transport_failure(&reader_failure_tx, error);
+        let _ = signal_tx.try_send(Err(transport_failure(error)));
       }
+      lock_pending(&reader_pending).clear();
     });
 
     Self {
       outgoing,
       pending,
       signals: Mutex::new(signals),
+      failure_tx,
+      failure,
       reader: reader_task.abort_handle(),
       writer: writer_task.abort_handle(),
     }
@@ -321,15 +425,22 @@ impl WebSocketPunchTransport {
       pending: self.pending.clone(),
       id,
     };
+    let mut failure = self.failure.clone();
     match tokio::time::timeout(timeout, async {
-      self
-        .outgoing
-        .send(WsCommand::Frame(PunchFrame::Request(request)))
-        .await
-        .map_err(|_| ControlError::Transport("Punch WebSocket writer is closed".into()))?;
-      response
-        .await
-        .map_err(|_| ControlError::Transport("Punch WebSocket reader is closed".into()))
+      tokio::select! {
+        biased;
+        error = wait_for_transport_failure(&mut failure) => Err(transport_failure(error)),
+        response = async {
+          self
+            .outgoing
+            .send(WsCommand::Frame(PunchFrame::Request(request)))
+            .await
+            .map_err(|_| ControlError::Transport("Punch WebSocket writer is closed".into()))?;
+          response
+            .await
+            .map_err(|_| ControlError::Transport("Punch WebSocket reader is closed".into()))
+        } => response,
+      }
     })
     .await
     {
@@ -347,6 +458,7 @@ impl WebSocketPunchTransport {
       closed.await.ok()
     };
     let _ = tokio::time::timeout(timeout, close).await;
+    publish_transport_failure(&self.failure_tx, "transport closed".into());
     lock_pending(&self.pending).clear();
     self.reader.abort();
     self.writer.abort();
@@ -370,13 +482,25 @@ impl PunchTransport for WebSocketPunchTransport {
   }
 
   async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
-    self
-      .signals
-      .lock()
-      .await
-      .recv()
-      .await
-      .ok_or_else(|| ControlError::Transport("Punch WebSocket signal channel closed".into()))?
+    let mut failure = self.failure.clone();
+    let mut signals = self.signals.lock().await;
+    loop {
+      if let Some(error) = failure.borrow_and_update().clone() {
+        return Err(transport_failure(error));
+      }
+      tokio::select! {
+        biased;
+        changed = failure.changed() => {
+          if changed.is_err() {
+            return Err(ControlError::Transport("Punch WebSocket failure channel closed".into()));
+          }
+        }
+        signal = signals.recv() => {
+          return signal
+            .ok_or_else(|| ControlError::Transport("Punch WebSocket signal channel closed".into()))?;
+        }
+      }
+    }
   }
 
   async fn close(&self) {
@@ -386,6 +510,7 @@ impl PunchTransport for WebSocketPunchTransport {
 
 impl Drop for WebSocketPunchTransport {
   fn drop(&mut self) {
+    publish_transport_failure(&self.failure_tx, "transport dropped".into());
     lock_pending(&self.pending).clear();
     self.reader.abort();
     self.writer.abort();

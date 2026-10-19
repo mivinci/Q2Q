@@ -339,16 +339,19 @@ async fn websocket_reader_fails_explicitly_when_signal_queue_is_full() {
         accept_token: None,
         signal_key: None,
       };
-      writer
+      let sent = writer
         .send(Message::Binary(
           serde_json::to_vec(&PunchFrame::Signal(signal))
             .unwrap()
             .into(),
         ))
         .await
-        .unwrap();
+        .is_ok();
+      if !sent {
+        break;
+      }
     }
-    writer
+    let _ = writer
       .send(Message::Binary(
         serde_json::to_vec(&PunchFrame::Response(Response::ok(
           &request.id,
@@ -357,10 +360,10 @@ async fn websocket_reader_fails_explicitly_when_signal_queue_is_full() {
         .unwrap()
         .into(),
       ))
-      .await
-      .unwrap();
+      .await;
     while let Some(Ok(message)) = reader.next().await {
       if matches!(message, Message::Close(_)) {
+        let _ = writer.send(Message::Close(None)).await;
         break;
       }
     }
@@ -376,15 +379,40 @@ async fn websocket_reader_fails_explicitly_when_signal_queue_is_full() {
     .await
     .unwrap()
     .unwrap_err();
-  assert!(error.to_string().contains("reader is closed"));
+  assert!(error.to_string().contains("signal queue is full"));
 
-  for _ in 0..64 {
-    transport.recv_signal().await.unwrap();
-  }
+  let heartbeat = Request {
+    v: RPC_VERSION,
+    id: "heartbeat-after-overflow".into(),
+    method: "punch.heartbeat".into(),
+    params: serde_json::Value::Null,
+  };
+  let error = tokio::time::timeout(Duration::from_secs(2), transport.heartbeat(heartbeat))
+    .await
+    .unwrap()
+    .unwrap_err();
+  assert!(error.to_string().contains("signal queue is full"));
+
+  let rpc = Request {
+    v: RPC_VERSION,
+    id: "rpc-after-overflow".into(),
+    method: "punch.test".into(),
+    params: serde_json::Value::Null,
+  };
+  let error = transport
+    .rpc_with_timeout(rpc, Duration::from_millis(50))
+    .await
+    .unwrap_err();
+  assert!(error.to_string().contains("signal queue is full"));
+
   let error = transport.recv_signal().await.unwrap_err();
   assert!(error.to_string().contains("signal queue is full"));
+  tokio::time::timeout(Duration::from_secs(2), server)
+    .await
+    .unwrap()
+    .unwrap();
+  assert!(transport.outgoing.is_closed());
   transport.close().await;
-  server.await.unwrap();
 }
 
 fn blocked_websocket_transport() -> (
@@ -397,12 +425,15 @@ fn blocked_websocket_transport() -> (
   let (signal_tx, signals) = mpsc::channel(1);
   drop(signal_tx);
   let pending = Arc::new(SyncMutex::new(HashMap::new()));
+  let (failure_tx, failure) = tokio::sync::watch::channel(None);
   let reader_task = tokio::spawn(std::future::pending::<()>());
   let writer_task = tokio::spawn(std::future::pending::<()>());
   let transport = WebSocketPunchTransport {
     outgoing,
     pending,
     signals: Mutex::new(signals),
+    failure_tx,
+    failure,
     reader: reader_task.abort_handle(),
     writer: writer_task.abort_handle(),
   };
