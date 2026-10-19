@@ -65,7 +65,8 @@ sequenceDiagram
 ## How a download happens
 
 1. **Seed** — the publisher builds an info dict (file length, block size, the
-   Merkle root) and gets an `info_hash`. Peers share it as a magnet link.
+   Merkle root) and gets an `info_hash`. The resulting `.q2q` seed file is shared
+   with peers.
 2. **Announce** — a peer tells Track "I am online, and I hold this file". Track
    records it with a TTL and assigns the peer to a Punch.
 3. **Query** — the downloading peer asks Track who holds the file. Track returns

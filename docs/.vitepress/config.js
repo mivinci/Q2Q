@@ -6,9 +6,14 @@ import { mermaidBlock } from './mermaid.js';
 // linked from either nav until it is translated.
 const guide = (prefix) => [
   { text: 'What is Q2Q?', link: `${prefix}guide/what-is-q2q` },
+  { text: 'Command-line client', link: `${prefix}guide/cli` },
   { text: 'Deploy', link: `${prefix}guide/deploy` },
   { text: 'Track', link: `${prefix}guide/track` },
   { text: 'Punch', link: `${prefix}guide/punch` },
+  { text: 'Transport', link: `${prefix}guide/transport` },
+  { text: 'Wire protocol', link: `${prefix}guide/wire` },
+  { text: 'Scheduling', link: `${prefix}guide/scheduling` },
+  { text: 'CDN fallback', link: `${prefix}guide/cdn` },
 ];
 
 // 侧边栏用数组而不是按路径 keyed，让整站共用一份目录，
@@ -124,7 +129,6 @@ export default defineConfig({
             items: guide('/'),
           },
           { text: 'API', link: '/api/' },
-          { text: 'Privacy', link: '/privacy' },
         ],
 
         // 每页底部的「编辑此页」链接
@@ -136,7 +140,7 @@ export default defineConfig({
         sidebar: sidebar('/', en),
 
         footer: {
-          message: 'Work in progress',
+          copyright: '© 2026 Q2Q · <a href="/privacy">Privacy Policy</a>',
         },
       },
     },
@@ -152,13 +156,17 @@ export default defineConfig({
             activeMatch: '/zh/guide/',
             items: [
               { text: 'Q2Q 是什么？', link: '/zh/guide/what-is-q2q' },
+              { text: '命令行客户端', link: '/zh/guide/cli' },
               { text: '部署', link: '/zh/guide/deploy' },
               { text: 'Track', link: '/zh/guide/track' },
               { text: 'Punch', link: '/zh/guide/punch' },
+              { text: '传输层', link: '/zh/guide/transport' },
+              { text: '消息编码', link: '/zh/guide/wire' },
+              { text: '调度', link: '/zh/guide/scheduling' },
+              { text: 'CDN 回退', link: '/zh/guide/cdn' },
             ],
           },
           { text: 'API 参考', link: '/zh/api/' },
-          { text: '隐私政策', link: '/zh/privacy' },
         ],
 
         editLink: {
@@ -169,7 +177,7 @@ export default defineConfig({
         sidebar: sidebar('/zh/', zh),
 
         footer: {
-          message: '设计稿，随时会改',
+          copyright: '© 2026 Q2Q · <a href="/zh/privacy">隐私政策</a>',
         },
       },
     },
