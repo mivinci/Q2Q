@@ -5,7 +5,7 @@
 use crate::state::{
   Candidate, InfoHash, OnlineRecord, PunchAssignment, StateError, TrackState, UnixSeconds,
 };
-use q2q_core::identity::PeerId;
+use q2q_primitives::identity::PeerId;
 use redis::aio::ConnectionManager;
 
 const ANNOUNCE: &str = r#"

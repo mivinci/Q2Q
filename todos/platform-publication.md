@@ -75,7 +75,7 @@ sequenceDiagram
 
 ## 种子与 SDK
 
-- 复用 q2q-core 的 Seed 编解码，经 @q2q/wasm 添加来源列表；不在 TypeScript 重写 bencode。
+- 复用 q2q-primitives 的 Seed 编解码，经 @q2q/wasm 添加来源列表；不在 TypeScript 重写 bencode。
 - 导出前后 info 字典和 info_hash 必须一致。带不同授权的种子可以具有不同编码，内容身份仍相同。
 - 第一版保留内嵌叶子表，SDK 不依赖外部证明地址。后续外置证明时，proof_list 使用同一版本/授权体系，不能固化短期 S3 URL。
 - 当前 SDK 的 cdn::Source 对各块使用原始来源 URL，允许最多 3 次重定向，使用 identity 编码并校验响应范围和内容。验证后才能认为平台 307 入口兼容。

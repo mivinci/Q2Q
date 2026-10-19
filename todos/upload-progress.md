@@ -4,7 +4,7 @@
 
 - `Publication::progress() -> UploadProgress`：即时读取内存快照。
 - `Publication::subscribe_progress() -> watch::Receiver<UploadProgress>`：每 100 ms 合并普通通知，新订阅同步最新值，关闭及终态立即通知。
-- 类型从 `q2q::publication` 与 `q2q::client` 导出：`PublicationState`、`UploadProgress`、`UploadConnectionProgress`、`UploadConnectionState`。
+- 类型从 `q2q_core::publication` 与 `q2q_core::client` 导出：`PublicationState`、`UploadProgress`、`UploadConnectionProgress`、`UploadConnectionState`。
 
 ## 统计边界
 

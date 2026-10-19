@@ -11,7 +11,7 @@ pub use crate::message::{RejectReason, SignalRequest, SignalType};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use parking_lot::Mutex;
-use q2q_core::identity::{Audience, PeerId, TicketBody, TicketError};
+use q2q_primitives::identity::{Audience, PeerId, TicketBody, TicketError};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,7 +380,7 @@ fn random_key() -> Result<[u8; 32], SignalError> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use q2q_core::identity::{TICKET_VERSION, Ticket, keypair_from_seed, peer_id_of};
+  use q2q_primitives::identity::{TICKET_VERSION, Ticket, keypair_from_seed, peer_id_of};
 
   fn ticket(seed: u8, aud: &str, tgt: Option<&PeerId>, cid: &str, now: u64) -> TicketBody {
     let (sk, _) = keypair_from_seed(&[seed; 32]);

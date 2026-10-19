@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 424" width="680" height="424" role="img" aria-labelledby="archTitle archDesc">
   <title id="archTitle">Q2Q architecture: control plane and data plane</title>
-  <desc id="archDesc">Track, Punch and STUN/TURN form the control plane, which helps peers find each other but never carries file data. Two clients exchange blocks and pieces over a WebRTC data channel in the data plane. Both planes are built on the network-free q2q-core.</desc>
+  <desc id="archDesc">Track, Punch and STUN/TURN form the control plane, which helps peers find each other but never carries file data. Two clients exchange blocks and pieces over a WebRTC data channel in the data plane. Both planes are built on the network-free q2q-primitives.</desc>
 
   <style>
     .band { fill: #232328; stroke: #43434c; stroke-width: .5 }
@@ -51,7 +51,7 @@
   <!-- core -->
   <rect class="band" x="40" y="312" width="600" height="92" rx="14"/>
   <circle cx="61" cy="335" r="4.5" fill="#8f8f88"/>
-  <text class="h" x="76" y="335" dominant-baseline="central">q2q-core</text>
+  <text class="h" x="76" y="335" dominant-baseline="central">q2q-primitives</text>
   <text class="s" x="156" y="335" dominant-baseline="central">network-free, shared by both planes</text>
   <rect class="box" x="80" y="354" width="120" height="38" rx="8"/>
   <text x="140" y="373" text-anchor="middle" dominant-baseline="central" class="h">identity</text>

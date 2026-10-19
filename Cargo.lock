@@ -1831,13 +1831,25 @@ dependencies = [
 name = "q2q"
 version = "0.1.0"
 dependencies = [
+ "clap",
+ "indicatif",
+ "q2q-core",
+ "q2q-primitives",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "q2q-core"
+version = "0.1.0"
+dependencies = [
  "async-trait",
  "base64 0.23.1",
  "bytes",
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.4.3",
- "q2q-core",
+ "q2q-primitives",
  "q2q-punch",
  "q2q-track",
  "quinn",
@@ -1856,19 +1868,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "q2q-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "indicatif",
- "q2q",
- "q2q-core",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "q2q-core"
+name = "q2q-primitives"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
@@ -1893,7 +1893,7 @@ dependencies = [
  "base64 0.23.1",
  "getrandom 0.4.3",
  "parking_lot",
- "q2q-core",
+ "q2q-primitives",
  "serde",
  "serde_json",
 ]
@@ -1907,7 +1907,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "parking_lot",
- "q2q-core",
+ "q2q-primitives",
  "q2q-punch",
  "q2q-ratelimit",
  "quinn",
@@ -1941,7 +1941,7 @@ dependencies = [
  "base64 0.23.1",
  "hmac 0.13.0",
  "parking_lot",
- "q2q-core",
+ "q2q-primitives",
  "redis",
  "serde",
  "serde_json",
@@ -1958,7 +1958,7 @@ dependencies = [
  "clap",
  "getrandom 0.4.3",
  "parking_lot",
- "q2q-core",
+ "q2q-primitives",
  "q2q-ratelimit",
  "q2q-track",
  "redis",
@@ -1975,7 +1975,7 @@ dependencies = [
 name = "q2q-wasm"
 version = "0.1.0"
 dependencies = [
- "q2q-core",
+ "q2q-primitives",
  "serde_json",
  "wasm-bindgen",
 ]

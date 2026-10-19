@@ -1,6 +1,6 @@
 # Wire protocol
 
-This page records the file protocol implemented by the Rust SDK. Network-independent codecs live in `q2q-core::peer_wire`, with the authentication transcript in `q2q-core::peer_auth`. The SDK reexports peer codecs through `q2q::protocol::peer`.
+This page records the file protocol implemented by the Rust SDK. Network-independent codecs live in `q2q_primitives::peer_wire`, with the authentication transcript in `q2q_primitives::peer_auth`. The SDK reexports peer codecs through `q2q_core::protocol::peer`.
 
 See [Transport](./transport) for connections and channels, and [Scheduling](./scheduling) for commit ordering. The design document's pause/resume messages and magnet info retrieval are not implemented yet.
 
@@ -40,7 +40,7 @@ Version is currently 1. Unsupported versions/types and unknown fields in the con
 
 Block 0 is the high bit of the first bitmap byte. Unused trailing low bits must be zero and the byte length must exactly cover the block count, limited to 65,536 blocks. Partial source bitmaps are accepted. Requests are restricted to blocks marked available; Have updates the connection bitmap and wakes block selection. Out-of-range Have indexes fail the connection. Track stores only partial/complete status, not block bitmaps.
 
-Proofs use the JSON representation of `q2q_core::merkle::Proof`. Single-block count is 1, with at most 64 nodes and at most one leaf hash. Those limits do not establish validity: bytes, block index, file block count and the trusted root must still verify. Seed versions and the file envelope version are separate fields.
+Proofs use the JSON representation of `q2q_primitives::merkle::Proof`. Single-block count is 1, with at most 64 nodes and at most one leaf hash. Those limits do not establish validity: bytes, block index, file block count and the trusted root must still verify. Seed versions and the file envelope version are separate fields.
 
 ## Binary pieces
 

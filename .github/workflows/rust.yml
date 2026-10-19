@@ -57,7 +57,7 @@ jobs:
       - name: 安装匹配 Cargo.lock 的绑定工具
         run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
       - name: 无默认 feature 的构建器测试
-        run: cargo test -p q2q-core --no-default-features --test seed_builder
+        run: cargo test -p q2q-primitives --no-default-features --test seed_builder
       - name: Wasm Clippy
         run: cargo clippy -p q2q-wasm --target wasm32-unknown-unknown --release -- -D warnings
       - name: 生成绑定与运行验证

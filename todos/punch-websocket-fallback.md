@@ -74,7 +74,7 @@ Track 配置与协议响应不再包含单独的 WSS 地址；`url` 始终表示
 - [x] SDK QUIC/WSS transport 与 QUIC 链路失败回退；身份校验错误和远端业务错误不会触发回退。
 - [x] 中英文 Punch/Deploy 文档、协议说明和部署示例已更新。
 - [x] PR 复审修复：WSS 独立 writer 避免双向转发和自转发死锁；连接总量/单 IP 配额、握手和首次认证超时；SDK 队列溢出会关闭整个 WSS transport 并使 heartbeat/RPC 失败，全程 RPC/关闭期限与取消安全 waiter；WSS envelope 版本校验及 Punch 地址变化检测。部署文档说明代理/SNAT 后按监听器观察到的出口 IP 共用单 IP 配额。
-- [x] `cargo check --workspace` 通过；本轮 `cargo test --offline -p q2q -p q2q-track -p q2q-track-server -p q2q-punch-server` 通过（SDK 134 项、SDK 集成 10 项、Punch 30 项、Track 17 项、Track selection 5 项、Track server 22 项；外部服务和手动 benchmark 测试按要求忽略）。
+- [x] `cargo check --workspace` 通过；本轮 `cargo test --offline -p q2q-core -p q2q-track -p q2q-track-server -p q2q-punch-server` 通过（SDK 134 项、SDK 集成 10 项、Punch 30 项、Track 17 项、Track selection 5 项、Track server 22 项；外部服务和手动 benchmark 测试按要求忽略）。
 - [ ] 完整 QUIC/WSS 真实网络矩阵、旧版本兼容与身份失败集成验收；完成后再做生产渐进上线。
 
 本轮未部署生产 Punch。SDK 的现有真实 QUIC/UDP 测试已在本地测试套件中通过；WSS 自动化测试使用内存 WebSocket stream，未覆盖真实 TLS 握手。WSS 目前只打通控制与信令；UDP 全封锁下的数据面仍需独立验证 TURN/TCP/TLS。

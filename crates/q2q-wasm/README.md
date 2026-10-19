@@ -1,6 +1,6 @@
 # q2q-wasm
 
-q2q-core 的薄 Wasm 绑定，供 JS/TypeScript 增量生成内容元数据。计算在 core 中；本 crate 不读取文件、不联网，也不管理平台任务。
+q2q-primitives 的薄 Wasm 绑定，供 JS/TypeScript 增量生成内容元数据。计算在 primitives 中；本 crate 不读取文件、不联网，也不管理平台任务。
 
 ## 构建与验证
 

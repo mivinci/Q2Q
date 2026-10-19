@@ -6,9 +6,9 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use q2q_core::identity::{Audience, PeerId, Ticket, TicketError};
+use q2q_primitives::identity::{Audience, PeerId, Ticket, TicketError};
 // the wire form is shared with Punch, so it lives in core and is re-exported
-pub use q2q_core::identity::TicketBody;
+pub use q2q_primitives::identity::TicketBody;
 
 /// Short-lived tickets and clock skew both live inside this window.
 pub const CLOCK_TOLERANCE: u64 = 60;
@@ -79,7 +79,7 @@ fn map_ticket_err(e: TicketError) -> AuthError {
 
 /// `HMAC-SHA-256(session_key, peer_id || seq || timestamp)`.
 pub fn mac_bytes(session_key: &[u8; 32], peer_id: &PeerId, seq: u64, timestamp: u64) -> [u8; 32] {
-  q2q_core::mac::sha256(
+  q2q_primitives::mac::sha256(
     session_key,
     &[
       peer_id.as_str().as_bytes(),
@@ -119,7 +119,7 @@ pub fn verify_session_request(
 #[cfg(test)]
 mod tests {
   use super::*;
-  use q2q_core::identity::{TICKET_VERSION, keypair_from_seed, peer_id_from_public_key};
+  use q2q_primitives::identity::{TICKET_VERSION, keypair_from_seed, peer_id_from_public_key};
 
   /// Helper the tests use to build a wire ticket from a real key.
   fn announce(seed: u8, aud: &str, exp: u64, now: u64) -> TicketBody {

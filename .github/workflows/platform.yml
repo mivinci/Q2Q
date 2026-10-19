@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'crates/q2q-core/**'
+      - 'crates/q2q-primitives/**'
       - 'crates/q2q-wasm/**'
       - 'Cargo.lock'
       - 'Cargo.toml'
@@ -22,7 +22,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'crates/q2q-core/**'
+      - 'crates/q2q-primitives/**'
       - 'crates/q2q-wasm/**'
       - 'Cargo.lock'
       - 'Cargo.toml'

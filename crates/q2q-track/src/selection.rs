@@ -1,7 +1,7 @@
 //! Candidate selection over ordered storage, shared by memory and Redis backends.
 use crate::state::{Candidate, InfoHash, StateError, TrackState, UnixSeconds};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64};
-use q2q_core::identity::PeerId;
+use q2q_primitives::identity::PeerId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 

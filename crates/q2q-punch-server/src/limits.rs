@@ -95,7 +95,7 @@ fn signal_kind(req: &Request) -> Option<SignalType> {
 /// limit applies before we spend anything on a bad ticket.
 fn connect_file(req: &Request) -> Option<[u8; 32]> {
   let token = req.params.get("connect_token")?.as_str()?;
-  let body: q2q_core::identity::TicketBody = serde_json::from_str(token).ok()?;
+  let body: q2q_primitives::identity::TicketBody = serde_json::from_str(token).ok()?;
   let ih = body.ih?;
   let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, ih).ok()?;
   <[u8; 32]>::try_from(bytes.as_slice()).ok()

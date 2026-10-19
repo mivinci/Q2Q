@@ -7,7 +7,7 @@
 use crate::binding::{Generation, UnixSeconds};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use q2q_core::identity::{Audience, TicketBody, TicketError, verify_signature};
+use q2q_primitives::identity::{Audience, TicketBody, TicketError, verify_signature};
 use serde::{Deserialize, Serialize};
 
 /// Clock tolerance for a join request, in seconds.
@@ -191,7 +191,7 @@ pub fn binding_mac(
 ) -> String {
   let parts = mac_parts(binding_id, seq, timestamp, generation);
   let parts: Vec<&[u8]> = parts.iter().map(|p| p.as_slice()).collect();
-  q2q_core::mac::sha256(key, &parts)
+  q2q_primitives::mac::sha256(key, &parts)
     .iter()
     .map(|b| format!("{b:02x}"))
     .collect()
@@ -214,7 +214,7 @@ pub fn verify_binding_mac(
   };
   let parts = mac_parts(binding_id, seq, timestamp, generation);
   let parts: Vec<&[u8]> = parts.iter().map(|p| p.as_slice()).collect();
-  q2q_core::mac::verify(expected, key, &parts)
+  q2q_primitives::mac::verify(expected, key, &parts)
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
@@ -409,7 +409,9 @@ pub fn validate_request_version(req: &Request) -> Result<(), RpcError> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use q2q_core::identity::{TICKET_VERSION, Ticket, keypair_from_seed, peer_id_of, sign_message};
+  use q2q_primitives::identity::{
+    TICKET_VERSION, Ticket, keypair_from_seed, peer_id_of, sign_message,
+  };
 
   /// Build a join request the way a client would.
   fn join(seed: u8, aud: &str, now: UnixSeconds) -> JoinRequest {

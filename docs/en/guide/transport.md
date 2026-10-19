@@ -135,7 +135,7 @@ Callers using `ControlSession::accept_peer` / `PeerSession::serve_file` manage t
 ### Total upload rate
 
 ```rust
-let client = q2q::client::builder()
+let client = q2q_core::client::builder()
     // ... Track, identity and storage settings ...
     .max_upload_peers(4)
     .upload_rate_limit(10 * 1024 * 1024) // bytes per second across this Client
@@ -161,8 +161,8 @@ loop {
     let snapshot = updates.borrow_and_update().clone();
     // Update the UI. Never hold a watch borrow across an await.
     if matches!(snapshot.state,
-        q2q::publication::PublicationState::Closed
-        | q2q::publication::PublicationState::Failed) {
+        q2q_core::publication::PublicationState::Closed
+        | q2q_core::publication::PublicationState::Failed) {
         break;
     }
     if updates.changed().await.is_err() { break; }
@@ -186,7 +186,7 @@ Byte counters follow the rate-limit accounting: encoded piece bytes, including t
 ### Concurrent complete-source reads
 
 ```rust
-let client = q2q::client::builder()
+let client = q2q_core::client::builder()
     // ... Track, identity and storage settings ...
     .max_upload_peers(8)
     .max_upload_reads(4) // default 4, range 1–16
@@ -225,7 +225,7 @@ A download source uses an in-memory block-to-receipt-offset index, rebuilt only 
 ## Bounded upload block cache
 
 ```rust
-let client = q2q::client::builder()
+let client = q2q_core::client::builder()
     // ... Track, identity and storage settings ...
     .upload_cache_bytes(16 * 1024 * 1024) // default 16 MiB, maximum 256 MiB
     .build().await?;

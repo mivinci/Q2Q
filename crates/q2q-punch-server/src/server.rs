@@ -18,7 +18,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
-use q2q_core::identity::PeerId;
+use q2q_primitives::identity::PeerId;
 use q2q_punch::binding::{Binding, Bindings, UnixSeconds, now};
 use q2q_punch::message::{
   CLOCK_TOLERANCE, ExitRequest, HeartbeatRequest, HeartbeatResponse, JoinRequest, JoinResponse,
@@ -202,7 +202,7 @@ fn handle_join(state: &State, req: &Request, join: &JoinRequest, now: UnixSecond
 
   let binding = Binding {
     binding_id,
-    peer_id: q2q_core::identity::PeerId::unchecked(&ticket.iss),
+    peer_id: q2q_primitives::identity::PeerId::unchecked(&ticket.iss),
     key,
     expires_at: now + state.ttl,
     last_seq: 0,
@@ -710,7 +710,7 @@ fn random_hex(n_bytes: usize) -> Result<String, RandomError> {
 mod tests {
   use super::*;
   use base64::engine::general_purpose::STANDARD as B64;
-  use q2q_core::identity::{
+  use q2q_primitives::identity::{
     Audience, TICKET_VERSION, Ticket, keypair_from_seed, peer_id_of, sign_message,
   };
   use q2q_punch::message::{
@@ -1844,7 +1844,7 @@ mod tests {
 
     // walk the connection up to the point where A would have offered
     let ticket = connect_token(1, "punch-1", &b, "cid-2", now);
-    let body: q2q_core::identity::TicketBody = serde_json::from_str(&ticket).unwrap();
+    let body: q2q_primitives::identity::TicketBody = serde_json::from_str(&ticket).unwrap();
     st.connections.open(&body, &b, true, now).unwrap();
     st.connections.accept("cid-2", &b, now).unwrap();
     st.connections.offer("cid-2", &a, "sdp", now).unwrap();

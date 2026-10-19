@@ -9,7 +9,7 @@ base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 getrandom = "0.4.3"
 parking_lot = "0.12.5"
-q2q-core = { version = "0.1.0", path = "../q2q-core" }
+q2q-primitives = { version = "0.1.0", path = "../q2q-primitives" }
 q2q-ratelimit = { version = "0.1.0", path = "../q2q-ratelimit" }
 q2q-track = { version = "0.1.0", path = "../q2q-track", features = ["redis"] }
 serde = { version = "1.0.229", features = ["derive"] }

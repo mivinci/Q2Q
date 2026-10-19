@@ -4,7 +4,7 @@
 //! decisions stay in the server; clients use the same field names and formats.
 
 use crate::state::UnixSeconds;
-use q2q_core::identity::TicketBody;
+use q2q_primitives::identity::TicketBody;
 use serde::{Deserialize, Serialize};
 
 /// A stable code clients can branch on, with optional diagnostic detail.
