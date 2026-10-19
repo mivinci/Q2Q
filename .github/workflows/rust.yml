@@ -12,6 +12,7 @@ on:
       - 'Cargo.lock'
       - 'rustfmt.toml'
       - '.github/workflows/rust.yml'
+      - '.github/workflows/cli-release.yml'
   pull_request:
     branches: [main]
     paths:
@@ -20,6 +21,7 @@ on:
       - 'Cargo.lock'
       - 'rustfmt.toml'
       - '.github/workflows/rust.yml'
+      - '.github/workflows/cli-release.yml'
 
 jobs:
   check:
@@ -42,6 +44,19 @@ jobs:
 
       - name: 测试
         run: cargo test
+
+  windows-cli:
+    name: Windows CLI behavior
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: CLI integration checks
+        run: cargo test --locked -p q2q --test cli
 
   wasm:
     runs-on: ubuntu-latest

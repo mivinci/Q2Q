@@ -6,7 +6,12 @@ for network setup.
 
 ## Install
 
-From the repository root:
+Versioned releases will include prebuilt archives for Linux x86_64 (glibc 2.35+),
+macOS Intel and Apple silicon, and Windows x86_64 on
+[GitHub Releases](https://github.com/mivinci/Q2Q/releases/latest). Download the
+matching archive, unpack it, and place `q2q` (or `q2q.exe`) on your `PATH`.
+
+To build from source, run this from the repository root:
 
 ```sh
 cargo install --path crates/q2q --locked
@@ -16,60 +21,94 @@ q2q --help
 ## Publish
 
 ```sh
-q2q --track https://track.example.net --data-dir ./publisher-state \
-  publish ./model.bin --seed ./model.q2q
+q2q publish ./model.bin
+# Defaults to ./model.bin.q2q; pass --seed for a custom path:
+q2q publish ./model.bin --seed ./model.q2q
 ```
 
-The source is prepared and announced before the seed is exported. The seed output
-must not already exist; publication stops and withdraws if export fails. Its parent
+Without `--seed`, the seed path is the source filename with `.q2q` appended, such as
+`./model.bin.q2q`. Use `--seed` to choose a custom path. The source is prepared and
+announced before the seed is exported. The seed output must not already exist;
+publication stops and withdraws if export fails. Its parent
 directory must exist. Send the `.q2q` seed to recipients and keep the publisher
 running. The seed is a binary Q2Q document, not JSON or a magnet URL.
+The seed publicly exposes the Track URL used by the publisher, which is also
+the downloader's default. To avoid distributing credentials, publishing refuses
+Track URLs that contain a username, password, query parameters or a fragment.
 
 Ctrl-C stops serving and waits for cleanup and withdrawal. Unix SIGTERM follows
 the same path. If a signal arrives during initialization (such as hashing or
-connecting), the command finishes that operation and closes the acquired handle.
+connecting), the CLI reports source hashing progress, finishes initialization,
+then closes the acquired handle. Further signals are ignored while it finishes
+initialization and cleanup.
 A failed withdrawal is reported; a remote holding may remain until its TTL expires.
 A crash or forced kill cannot guarantee withdrawal.
 
 ## Download and resume
 
-Run the receiver with a separate state directory:
+The CLI stores identity and checkpoints in the platform user state directory by
+default. Set `Q2Q_HOME` to choose another root:
 
 ```sh
-q2q --data-dir ./receiver-state download ./model.q2q --output ./received.bin
+Q2Q_HOME=./receiver-state q2q download ./model.q2q
 
-# After an interruption, retain both received.bin and received.bin.q2q.resume.
-q2q --data-dir ./receiver-state download ./model.q2q \
-  --output ./received.bin --resume
+# After an interruption, retain the destination and receiver-state directory,
+# then run the same command again to resume automatically.
+Q2Q_HOME=./receiver-state q2q download ./model.q2q
 ```
 
-`--output` is an exact filename. Its parent directory must exist. A normal download
-refuses an existing destination; `--resume` explicitly revalidates an existing SDK
-destination and its receipt file. Success means every block has been verified and
-the destination synchronized. Downloading does not automatically share blocks or
-continue seeding after completion.
+The CLI prefers the seed's `info.name` as a filename in the current directory. If it
+is missing or unsafe, the CLI derives a name from the seed filename without its
+extension. Safe names must be a single filename, without path separators, control
+characters or platform-reserved characters. Pass `--output` to choose an exact
+destination path; its parent directory must exist. When the destination and a
+valid checkpoint both exist, the CLI revalidates and resumes automatically. An
+existing destination without a valid checkpoint is still an error and is never
+overwritten. `--resume` explicitly requires checkpoint-based recovery. Checkpoints are stored under
+`Q2Q_HOME/checkpoints`, keyed by the normalized destination path. A legacy adjacent
+`.q2q.resume` file is migrated on the first resume. Success means every block has
+been verified and the destination synchronized. Downloading does not automatically
+share blocks or continue seeding after completion.
 
-The Track URL comes from `--track`, then `Q2Q_TRACK_URL`, then the first Track
-in the seed. A URL is required even for a complete offline resume, although that
-resume needs no network connection. The CLI does not try successive Track URLs.
+The preferred Track URL comes from `--track`, then `Q2Q_TRACK_URL`, then the
+seed's first Track, and finally `https://track.q2q.app`. For a download, the CLI
+tries that preferred URL first, then each valid Track URL from the seed in order,
+and the official URL as a final fallback; duplicate URLs are skipped. It moves
+to the next candidate when session setup fails or the initial peer query fails
+or returns no peers. Once a Track returns peers, the transfer stays with that Track;
+subsequent peer retries and CDN fallback remain within the SDK. A complete
+checkpoint resume is verified locally before Track configuration or identity
+initialization; Track is selected only if data still needs downloading.
 CDN fallback follows the SDK's seed metadata and verification rules.
 
 ## Configuration and output
 
 | Option | Environment / default |
 | --- | --- |
-| `--track` | `Q2Q_TRACK_URL`; downloading may use the seed's first Track |
-| `--data-dir` | `Q2Q_DATA_DIR`; `./.q2q` |
-| `--identity` | `Q2Q_IDENTITY_FILE`; `<data-dir>/identity` |
+| `--track` | `Q2Q_TRACK_URL`; downloading may use the seed's first Track; defaults to `https://track.q2q.app` |
+| `--insecure` | Off by default; skip Track/CDN HTTPS certificate and hostname verification for debugging only |
+| `Q2Q_HOME` | Platform user state directory; root for Q2Q identity and local state |
+| `--identity` | `Q2Q_IDENTITY_FILE`; `<Q2Q_HOME>/identity` |
 | `--download-peers` | 4; accepts 1–16 |
 | `--upload-peers` | 4; accepts 1–16 |
 | `--upload-rate` | Unset means unlimited; positive encoded piece bytes/second |
 | `--quiet` | Suppress periodic progress and informational messages |
 
+For temporary debugging with self-signed HTTPS or proxy certificates, use
+`q2q --insecure publish ./model.bin` or `q2q --insecure download ./model.bin.q2q`.
+It applies to this invocation's Track, CDN content and proof metadata HTTPS
+requests, which no longer authenticate the server through its certificate.
+Punch key pinning, Peer authentication and Seed/Merkle content verification
+still apply. Omit the flag during normal use.
+
 Options may appear before or after the subcommand. Explicit options override
 environment variables. The state directory and persistent private identity are
-created as needed. Do not share one identity between simultaneously running
-clients; choose separate state directories and identities for those clients.
+created as needed. Defaults are `$XDG_STATE_HOME/q2q` (or `~/.local/state/q2q`)
+on Linux/other Unix, `~/Library/Application Support/Q2Q` on macOS, and
+`%LOCALAPPDATA%\Q2Q` on Windows. The CLI locks its identity while running. Give
+simultaneous clients separate `Q2Q_HOME` or `Q2Q_IDENTITY_FILE` values. Existing
+development data in `./.q2q` is not moved automatically; set `Q2Q_HOME=./.q2q`
+to keep using that identity.
 
 Successful seed or downloaded-file paths go to stdout, one line per command.
 Progress and errors go to stderr, including in redirected/noninteractive sessions.

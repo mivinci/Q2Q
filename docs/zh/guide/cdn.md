@@ -31,7 +31,7 @@ HTTP 数据在写入目标文件前必须通过 Merkle 校验。成功的块复�
 
 `max_download_peers` 同样限制 CDN 并发块请求数，默认 4，范围 1–16。失败任务归还未完成的块，当前镜像的任务全部退出后，再由下一个镜像补齐剩余块；磁盘或检查点写入失败会停止整个传输。
 
-`Transfer::subscribe_progress()` 中的 `active_peers` 表示 WebRTC 节点，`active_cdn_requests` 表示 HTTP 数据或哈希表请求。Drop 或 cancel 会取消 HTTP 请求。保留目标文件及其 `.q2q.resume` 检查点即可之后续传。
+`Transfer::subscribe_progress()` 中的 `active_peers` 表示 WebRTC 节点，`active_cdn_requests` 表示 HTTP 数据或哈希表请求。Drop 或 cancel 会取消 HTTP 请求。保留目标文件及 Client `storage_dir/checkpoints` 中对应的检查点即可之后续传。
 
 整文件下载不与慢速 Peer 竞速，也不自动切回 P2P。当前不分段拉取哈希表。远程叶子表按每次传输获取和验证；已完成块的证明会保留在检查点中。
 

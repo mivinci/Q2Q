@@ -6,9 +6,9 @@
 
 ## 第一版范围
 
-- [x] `publish <FILE> --seed <SEED>`：发布本地文件，原子导出种子并持续做种，退出时等待撤销。
-- [x] `download <SEED> --output <FILE> [--resume]`：使用种子下载或显式恢复，拒绝默认覆盖，不自动持续做种。
-- [x] 全局参数与环境变量：Track、数据目录、身份文件、并发和上传限速；下载未指定 Track 时使用种子首个 Track。
+- [x] `publish <FILE> [--seed <SEED>]`：发布本地文件，默认原子导出为 `<FILE>.q2q`，可用 `--seed` 指定位置；持续做种，退出时等待撤销。
+- [x] `download <SEED> [--output <FILE>] [--resume]`：使用种子下载或显式恢复，有效检查点自动续传，拒绝默认覆盖，不自动持续做种。
+- [x] 全局参数与环境变量：Track、Q2Q_HOME、身份文件、并发和上传限速；下载未指定 Track 时使用种子首个 Track。
 - [x] stdout 输出成功结果路径，stderr 输出状态、速率和错误；退出码 0 成功、1 运行失败、2 参数错误、130 中断。
 - [x] Ctrl-C 和 Unix SIGTERM 走 SDK 生命周期；初始化期间收到信号后完成当前初始化并关闭取得的句柄，避免遗失清理任务。
 - [x] 更新双语使用说明与构建检查记录。
@@ -17,7 +17,7 @@
 
 保持源码扁平，分离参数、应用流程、进度与信号处理。复用现有 clap/tokio 依赖版本；临时种子用 tempfile 原子持久化，禁止覆盖已有文件。SDK 承担传输/恢复/校验，CLI 不访问内部模块，不增加业务协议。
 
-默认状态目录为当前目录 `.q2q`，身份文件默认为该目录的 `identity`。不同设备或并行独立进程使用不同数据目录。第一版不实现 GUI、浏览器、磁力链元数据获取、后台服务、账号、云存储及下载完成后自动共享。
+默认状态根目录使用平台惯用的用户级状态路径，身份文件默认为 `<Q2Q_HOME>/identity`。不同设备或并行独立进程使用不同的 `Q2Q_HOME` 或身份文件。第一版不实现 GUI、浏览器、磁力链元数据获取、后台服务、账号、云存储及下载完成后自动共享。
 
 下载速率来自已验证并持久化字节的增量，不等于网卡流量；上传速率按 SDK 已发送的编码 piece 字节统计，包含重传，不含完整传输开销。
 
@@ -73,3 +73,26 @@
 - Windows 运行时及外部 Redis 未验证；活跃快照不保留连接历史，不能通过当前行求和还原全局历史流量。
 
 - 最终工作区全部 feature 回归：368 项通过、0 失败；默认 ignored 的 7 项联机测试已另行执行通过，剩余外部 Redis 与缓存微基准本轮未重跑。
+
+## 后续改进候选
+
+- [x] **内置官方 Track 兜底地址**：Track 选择顺序为显式 `--track` / `Q2Q_TRACK_URL`、下载种子首个 Track、官方 `https://track.q2q.app`。发布和缺少 Track 信息的下载可直接使用默认值。
+- [x] **HTTPS 调试开关**：新增全局 `--insecure`，默认关闭，仅当前命令跳过 Track、CDN 内容与证明元数据的 HTTPS 证书及主机名校验；SDK 对应 `Builder::danger_accept_invalid_certs(bool)`。Punch 公钥核对、Peer 身份与 Seed/Merkle 内容校验继续执行；帮助和中英文 CLI 文档说明调试范围。
+- [x] **避免 Track 凭据泄漏到种子**：发布和下载使用同一个 Track 地址；发布时拒绝含 userinfo、query 或 fragment 的 Track URL，避免将常见凭据字段写入并分发到种子。
+- [x] **统一用户数据根目录与并发身份隔离**：默认根目录为 Linux/其他 Unix 的 `$XDG_STATE_HOME/q2q`（否则 `~/.local/state/q2q`）、macOS 的 `~/Library/Application Support/Q2Q`、Windows 的 `%LOCALAPPDATA%\Q2Q`；用 `Q2Q_HOME` 覆盖。移除 `--data-dir` 与 `Q2Q_DATA_DIR`。身份文件为 `<Q2Q_HOME>/identity`，CLI 持有进程锁，阻止同时复用同一 Peer ID。SDK Client 检查点集中保存于 `storage_dir/checkpoints`，SHA-256 绑定规范化目标路径；恢复时清理该目标的遗留临时文件，目标已删除后重新下载会清理对应旧检查点。恢复旧旁置 `.q2q.resume` 时迁入集中目录并升级记录头；`.q2q` 旧身份不自动搬迁，设 `Q2Q_HOME=./.q2q` 可继续使用。
+- [x] **完整离线恢复不依赖 Track 地址**：SDK 新增 `client::resume_offline`，仅校验目标和集中检查点；返回 `NoCheckpoint`、携带已校验句柄的 `NeedsNetwork` 或 `Complete(Transfer)`。CLI 在选择 Track、读取/创建身份及构建 Client 前调用该入口；完整目标离线结束，缺块时复用已验证句柄并使用显式地址、环境变量、种子首个 Track 或官方兜底地址。
+- [x] **简化发布种子文件名**：`publish FILE` 在未指定 `--seed` 时默认导出为 `FILE.q2q`，仍拒绝覆盖已有文件；显式 `--seed` 可指定自定义位置。
+- [x] **简化下载目标文件名**：`download SEED` 在未指定 `--output` 时优先采用种子 `info.name`，并校验它是安全的单个文件名；没有可用名称时从种子路径推导。仍拒绝覆盖已有目标，允许显式 `--output` 覆盖默认位置。
+- [x] **自动续传已有检查点**：默认或显式目标对应的集中检查点存在时自动验证恢复，省去用户记忆 `--resume`；仅有目标文件但没有有效检查点时继续报错，不覆盖数据。
+- [x] **发布准备阶段的进度与中断体验**：SDK 发布 API 可通过 watch 通道报告文件哈希字节数和宣告阶段；CLI 在交互终端显示进度，重定向时按秒输出进度、速率和 ETA，`--quiet` 保持静默。初始化期间首个 Ctrl-C/SIGTERM 会等待初始化完成并关闭取得的句柄；后续信号在初始化和清理期间忽略，让撤销完成。
+- [x] **多个 Track 故障切换**：下载按显式 `--track` / `Q2Q_TRACK_URL`、种子 Track 列表顺序、官方 Track 的顺序构造候选并跳过重复地址；会话建立、首次 Peer 查询失败或首次查询无 Peer 时重建客户端并尝试下一个地址。首次查询到 Peer 后固定本次传输使用的 Track，运行期故障仍由现有 Peer/CDN 恢复处理；最后一个候选仍可直接使用 SDK 的 CDN 冷启动回退；离线完整恢复不触发 Track 选择。
+- [ ] **补齐 Windows CLI 验收**：Windows CLI 行为集成检查已加入 Rust CI，覆盖退出码、stdout/stderr、离线恢复和已有目标保护；待 Windows runner 实际通过后，再补充交互式 Ctrl-C 清理及 TTY 进度验收。
+- [x] **CLI 安装与二进制分发**：新增版本标签触发的 GitHub Actions 发布流程，为 Linux x86_64（以 Ubuntu 22.04 构建）、macOS Intel（x86_64）、macOS Apple 芯片（aarch64）和 Windows x86_64 构建归档包，附带 README、MIT License 和 SHA-256 校验文件；先检查标签必须与 `q2q` crate 版本一致，并支持重跑时更新已有 Release 资产。更新 README 和中英文 CLI 指南，提供预编译包下载入口，同时保留 `cargo install --path` 源码安装方式。Windows CLI 运行时行为仍留待 Windows 验收项验证。
+
+### 本轮本地服务验证（2026-10-19）
+
+- 使用临时内存 Track 和临时身份 Punch，在允许 loopback TCP/UDP 绑定的环境中执行真实 CLI 进程回归：4 MiB 发布与下载、SIGINT 中断、原命令自动续传、字节比对、SIGTERM 撤销以及完整目标离线恢复全部通过。
+- 增强上述联机用例：种子附带不可达 CDN，显式首选 Track 不可达，仍切换到种子中的本地 Track 并通过真实 Peer 下载；恢复日志断言 Track 切换与 Peer 接收/验证计数。
+- SDK 单元测试 136 项通过、0 失败，1 项手动缓存基准忽略；SDK 公开 API 测试 10 项通过；CLI 初始化/信号生命周期测试 4 项通过。此前因沙箱禁止绑定端口而失败的网络单元测试在获得本地网络权限后全部通过。
+- 临时 Track/Punch、身份和数据已清理；未验证 Windows/macOS 运行时，也未执行 GitHub 发布流程。
+- `--insecure` 专项：临时自签名 HTTPS 服务验证默认模式拒绝 Track/CDN 证书，显式开启后 Track 请求、CDN 内容/证明下载和 VOD 读取成功，损坏内容仍被拒绝；实际 CLI 进程验证开关生效。该次回归 SDK 单元测试 136 项、公开 API 11 项、CLI 生命周期 4 项及常规 CLI 集成 7 项通过；缓存基准与需单独启动服务的 CLI 联机用例默认忽略。

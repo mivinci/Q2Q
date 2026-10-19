@@ -5,16 +5,17 @@ use std::path::PathBuf;
 #[command(
   name = "q2q",
   version,
-  about = "Publish and download verified files over Q2Q"
+  about = "Publish and download verified files over Q2Q",
+  long_about = "Publish and download verified files over Q2Q.\n\nLocal identity and resume state use the platform user state directory by default. Set Q2Q_HOME to choose another root."
 )]
 pub(crate) struct Args {
-  /// Track HTTP(S) URL; downloads otherwise use the seed's first Track.
+  /// Preferred Track HTTP(S) URL; downloads try seed/official Tracks on setup or discovery failure.
   #[arg(long, global = true, env = "Q2Q_TRACK_URL")]
   pub track: Option<String>,
-  /// Local state directory. Use a separate directory for each running client.
-  #[arg(long, global = true, env = "Q2Q_DATA_DIR", default_value = ".q2q")]
-  pub data_dir: PathBuf,
-  /// Persistent private identity; defaults to <data-dir>/identity.
+  /// Skip Track/CDN HTTPS certificate verification (unsafe; debugging only).
+  #[arg(long, global = true)]
+  pub insecure: bool,
+  /// Persistent private identity; defaults to <Q2Q_HOME>/identity.
   #[arg(long, global = true, env = "Q2Q_IDENTITY_FILE")]
   pub identity: Option<PathBuf>,
   /// Maximum concurrent download peers or CDN requests (1-16).
@@ -35,20 +36,20 @@ pub(crate) struct Args {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
-  /// Publish a file and keep serving until interrupted. Requires --track.
+  /// Publish a file and keep serving until interrupted.
   Publish {
     file: PathBuf,
-    /// Export the seed to this new file; never overwrite an existing file.
+    /// Export the seed here; defaults to <FILE>.q2q and never overwrites an existing file.
     #[arg(long)]
-    seed: PathBuf,
+    seed: Option<PathBuf>,
   },
-  /// Download using a seed. Existing destinations require explicit --resume.
+  /// Download using a seed; existing checkpoints are resumed automatically.
   Download {
     seed: PathBuf,
-    /// Exact destination filename, not a directory.
+    /// Destination filename; defaults to a safe name from the seed.
     #[arg(short, long)]
-    output: PathBuf,
-    /// Revalidate and resume an existing SDK destination and .q2q.resume file.
+    output: Option<PathBuf>,
+    /// Require checkpoint-based revalidation for an existing destination.
     #[arg(long)]
     resume: bool,
   },

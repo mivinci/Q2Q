@@ -6,6 +6,8 @@ README 中的使用场景是：发布者在自己的机器做种并向网络宣�
 
 对 Rust 应用只暴露一个主 SDK crate：`q2q-core`。构建入口是 `q2q_core::client::builder()` 普通函数，同一个 `Client` 可以同时发布与下载。
 
+临时 HTTPS 调试可显式设置 `Builder::danger_accept_invalid_certs(true)`，跳过该 Client 的 Track、CDN 内容及证明元数据的证书与主机名校验，默认仍校验。此设置不关闭 Punch 公钥核对、Peer 身份认证或内容校验；CLI 通过全局 `--insecure` 使用该选项。
+
 ```rust
 let client = q2q_core::client::builder()
     .track_url("https://track.example.net")
@@ -81,18 +83,19 @@ SDK 的高层 API 不要求应用直接发送 `announce`、`join` 或 `piece` �
 ### 第三阶段：跨进程断点续传
 
 ```rust
-// 重启后保留相同 seed、目标文件和对应的 .q2q.resume 文件。
+// 重启后保留相同 seed、目标文件，以及 storage_dir/checkpoints 中对应的检查点。
 let transfer = client.resume_download(&seed, "downloaded-video.mp4").await?;
 let path = transfer.wait().await?;
 ```
 
 - 普通 `download` 始终新建目标，已有目标或同名检查点均拒绝覆盖。`resume_download` 要求目标和检查点已存在，检查点版本、info_hash、文件长度必须匹配；不匹配时返回错误，不改写目标内容。
-- 检查点为 `<目标>.q2q.resume`，首行记录版本与 info_hash，之后每行记录一个 block 索引及完整 Merkle 证明。每条记录有大小限制、索引不能重复或越界；恢复时流式处理，内存只保留当前块和索引位图。
+- Client 检查点位于 `storage_dir/checkpoints/<SHA-256(规范化目标路径)>.q2q.resume`，首行记录版本、info_hash 和目标路径摘要，之后每行记录一个 block 索引及完整 Merkle 证明。每条记录有大小限制、索引不能重复或越界；恢复时流式处理，内存只保留当前块和索引位图。低层 `PeerSession::download_file` 仍使用目标旁的检查点。
 - 每个 block 先验证证明、写入目标并复核，再同步目标数据，最后追加证明并同步检查点。崩溃留下的末尾半条记录会丢弃；此前完整记录继续可用。已校验的整块可恢复，未完成的 block 会整体重下，不做 piece 级恢复。
 - 恢复时从磁盘重新读取所有有证明的 block，独立验证到 seed 中的根；损坏字节或无效证明对应的 block 会重新下载。恢复不信任旧 `.q2q` 进度中的 Verified 标志，也不读取 `.q2q.leaves` 缓存。旧版本只有这些文件的下载不能直接续传。
+- `client::resume_offline(seed, path, storage_dir)` 不需构造 Client 或配置 Track。返回 `NoCheckpoint`、携带已校验目标句柄的 `NeedsNetwork` 或 `Complete(Transfer)`；CLI 据此自动识别检查点，完整目标离线完成，缺块时再构造配置了 Track 的 Client，并复用句柄续传，避免对大文件检查点重复读取和校验。
 - 重新验证后，检查点通过临时文件和原子 rename 压缩，仅保留有效证明；替换前同步临时文件，Unix 上也同步目录。校验完整的目标可在不连接 Track/Punch 的情况下完成。
 - 下载持有目标文件的操作系统排他锁；同一目标的并发续传会立即报错。取消任务后，已经开始的阻塞磁盘操作可能完成，锁在该操作结束前继续持有，随后可再次恢复。
-- 目标文件和 `.q2q.resume` 需一起保存；完成后仍保留检查点，以便再次校验。删除或移动文件时，应用负责一并处理检查点。正常错误路径清理压缩临时文件；进程被强制终止时可能留下带随机后缀的 `.tmp` 文件，不影响下一次恢复。
+- 目标文件和对应检查点需一起保存；完成后仍保留检查点，以便再次校验。删除或移动文件时，应用负责一并处理检查点。正常错误路径清理压缩临时文件；下次恢复会清理同一目标残留的临时文件。
 
 
 ### 第三阶段：多 Peer 并行取块与进度通知

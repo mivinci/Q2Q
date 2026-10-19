@@ -1837,6 +1837,7 @@ dependencies = [
  "q2q-primitives",
  "tempfile",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -1858,8 +1859,10 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "tracing",
  "url",

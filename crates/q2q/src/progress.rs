@@ -1,6 +1,9 @@
 //! Terminal rendering consumes SDK snapshots; it never owns transfer state.
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
-use q2q_core::client::{DownloadPeerProgress, TransferProgress, TransferState, UploadProgress};
+use q2q_core::client::{
+  DownloadPeerProgress, PublishPhase, PublishProgress, TransferProgress, TransferState,
+  UploadProgress,
+};
 use std::{
   collections::BTreeMap,
   io::{self, IsTerminal},
@@ -43,6 +46,120 @@ pub(crate) struct Progress {
   download_style: bool,
   plain_rates: BTreeMap<u64, Rate>,
 }
+
+pub(crate) struct PreparationDisplay {
+  file: String,
+  started: Instant,
+  last_plain: Instant,
+  rate: Rate,
+  latest: PublishProgress,
+  last_rendered: Option<PublishProgress>,
+  terminal: Option<ProgressBar>,
+  quiet: bool,
+  finished: bool,
+}
+
+impl PreparationDisplay {
+  pub(crate) fn new(file: &std::path::Path, quiet: bool) -> Self {
+    let interactive =
+      !quiet && io::stderr().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb");
+    let terminal = interactive.then(|| {
+      let bar = ProgressBar::new_spinner();
+      bar.set_style(preparation_style());
+      bar.enable_steady_tick(Duration::from_millis(100));
+      bar
+    });
+    Self {
+      file: file.display().to_string(),
+      started: Instant::now(),
+      last_plain: Instant::now() - Duration::from_secs(1),
+      rate: Rate::new(0),
+      latest: PublishProgress::default(),
+      last_rendered: None,
+      terminal,
+      quiet,
+      finished: false,
+    }
+  }
+
+  pub(crate) fn update(&mut self, progress: PublishProgress) {
+    if self.quiet {
+      self.latest = progress;
+      return;
+    }
+    self.latest = progress;
+    let rate = self.rate.sample(progress.bytes_read);
+    let elapsed = duration(self.started.elapsed());
+    let message = match progress.phase {
+      PublishPhase::Preparing => {
+        let percent = if progress.total_bytes == 0 {
+          0.0
+        } else {
+          (progress.bytes_read as f64 / progress.total_bytes as f64 * 100.0).min(100.0)
+        };
+        let remaining = progress.total_bytes.saturating_sub(progress.bytes_read);
+        let eta = if remaining == 0 {
+          "0s".into()
+        } else if rate > 0.0 {
+          duration(Duration::from_secs_f64(
+            (remaining as f64 / rate).ceil().min(u32::MAX as f64),
+          ))
+        } else {
+          "--".into()
+        };
+        format!(
+          "Preparing {}: {percent:.1}% | {}/{} | {}/s | ETA {eta} | elapsed {elapsed}",
+          self.file,
+          bytes(progress.bytes_read as f64),
+          bytes(progress.total_bytes as f64),
+          bytes(rate),
+        )
+      }
+      PublishPhase::Announcing => format!(
+        "Announcing {} on Track | prepared {} | elapsed {elapsed}",
+        self.file,
+        bytes(progress.total_bytes as f64),
+      ),
+    };
+    if let Some(bar) = &self.terminal {
+      bar.set_length(progress.total_bytes.max(1));
+      bar.set_position(progress.bytes_read.min(progress.total_bytes));
+      bar.set_message(message);
+    } else if self.last_rendered != Some(progress)
+      && (self.last_rendered.is_none()
+        || self.latest.phase != self.last_rendered.expect("checked above").phase
+        || self.last_plain.elapsed() >= Duration::from_secs(1)
+        || progress.bytes_read == progress.total_bytes)
+    {
+      eprintln!("{message}");
+      self.last_plain = Instant::now();
+      self.last_rendered = Some(progress);
+    }
+  }
+
+  pub(crate) fn finish(&mut self) {
+    if self.finished {
+      return;
+    }
+    if !self.quiet {
+      if self.terminal.is_none() && self.last_rendered != Some(self.latest) {
+        self.last_plain = Instant::now() - Duration::from_secs(1);
+        self.update(self.latest);
+      }
+      if let Some(bar) = &self.terminal {
+        bar.finish_and_clear();
+      }
+    }
+    self.finished = true;
+  }
+}
+
+impl Drop for PreparationDisplay {
+  fn drop(&mut self) {
+    self.finish();
+  }
+}
+
 impl Progress {
   pub(crate) fn new(bytes: u64, quiet: bool) -> Self {
     let interactive =
@@ -250,6 +367,11 @@ impl Drop for Progress {
 fn upload_style() -> ProgressStyle {
   ProgressStyle::with_template("{spinner:.green} Upload {wide_msg}")
     .expect("static upload template")
+}
+fn preparation_style() -> ProgressStyle {
+  ProgressStyle::with_template("{spinner:.green} {wide_bar:.cyan/blue} {wide_msg}")
+    .expect("static preparation template")
+    .progress_chars("=>-")
 }
 fn download_style() -> ProgressStyle {
   ProgressStyle::with_template("Download [{wide_bar:.cyan/blue}] {percent:>3}%\n  {msg}")

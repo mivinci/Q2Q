@@ -73,7 +73,13 @@ async fn healthy_p2p_window_does_not_fetch_cdn_metadata() {
   let queue = WorkQueue::demand(&seed, &[], progress::channel(&seed, &[]));
   let (download, upload) = crate::peer::test_pair(seed.info_hash()).await;
   let upload = tokio::spawn(async move { upload.serve_file(Arc::new(Mutex::new(prepared))).await });
-  let cdn_task = tokio::spawn(cdn(Arc::new(seed.clone()), store.clone(), queue.clone(), 2));
+  let cdn_task = tokio::spawn(cdn(
+    Arc::new(seed.clone()),
+    store.clone(),
+    queue.clone(),
+    2,
+    false,
+  ));
   let peer_task = tokio::spawn({
     let queue = queue.clone();
     let store = store.clone();
@@ -175,7 +181,7 @@ async fn actual_peer_fallback_keeps_other_peer_alive() {
     let store = store.clone();
     async move { good_download.download_scheduled(&seed, store, queue).await }
   });
-  let http = tokio::spawn(cdn(Arc::new(seed), store, queue.clone(), 2));
+  let http = tokio::spawn(cdn(Arc::new(seed), store, queue.clone(), 2, false));
   tokio::time::timeout(Duration::from_secs(3), queue.verified(1))
     .await
     .unwrap()

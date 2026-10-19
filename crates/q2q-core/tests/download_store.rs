@@ -272,6 +272,38 @@ async fn empty_destination_resumes_offline_with_completed_zero_progress() {
 }
 
 #[tokio::test]
+async fn partial_offline_resume_keeps_its_validated_destination_locked() {
+  let dir = tempfile::tempdir().unwrap();
+  let (source, bytes, path) = fixture(dir.path());
+  let storage = dir.path().join("storage");
+  let checkpoint_directory = storage.join("checkpoints");
+  let mut store = DownloadStore::create_in(source.seed(), &path, &checkpoint_directory).unwrap();
+  commit(&mut store, &source, &bytes, 0);
+  drop(store);
+
+  let offline = match crate::client::resume_offline(source.seed(), &path, &storage)
+    .await
+    .unwrap()
+  {
+    crate::client::OfflineResume::NeedsNetwork(offline) => offline,
+    _ => panic!("partial destination should need network recovery"),
+  };
+  assert!(
+    crate::client::resume_offline(source.seed(), &path, &storage)
+      .await
+      .is_err()
+  );
+  drop(offline);
+
+  assert!(matches!(
+    crate::client::resume_offline(source.seed(), &path, &storage)
+      .await
+      .unwrap(),
+    crate::client::OfflineResume::NeedsNetwork(_)
+  ));
+}
+
+#[tokio::test]
 async fn completed_resume_uses_public_api_without_track() {
   let dir = tempfile::tempdir().unwrap();
   let (source, bytes, path) = fixture(dir.path());

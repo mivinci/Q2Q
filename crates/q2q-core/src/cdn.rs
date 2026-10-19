@@ -153,8 +153,10 @@ impl Source {
   pub(crate) async fn load(
     seed: &Seed,
     progress: &watch::Sender<TransferProgress>,
+    accept_invalid_certs: bool,
   ) -> Result<Self, TransferError> {
     let http = Client::builder()
+      .danger_accept_invalid_certs(accept_invalid_certs)
       .timeout(Duration::from_secs(20))
       .connect_timeout(Duration::from_secs(5))
       .redirect(reqwest::redirect::Policy::limited(3))

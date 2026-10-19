@@ -33,7 +33,7 @@ HTTP data is checked against the seed's Merkle root before it reaches the destin
 
 The `max_download_peers` builder setting also bounds concurrent CDN block requests (default 4, range 1–16). A failed worker returns its block to the queue. After the current mirror's workers stop, the next mirror supplies any missing blocks. Disk or receipt-write failures stop the transfer.
 
-`Transfer::subscribe_progress()` exposes `active_peers` for WebRTC connections and `active_cdn_requests` for HTTP data or hash-table requests. Dropping or cancelling the transfer cancels its HTTP requests. Preserve the destination and its `.q2q.resume` file to resume later.
+`Transfer::subscribe_progress()` exposes `active_peers` for WebRTC connections and `active_cdn_requests` for HTTP data or hash-table requests. Dropping or cancelling the transfer cancels its HTTP requests. Preserve the destination and its matching checkpoint under the Client's `storage_dir/checkpoints` to resume later.
 
 Full-file downloads do not race CDN against slow peers or switch back to P2P automatically. Hash tables are not fetched in ranges.
 

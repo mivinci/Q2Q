@@ -7,6 +7,7 @@ pub use crate::peer::PeerSession;
 pub use crate::publication::{
   Publication, PublicationState, UploadConnectionProgress, UploadConnectionState, UploadProgress,
 };
+pub use crate::source_file::{PublishPhase, PublishProgress};
 pub use crate::transfer::{
   DownloadPeerProgress, DownloadPeerState, Transfer, TransferError, TransferProgress, TransferState,
 };
@@ -18,7 +19,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{OnceCell, Semaphore};
+use tokio::sync::{OnceCell, Semaphore, watch};
 use url::Url;
 
 /// Start configuring a client. The builder performs no network requests.
@@ -26,9 +27,78 @@ pub fn builder() -> Builder {
   Builder::default()
 }
 
+/// Result of checking whether an existing download can be resumed offline.
+pub enum OfflineResume {
+  /// There is no existing destination with a checkpoint. Start a new download;
+  /// an existing destination will still be protected from being overwritten.
+  NoCheckpoint,
+  /// A checkpoint was found and validated, but some blocks need network recovery.
+  NeedsNetwork(OfflineDownload),
+  /// Every block was revalidated locally; wait on this handle to finish syncing.
+  Complete(Transfer),
+}
+
+/// A partially complete destination whose checkpoint and receipts were already
+/// validated by [`resume_offline`]. Keep it until networking resumes so the
+/// destination is not re-read and revalidated for each Track attempt.
+pub struct OfflineDownload {
+  seed: q2q_primitives::seed::Seed,
+  path: PathBuf,
+  checkpoint_directory: PathBuf,
+  store: crate::destination::Destination,
+}
+
+/// Check for and validate an existing destination checkpoint without configuring
+/// or connecting to Track. Returns `NoCheckpoint` when there is nothing to resume,
+/// `NeedsNetwork` with a reusable handle when valid receipts leave missing blocks,
+/// or `Complete` when all blocks are already verified. The storage directory must
+/// match the one used to create the checkpoint.
+pub async fn resume_offline(
+  seed: &q2q_primitives::seed::Seed,
+  path: impl Into<PathBuf>,
+  storage_dir: impl Into<PathBuf>,
+) -> Result<OfflineResume, TransferError> {
+  let path = path.into();
+  let checkpoint_directory = storage_dir.into().join("checkpoints");
+  if !tokio::fs::try_exists(&path).await? {
+    return Ok(OfflineResume::NoCheckpoint);
+  }
+  let checkpoint_path = path.clone();
+  let checkpoint_directory_for_check = checkpoint_directory.clone();
+  let has_checkpoint = tokio::task::spawn_blocking(move || {
+    crate::download_store::has_checkpoint(&checkpoint_path, &checkpoint_directory_for_check)
+  })
+  .await??;
+  if !has_checkpoint {
+    return Ok(OfflineResume::NoCheckpoint);
+  }
+  let store =
+    crate::destination::Destination::open_in(seed, &path, true, &checkpoint_directory).await?;
+  let bits = store.bitfield().await?;
+  if !store.complete().await? {
+    return Ok(OfflineResume::NeedsNetwork(OfflineDownload {
+      seed: seed.clone(),
+      path,
+      checkpoint_directory,
+      store,
+    }));
+  }
+  let progress = crate::progress::channel(seed, &bits);
+  let mut guard = crate::destination::DownloadGuard::new(store.clone());
+  Ok(OfflineResume::Complete(Transfer::start(
+    progress,
+    async move {
+      store.finish().await?;
+      guard.finish();
+      Ok(path)
+    },
+  )))
+}
+
 #[derive(Default)]
 pub struct Builder {
   track_url: Option<String>,
+  accept_invalid_certs: bool,
   identity_file: Option<PathBuf>,
   storage_dir: Option<PathBuf>,
   max_download_peers: Option<usize>,
@@ -40,6 +110,14 @@ pub struct Builder {
 }
 
 impl Builder {
+  /// Skip HTTPS certificate and hostname verification for Track, CDN content,
+  /// and proof metadata. Disabled by default; enable only for debugging.
+  /// Punch key pinning, Peer authentication and content verification still apply.
+  pub fn danger_accept_invalid_certs(mut self, accept: bool) -> Self {
+    self.accept_invalid_certs = accept;
+    self
+  }
+
   /// Track's logical HTTP(S) address. Punch and TURN endpoints arrive later
   /// from Track's announce response.
   pub fn track_url(mut self, url: impl Into<String>) -> Self {
@@ -154,6 +232,7 @@ impl Builder {
 
     Ok(Client {
       track_url,
+      accept_invalid_certs: self.accept_invalid_certs,
       storage_dir,
       identity,
       session: Arc::new(OnceCell::new()),
@@ -173,6 +252,7 @@ impl Builder {
 /// A local peer that can publish and download through a shared control session.
 pub struct Client {
   track_url: Url,
+  accept_invalid_certs: bool,
   storage_dir: PathBuf,
   identity: Identity,
   session: Arc<OnceCell<Arc<ControlSession>>>,
@@ -200,9 +280,14 @@ impl Client {
     let cell = self.session.clone();
     let identity = self.identity.clone();
     let url = self.track_url.clone();
+    let accept_invalid_certs = self.accept_invalid_certs;
     async move {
       cell
-        .get_or_try_init(|| async { ControlSession::connect(&identity, &url).await.map(Arc::new) })
+        .get_or_try_init(|| async {
+          ControlSession::connect(&identity, &url, accept_invalid_certs)
+            .await
+            .map(Arc::new)
+        })
         .await
         .cloned()
     }
@@ -221,8 +306,33 @@ impl Client {
   /// closed or dropped. Multiple content hashes share one upload router and the
   /// client's upload budgets; duplicate active hashes are rejected.
   pub async fn publish_file(&self, path: impl Into<PathBuf>) -> Result<Publication, TransferError> {
-    let prepared = self.prepare_file(path).await?;
+    self.publish_file_inner(path.into(), None).await
+  }
+
+  /// Publish a local file and report hashing/announcement progress through a
+  /// coalesced watch channel. Updates are emitted at most about every 100 ms.
+  pub async fn publish_file_with_progress(
+    &self,
+    path: impl Into<PathBuf>,
+    progress: watch::Sender<PublishProgress>,
+  ) -> Result<Publication, TransferError> {
+    self.publish_file_inner(path.into(), Some(progress)).await
+  }
+
+  async fn publish_file_inner(
+    &self,
+    path: PathBuf,
+    progress: Option<watch::Sender<PublishProgress>>,
+  ) -> Result<Publication, TransferError> {
+    let prepared = self.prepare_file_inner(path, progress.clone()).await?;
     crate::destination::check_seed(prepared.seed())?;
+    if let Some(progress) = progress {
+      progress.send_replace(PublishProgress {
+        phase: PublishPhase::Announcing,
+        bytes_read: prepared.seed().info.length,
+        total_bytes: prepared.seed().info.length,
+      });
+    }
     let session = self.connect().await?;
     Publication::start(
       Arc::new(prepared),
@@ -244,7 +354,19 @@ impl Client {
     seed: &q2q_primitives::seed::Seed,
     path: impl Into<PathBuf>,
   ) -> Result<Transfer, TransferError> {
-    self.start_download(seed, path.into(), false).await
+    self.start_download(seed, path.into(), false, false).await
+  }
+
+  /// Download after requiring the initial Track session and peer query to
+  /// succeed. This is useful when a caller wants to try another Track before
+  /// allowing the transfer to fall back to the seed's CDN. Once peers are
+  /// discovered, normal peer and CDN recovery behavior applies.
+  pub async fn download_with_track_discovery(
+    &self,
+    seed: &q2q_primitives::seed::Seed,
+    path: impl Into<PathBuf>,
+  ) -> Result<Transfer, TransferError> {
+    self.start_download(seed, path.into(), false, true).await
   }
 
   /// Download while sharing durably verified blocks. The returned publication
@@ -274,7 +396,9 @@ impl Client {
     path: PathBuf,
     resume: bool,
   ) -> Result<(Transfer, Publication), TransferError> {
-    let store = crate::destination::Destination::open(seed, &path, resume).await?;
+    let checkpoint_directory = self.storage_dir.join("checkpoints");
+    let store =
+      crate::destination::Destination::open_in(seed, &path, resume, &checkpoint_directory).await?;
     let sharing = self.share_destination(&store).await?;
     let transfer = crate::download::start_with_store(
       self,
@@ -304,7 +428,7 @@ impl Client {
     .await
   }
 
-  /// Resume an existing SDK destination using its `.q2q.resume` receipts.
+  /// Resume an existing SDK destination using receipts in this client's storage directory.
   /// Every recorded block is read and reverified against the seed root; missing
   /// or corrupt blocks are fetched again. A complete file needs no network.
   pub async fn resume_download(
@@ -312,7 +436,71 @@ impl Client {
     seed: &q2q_primitives::seed::Seed,
     path: impl Into<PathBuf>,
   ) -> Result<Transfer, TransferError> {
-    self.start_download(seed, path.into(), true).await
+    self.start_download(seed, path.into(), true, false).await
+  }
+
+  /// Resume after requiring the initial Track session and peer query to
+  /// succeed. Once peers are discovered, normal peer and CDN recovery behavior
+  /// applies.
+  pub async fn resume_download_with_track_discovery(
+    &self,
+    seed: &q2q_primitives::seed::Seed,
+    path: impl Into<PathBuf>,
+  ) -> Result<Transfer, TransferError> {
+    self.start_download(seed, path.into(), true, true).await
+  }
+
+  /// Continue a partially complete destination already validated by
+  /// [`resume_offline`]. The handle must belong to this client's storage
+  /// directory. Receipts are reused without re-reading the destination.
+  pub async fn resume_download_from_offline(
+    &self,
+    offline: &OfflineDownload,
+  ) -> Result<Transfer, TransferError> {
+    self.start_offline_download(offline, false).await
+  }
+
+  /// Continue a validated offline resume while requiring initial Track peer
+  /// discovery to succeed. This lets callers try another Track without
+  /// revalidating the destination after each failed candidate.
+  pub async fn resume_download_from_offline_with_track_discovery(
+    &self,
+    offline: &OfflineDownload,
+  ) -> Result<Transfer, TransferError> {
+    self.start_offline_download(offline, true).await
+  }
+
+  async fn start_offline_download(
+    &self,
+    offline: &OfflineDownload,
+    require_track_discovery: bool,
+  ) -> Result<Transfer, TransferError> {
+    if offline.checkpoint_directory != self.storage_dir.join("checkpoints") {
+      return Err(TransferError::Checkpoint(
+        "offline resume belongs to a different client storage directory".into(),
+      ));
+    }
+    if require_track_discovery {
+      crate::download::start_with_store_and_track_discovery(
+        self,
+        &offline.seed,
+        offline.path.clone(),
+        true,
+        self.max_download_peers,
+        offline.store.clone(),
+      )
+      .await
+    } else {
+      crate::download::start_with_store(
+        self,
+        &offline.seed,
+        offline.path.clone(),
+        true,
+        self.max_download_peers,
+        Some(offline.store.clone()),
+      )
+      .await
+    }
   }
 
   async fn start_download(
@@ -320,18 +508,35 @@ impl Client {
     seed: &q2q_primitives::seed::Seed,
     path: PathBuf,
     resume: bool,
+    require_track_discovery: bool,
   ) -> Result<Transfer, TransferError> {
-    crate::download::start(self, seed, path, resume, self.max_download_peers).await
+    if require_track_discovery {
+      crate::download::start_with_track_discovery(self, seed, path, resume, self.max_download_peers)
+        .await
+    } else {
+      crate::download::start(self, seed, path, resume, self.max_download_peers).await
+    }
   }
 
   /// Prepare a local file for seeding without announcing it to the network.
   /// The returned handle checks each block again before it can be uploaded.
   pub async fn prepare_file(&self, path: impl Into<PathBuf>) -> Result<PreparedFile, PrepareError> {
-    let path = path.into();
+    self.prepare_file_inner(path.into(), None).await
+  }
+
+  async fn prepare_file_inner(
+    &self,
+    path: PathBuf,
+    progress: Option<watch::Sender<PublishProgress>>,
+  ) -> Result<PreparedFile, PrepareError> {
     let track_url = self.track_url.to_string();
     let reads = self.upload_reads.clone();
     tokio::task::spawn_blocking(move || {
-      PreparedFile::open(path, track_url).map(|source| source.with_read_limit(reads))
+      let prepared = match progress {
+        Some(progress) => PreparedFile::open_with_progress(path, track_url, progress),
+        None => PreparedFile::open(path, track_url),
+      };
+      prepared.map(|source| source.with_read_limit(reads))
     })
     .await
     .map_err(PrepareError::Task)?
@@ -343,6 +548,10 @@ impl Client {
 
   pub fn peer_id(&self) -> &PeerId {
     self.identity.peer_id()
+  }
+
+  pub(crate) fn accept_invalid_certs(&self) -> bool {
+    self.accept_invalid_certs
   }
 
   pub fn public_key(&self) -> [u8; 32] {

@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 #[cfg(not(any(unix, windows)))]
 use std::{
   io::{Seek, SeekFrom},
@@ -15,7 +15,25 @@ use std::{
 };
 #[cfg(test)]
 use tokio::sync::OwnedSemaphorePermit;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
+
+/// Current stage of publishing a local file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PublishPhase {
+  /// Reading and hashing the source file.
+  #[default]
+  Preparing,
+  /// Connecting to Track and announcing the prepared seed.
+  Announcing,
+}
+
+/// Coalesced progress for preparing and announcing a publication.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PublishProgress {
+  pub phase: PublishPhase,
+  pub bytes_read: u64,
+  pub total_bytes: u64,
+}
 
 /// A locally prepared source. Use `Client::publish_file` to announce and serve it.
 /// Clones share the same opened file, immutable metadata, proof tree and read budget.
@@ -33,6 +51,22 @@ pub struct PreparedFile {
 
 impl PreparedFile {
   pub(crate) fn open(path: PathBuf, track_url: String) -> Result<Self, PrepareError> {
+    Self::open_inner(path, track_url, None)
+  }
+
+  pub(crate) fn open_with_progress(
+    path: PathBuf,
+    track_url: String,
+    progress: watch::Sender<PublishProgress>,
+  ) -> Result<Self, PrepareError> {
+    Self::open_inner(path, track_url, Some(progress))
+  }
+
+  fn open_inner(
+    path: PathBuf,
+    track_url: String,
+    progress: Option<watch::Sender<PublishProgress>>,
+  ) -> Result<Self, PrepareError> {
     let name = path
       .file_name()
       .and_then(|name| name.to_str())
@@ -44,10 +78,19 @@ impl PreparedFile {
       return Err(PrepareError::NotRegularFile);
     }
     let length = before.len();
+    if let Some(progress) = &progress {
+      progress.send_replace(PublishProgress {
+        phase: PublishPhase::Preparing,
+        bytes_read: 0,
+        total_bytes: length,
+      });
+    }
     let block_size = DEFAULT_BLOCK_SIZE as usize;
     let block_count = length.div_ceil(DEFAULT_BLOCK_SIZE as u64);
     let mut builder = SeedBuilder::new(length).map_err(|_| PrepareError::TooManyBlocks)?;
     let mut buffer = vec![0u8; block_size];
+    let mut bytes_read = 0;
+    let mut last_progress = Instant::now();
     for index in 0..block_count {
       let start = index * DEFAULT_BLOCK_SIZE as u64;
       let bytes = (length - start).min(DEFAULT_BLOCK_SIZE as u64) as usize;
@@ -57,6 +100,26 @@ impl PreparedFile {
       builder
         .update(&buffer[..bytes])
         .map_err(|_| PrepareError::TooManyBlocks)?;
+      bytes_read += bytes as u64;
+      if let Some(progress) = &progress
+        && (last_progress.elapsed() >= Duration::from_millis(100) || index + 1 == block_count)
+      {
+        progress.send_replace(PublishProgress {
+          phase: PublishPhase::Preparing,
+          bytes_read,
+          total_bytes: length,
+        });
+        last_progress = Instant::now();
+      }
+    }
+    if block_count == 0
+      && let Some(progress) = &progress
+    {
+      progress.send_replace(PublishProgress {
+        phase: PublishPhase::Preparing,
+        bytes_read: 0,
+        total_bytes: 0,
+      });
     }
     let after = file.metadata().map_err(PrepareError::Io)?;
     if after.len() != length
