@@ -1,6 +1,6 @@
 # Command-line client
 
-`q2q-cli` builds the `q2q` executable. It uses the Rust SDK to publish, download,
+`q2q` builds the `q2q` executable. It uses the Rust SDK to publish, download,
 and resume files; Track and Punch are operated separately. See [Deploy](./deploy.md)
 for network setup.
 
@@ -9,7 +9,7 @@ for network setup.
 From the repository root:
 
 ```sh
-cargo install --path crates/q2q-cli --locked
+cargo install --path crates/q2q --locked
 q2q --help
 ```
 

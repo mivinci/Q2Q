@@ -1,31 +1,59 @@
-//! Q2Q core: identity, seed, Merkle proofs and local storage, all network-free.
+//! Client SDK for publishing and downloading content on a Q2Q network.
 //!
-//! This crate never opens a network connection; the only I/O is local disk in
-//! the store module. Transport, wire codec and scheduling live elsewhere and
-//! call into it.
-//!
-//! - `bencode` — deterministic encoding, the basis of `info_hash` and signatures
-//! - `merkle` — tree, proofs and verification (RFC 6962 shape)
-//! - `seed` — info dict, `info_hash`, magnet links
-//! - `seed_builder` — incremental byte-stream hashing and seed construction
-//! - `identity` — Ed25519 keys, `peer_id`, self-signed tickets
-//! - `mac` — HMAC-SHA-256, the cheap follow-up once a ticket has been signed
-//! - `block` — one block's state and piece bitmap, no I/O
-//! - `file` — in-place writes, progress and leaf-cache persistence
-//!
-//! Default features keep local storage and system random key generation enabled.
-//! Disable `storage` and `random` for compute-only WebAssembly consumers.
+//! The SDK prepares a persistent identity, publishes local files and downloads
+//! verified blocks through authenticated WebRTC peer sessions.
 
-pub mod bencode;
-pub mod bencode_serde;
-pub mod block;
-pub mod cache;
-#[cfg(feature = "storage")]
-pub mod file;
-pub mod identity;
-pub mod mac;
-pub mod merkle;
-pub mod peer_auth;
-pub mod peer_wire;
-pub mod seed;
-pub mod seed_builder;
+mod admission;
+mod block_queue;
+mod cdn;
+mod control;
+mod destination;
+mod discovery;
+mod download;
+mod download_policy;
+mod download_progress;
+mod download_store;
+mod error;
+mod identity;
+mod online;
+mod peer;
+mod peer_identity;
+mod peer_transfer;
+mod progress;
+mod punch_transport;
+mod reader;
+mod scheduler;
+mod signal_router;
+mod source_file;
+mod task_scope;
+pub mod transfer;
+mod upload;
+mod upload_cache;
+mod upload_progress;
+mod upload_rate;
+mod upload_router;
+mod upload_session;
+mod upload_source;
+mod webrtc_transport;
+
+pub mod client;
+pub mod publication;
+
+/// The exact wire shapes used by both the SDK and the services.
+pub mod protocol {
+  pub use q2q_primitives::peer_wire as peer;
+  pub use q2q_punch::message as punch;
+  pub use q2q_track::wire as track;
+}
+
+#[cfg(test)]
+#[path = "../tests/http.rs"]
+mod test_http;
+
+#[cfg(test)]
+#[path = "../tests/destination.rs"]
+mod test_destination;
+
+#[cfg(test)]
+#[path = "../tests/upload_cache_bench.rs"]
+mod upload_cache_bench;

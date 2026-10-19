@@ -66,7 +66,7 @@ Selection filters before filling the requested count. It scans at most 512 live 
 The original `session.query(&hash)` keeps Track's default. For a chosen count or continuation:
 
 ```rust
-use q2q::client::QueryOptions;
+use q2q_core::client::QueryOptions;
 let page = session.query_with_options(&hash, QueryOptions {
     limit: Some(8),
     cursor: None,

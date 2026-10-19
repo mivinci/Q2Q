@@ -22,9 +22,10 @@
 
 ## crate 与协议归属
 
-- `q2q`：客户端 SDK，公共构建入口使用 **`q2q::client::builder()`**。
-- `q2q-core`：内容身份、Seed、Merkle、块/文件基础能力及 Peer 数据面协议等双方共用的领域能力。
-- 增量种子构建放在 `q2q-core::seed_builder`，SDK 的本地文件准备复用它。`q2q-wasm` 同时提供 `@q2q/wasm` 工作区包；业务代码通过包导出使用绑定，不导入 Cargo target。S3 读取、平台队列任务和凭据不进入 core。平台后台处理已接线并完成本地验证，尚未上线，见 [种子处理方案](../todos/platform-seed-processing.md)。
+- `q2q-core`：客户端 SDK，公共构建入口使用 **`q2q_core::client::builder()`**。
+- `q2q-primitives`：内容身份、Seed、Merkle、块/文件基础能力及 Peer 数据面协议等双方共用的领域能力。
+- 增量种子构建放在 `q2q_primitives::seed_builder`，SDK 的本地文件准备复用它。`q2q-wasm` 同时提供 `@q2q/wasm` 工作区包；业务代码通过包导出使用绑定，不导入 Cargo target。S3 读取、平台队列任务和凭据不进入 primitives。平台后台处理已接线并完成本地验证，尚未上线，见 [种子处理方案](../todos/platform-seed-processing.md)。
+- `q2q`：命令行客户端包与可执行文件，依赖 `q2q-core` SDK。
 - `q2q-track` / `q2q-punch`：各服务的协议类型与可复用逻辑，尽量保持网络/系统无关；服务进程的 HTTP/QUIC、配置与运行时接线放在对应 `*-server` crate。
 - 协议属于哪个组件，就优先放在该组件的库中；不因为“客户端和服务端共用”就一律搬进 core，也不默认另建 `q2q-protocol`。
 - Redis 状态实现放在 `q2q-track`，用 **`redis` feature** 隔离，不另起平行实现 crate。

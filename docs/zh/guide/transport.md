@@ -124,7 +124,7 @@ Punch 常驻信道只有一个读取者。Client 上传路由器将通过票据�
 ### 总上传速率
 
 ```rust
-let client = q2q::client::builder()
+let client = q2q_core::client::builder()
     // ... Track、身份文件和存储目录配置 ...
     .max_upload_peers(4)
     .upload_rate_limit(10 * 1024 * 1024) // 此 Client 总计的字节/秒
@@ -150,8 +150,8 @@ loop {
     let snapshot = updates.borrow_and_update().clone();
     // 使用 snapshot 更新 UI；不要跨 await 持有 watch 借用。
     if matches!(snapshot.state,
-        q2q::publication::PublicationState::Closed
-        | q2q::publication::PublicationState::Failed) {
+        q2q_core::publication::PublicationState::Closed
+        | q2q_core::publication::PublicationState::Failed) {
         break;
     }
     if updates.changed().await.is_err() { break; }
@@ -175,7 +175,7 @@ loop {
 ### 完整源的并发读取
 
 ```rust
-let client = q2q::client::builder()
+let client = q2q_core::client::builder()
     // ... Track、身份和存储配置 ...
     .max_upload_peers(8)
     .max_upload_reads(4) // 默认 4，范围 1–16
@@ -214,7 +214,7 @@ sharing.close().await?;
 ## 有界上传块缓存
 
 ```rust
-let client = q2q::client::builder()
+let client = q2q_core::client::builder()
     // ... Track、身份和存储配置 ...
     .upload_cache_bytes(16 * 1024 * 1024) // 默认 16 MiB，最多 256 MiB
     .build().await?;

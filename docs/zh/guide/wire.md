@@ -1,6 +1,6 @@
 # 消息编码
 
-本文记录当前 Rust SDK 实际发送和接收的文件协议。网络无关的编码定义在 `q2q-core::peer_wire`，握手签名输入在 `q2q-core::peer_auth`；SDK 通过 `q2q::protocol::peer` 重导出 Peer 编码。
+本文记录当前 Rust SDK 实际发送和接收的文件协议。网络无关的编码定义在 `q2q_primitives::peer_wire`，握手签名输入在 `q2q_primitives::peer_auth`；SDK 通过 `q2q_core::protocol::peer` 重导出 Peer 编码。
 
 连接与通道配置见 [传输层](./transport)，消息与持久化之间的顺序见 [调度](./scheduling)。本页描述当前实现，设计稿中的 pause/resume 和磁力链 info 获取尚未接入。
 
@@ -40,7 +40,7 @@
 
 位图的 block 0 对应首字节最高位，未使用的末尾低位必须为 0；长度必须恰好覆盖 block 数，最多 65,536 块。允许部分来源位图，只请求该连接宣告可用的块；Have 更新连接位图并唤醒选块，越界索引使连接失败。Track 只保存部分/完整状态，不保存块位图。
 
-`proof` 使用 `q2q_core::merkle::Proof` 的 JSON 表示。单块证明的 count 为 1、nodes 最多 64 个、leaf_hashes 最多 1 个；是否有效仍需按块字节、索引、文件块数和可信根验证。Seed 版本与文件协议 envelope 版本是不同的版本字段。
+`proof` 使用 `q2q_primitives::merkle::Proof` 的 JSON 表示。单块证明的 count 为 1、nodes 最多 64 个、leaf_hashes 最多 1 个；是否有效仍需按块字节、索引、文件块数和可信根验证。Seed 版本与文件协议 envelope 版本是不同的版本字段。
 
 ## 二进制 piece
 

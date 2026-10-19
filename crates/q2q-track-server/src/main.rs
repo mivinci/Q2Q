@@ -7,7 +7,7 @@ mod api;
 
 use axum::Router;
 use clap::Parser;
-use q2q_core::identity::PeerId;
+use q2q_primitives::identity::PeerId;
 use q2q_track::redis::RedisState;
 use q2q_track::state::{
   Candidate, InfoHash, MemoryState, OnlineRecord, PunchAssignment, StateError, TrackState,

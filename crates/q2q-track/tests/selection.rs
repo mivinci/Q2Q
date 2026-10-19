@@ -1,4 +1,4 @@
-use q2q_core::identity::{PeerId, peer_id_from_public_key};
+use q2q_primitives::identity::{PeerId, peer_id_from_public_key};
 use q2q_track::{
   selection::{Query, SelectionError},
   state::{MemoryState, OnlineRecord, PunchAssignment, TrackState},

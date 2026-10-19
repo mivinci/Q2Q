@@ -4,7 +4,7 @@
 
 ## 必须保持的行为
 
-- 兼容 `q2q::client::builder()`、发布、下载、恢复、open 和低层 PeerSession API。
+- 兼容 `q2q_core::client::builder()`、发布、下载、恢复、open 和低层 PeerSession API。
 - 普通下载仍先耗尽当前 Peer 候选再进入 CDN；VOD 仍使用固定读取窗口和紧急块回退。
 - 网络字节在写入前验证；磁盘复核、数据同步、检查点同步成功后才完成租约、增长进度、发送 Have/BlockDone。
 - 每块只有一个提交者；取消不释放在途阻塞操作持有的目标锁；磁盘失败阻止后续提交。

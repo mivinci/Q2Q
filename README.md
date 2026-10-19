@@ -16,9 +16,7 @@
 <p>
   <a href="https://docs.q2q.app/">Docs</a> ·
   <a href="https://platform.q2q.app/">Platform</a> ·
-  <a href="docs/spec.md">Design</a> ·
-  <a href="https://github.com/mivinci/Q2Q/issues">Issues</a> ·
-  <a href="LICENSE">License</a>
+  <a href="https://github.com/mivinci/Q2Q/issues">Issues</a>
 </p>
 
 <p>
@@ -41,15 +39,19 @@ building and transferring Q2Q seeds.
 
 ## Components
 
-- **Q2Q Platform** — manage files and seed publications, configure storage and
-  Track networks, and organize work in personal or team projects.
-- **Q2Q Core** — network-independent Rust primitives for identity, seed files,
-  Merkle proofs and local storage. The same core can be compiled to WebAssembly.
-- **Peers and CLI** — publish and download files over the Q2Q data plane, using
-  peer-to-peer transfer with HTTP range requests as a fallback.
-- **Track and Punch** — self-hostable control-plane services. Track helps peers
-  discover one another; Punch relays connection signaling. They help establish
-  connections but do not carry file data.
+- **Q2Q Platform** — manage projects, files, seed publications and storage
+  settings in the hosted workspace.
+- **Q2Q Core (`q2q-core`)** — build clients that publish and download files,
+  verify content, and use peer-to-peer transfer with HTTP range fallback.
+- **Shared primitives (`q2q-primitives`)** — network-independent identity, seed,
+  Merkle, storage and peer-protocol building blocks. `q2q-wasm` exposes seed
+  building to JavaScript and TypeScript.
+- **Command-line client (`q2q`)** — publish and download files from a terminal
+  using Q2Q Core; the installed executable is also named `q2q`.
+- **Track and Punch services (`q2q-track-server`, `q2q-punch-server`)** —
+  self-hostable control-plane services for peer discovery and connection
+  signaling. Shared logic lives in `q2q-track` and `q2q-punch`; these services
+  help establish connections but do not carry file data.
 
 ## Get started
 
@@ -64,7 +66,7 @@ and usage guides.
 Install the CLI from a checkout of this repository:
 
 ```sh
-cargo install --path crates/q2q-cli --locked
+cargo install --path crates/q2q --locked
 ```
 
 Publish a file and create its seed, then give the seed to a downloader:

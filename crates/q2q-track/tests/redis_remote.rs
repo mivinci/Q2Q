@@ -4,7 +4,7 @@
 
 #![cfg(feature = "redis")]
 
-use q2q_core::identity::peer_id_from_public_key;
+use q2q_primitives::identity::peer_id_from_public_key;
 use q2q_track::redis::RedisState;
 use q2q_track::state::{OnlineRecord, PunchAssignment, StateError, TrackState};
 

@@ -23,7 +23,7 @@ Track 先过滤再补齐数量，每批读取 64 个存储候选，每个请求�
 保留 `session.query(&hash)`，使用 Track 的默认数量。指定数量或续页：
 
 ```rust
-use q2q::client::QueryOptions;
+use q2q_core::client::QueryOptions;
 let page = session.query_with_options(&hash, QueryOptions {
     limit: Some(8),
     cursor: None,

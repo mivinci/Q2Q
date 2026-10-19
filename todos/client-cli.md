@@ -2,7 +2,7 @@
 
 ## 目标
 
-建立 `crates/q2q-cli`，可执行文件名 `q2q`。通过 SDK 公共 API 完成发布、下载及显式恢复，让开发者无需编写 Rust 即可使用现有数据面。[读写解耦](shared-storage-reads.md)继续保留为独立待办，不在本项实施。
+建立 `crates/q2q`，可执行文件名 `q2q`。通过 SDK 公共 API 完成发布、下载及显式恢复，让开发者无需编写 Rust 即可使用现有数据面。[读写解耦](shared-storage-reads.md)继续保留为独立待办，不在本项实施。
 
 ## 第一版范围
 
@@ -33,7 +33,7 @@
 - `src/args.rs`：命令参数及环境变量；`src/app.rs`：仅通过公开 SDK 进行发布与下载；`src/progress.rs`：周期采样；`src/shutdown.rs`：信号和初始化清理；`src/main.rs`：错误链及退出码。
 - 种子导出使用同目录临时文件与 persist_noclobber，写入并同步后才原子发布；不会覆盖已有目标。输入种子限制 8 MiB。
 - 发布导出/输出错误时仍等待 Publication::close；下载中断会丢弃持有 Transfer 的 wait future，沿用 SDK 的取消及已提交记录保留语义。已开始的阻塞任务不会因取消立刻停止，Tokio runtime 退出等待这些阻塞任务结束。
-- `cargo check -p q2q-cli --offline`、`cargo build -p q2q-cli --offline`、CLI 及全工作区/all-features Clippy（`-D warnings`）通过；`cargo fmt --all -- --check`、`git diff --check` 通过。
+- `cargo check -p q2q --offline`、`cargo build -p q2q --offline`、CLI 及全工作区/all-features Clippy（`-D warnings`）通过；`cargo fmt --all -- --check`、`git diff --check` 通过。
 - 中英文 CLI 指南、侧边栏和 README 入口已更新，`npm run docs:build` 通过（保留已有 bundle 体积提示）。
 - CLI 普通测试 11 项通过：7 项进程行为测试覆盖帮助/版本、参数错误、种子输入边界、种子覆盖保护、空文件下载及完整离线恢复、已有目标保护、环境变量优先级；4 项生命周期测试覆盖初始化成功、中断等待句柄、初始化错误和信号错误。
 - 真实本地 Track/Punch 测试单独运行通过（默认 ignored）：独立 CLI 发布 4 MiB 文件 → 下载已提交块 → SIGINT 返回 130 → 使用同身份恢复并核对全部字节 → SIGTERM 关闭发布端并返回 130 → 新会话确认 Track 查询无该来源 → 发布端退出后完整离线恢复。服务在测试结束时清理。

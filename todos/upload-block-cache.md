@@ -38,7 +38,7 @@
 | 重复随机 seek | 128 / 93 ms | 17 / 19 ms |
 | 下载中共享 | 128 / 1019 ms | 16 / 389 ms |
 
-复现：`cargo test -p q2q source_read_workloads --offline -- --ignored --nocapture`。无缓存模式绕过保留与合并，作为原有读取路径对照；不对耗时设断言。
+复现：`cargo test -p q2q-core source_read_workloads --offline -- --ignored --nocapture`。无缓存模式绕过保留与合并，作为原有读取路径对照；不对耗时设断言。
 
 ## 验证记录
 

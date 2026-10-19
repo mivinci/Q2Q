@@ -13,7 +13,7 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use parking_lot::Mutex;
-use q2q_core::identity::PeerId;
+use q2q_primitives::identity::PeerId;
 use q2q_punch::message::{Request, Response, SignalResponse};
 use q2q_punch::signal::{SignalError, SignalRequest, SignalType, verify_connect};
 use std::collections::HashMap;

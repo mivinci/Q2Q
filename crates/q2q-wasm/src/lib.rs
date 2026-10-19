@@ -1,11 +1,11 @@
 //! Byte-oriented bindings only. Network access and task state belong to the host.
-use q2q_core::seed_builder::SeedBuilder as CoreBuilder;
+use q2q_primitives::seed_builder::SeedBuilder as CoreBuilder;
 use wasm_bindgen::prelude::*;
 
 /// Inspection stays local to the caller; no source URL is ever fetched here.
 #[wasm_bindgen]
 pub fn decode_seed(bytes: &[u8]) -> Result<String, JsError> {
-  let seed = q2q_core::seed::Seed::parse(bytes)?;
+  let seed = q2q_primitives::seed::Seed::parse(bytes)?;
   seed.validate()?;
   let hex = |value: &[u8]| {
     value
@@ -38,7 +38,7 @@ pub fn seed_with_network(
   track: Option<String>,
 ) -> Result<Vec<u8>, JsError> {
   let encoded = seed_with_source(bytes, source)?;
-  let mut seed = q2q_core::seed::Seed::parse(&encoded)?;
+  let mut seed = q2q_primitives::seed::Seed::parse(&encoded)?;
   seed.track_list = track
     .filter(|value| !value.is_empty())
     .into_iter()
@@ -49,7 +49,7 @@ pub fn seed_with_network(
 /// Source hints live outside info; changing them must preserve content identity.
 #[wasm_bindgen]
 pub fn seed_with_source(bytes: &[u8], source: String) -> Result<Vec<u8>, JsError> {
-  let mut seed = q2q_core::seed::Seed::parse(bytes)?;
+  let mut seed = q2q_primitives::seed::Seed::parse(bytes)?;
   seed.validate()?;
   if seed.leaf_hashes.is_none()
     || source.len() > 4096
@@ -65,7 +65,7 @@ pub fn seed_with_source(bytes: &[u8], source: String) -> Result<Vec<u8>, JsError
 /// Rebuild publication proof bytes from the validated, digest-pinned inline seed.
 #[wasm_bindgen]
 pub fn publication_proof(bytes: &[u8]) -> Result<Vec<u8>, JsError> {
-  let seed = q2q_core::seed::Seed::parse(bytes)?;
+  let seed = q2q_primitives::seed::Seed::parse(bytes)?;
   seed.validate()?;
   let leaves = seed
     .leaf_hashes

@@ -9,6 +9,6 @@ license = "MIT"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-q2q-core = { path = "../q2q-core", default-features = false }
+q2q-primitives = { path = "../q2q-primitives", default-features = false }
 wasm-bindgen = "0.2"
 serde_json = "1.0"

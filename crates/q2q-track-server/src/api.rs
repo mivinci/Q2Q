@@ -11,7 +11,7 @@ use axum::{Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use parking_lot::RwLock;
-use q2q_core::identity::PeerId;
+use q2q_primitives::identity::PeerId;
 use q2q_ratelimit::{Limiter, RateLimitLayer, Rule};
 use q2q_track::auth::{self, AuthError};
 use q2q_track::state::{InfoHash, PunchAssignment, StateError, TrackState, UnixSeconds};
@@ -322,7 +322,7 @@ async fn announce<S: TrackState>(
 /// HMAC-SHA1 of that username under the shared secret.
 fn turn_credential(config: &TrackConfig, user: &str, expires_at: UnixSeconds) -> TurnWire {
   let username = format!("{expires_at}:{user}");
-  let credential = q2q_core::mac::sha1(config.turn_secret.as_bytes(), &[username.as_bytes()]);
+  let credential = q2q_primitives::mac::sha1(config.turn_secret.as_bytes(), &[username.as_bytes()]);
   TurnWire {
     url: config.turn_url.clone(),
     username,
@@ -455,7 +455,7 @@ async fn query<S: TrackState>(
   }
   .select(
     &*app.state,
-    q2q_core::identity::peer_id_from_public_key(&entropy),
+    q2q_primitives::identity::peer_id_from_public_key(&entropy),
   )
   .await
   .map_err(|error| match error {
@@ -489,7 +489,9 @@ mod tests {
   use super::*;
   use axum::body::Body;
   use axum::http::{Request, StatusCode};
-  use q2q_core::identity::{TICKET_VERSION, Ticket, TicketBody, keypair_from_seed, peer_id_of};
+  use q2q_primitives::identity::{
+    TICKET_VERSION, Ticket, TicketBody, keypair_from_seed, peer_id_of,
+  };
   use q2q_ratelimit::PeerAddr;
   use q2q_track::state::MemoryState;
   use tower::ServiceExt;
@@ -1018,7 +1020,7 @@ mod tests {
     let wire = turn_credential(&cfg, "peer-1", 1_700_000_000);
     assert_eq!(wire.username, "1700000000:peer-1");
     // base64 of HMAC-SHA1 under the shared secret
-    let expected = q2q_core::mac::sha1(b"test-secret", &[wire.username.as_bytes()]);
+    let expected = q2q_primitives::mac::sha1(b"test-secret", &[wire.username.as_bytes()]);
     assert_eq!(wire.credential, B64.encode(expected));
   }
 
@@ -1170,8 +1172,8 @@ mod tests {
     let now = q2q_track::state::now();
     let mut holders: Vec<_> = (1u8..=90)
       .map(|seed| {
-        let (key, id) = q2q_core::identity::keypair_from_seed(&[seed; 32]);
-        (id, q2q_core::identity::public_key_of(&key))
+        let (key, id) = q2q_primitives::identity::keypair_from_seed(&[seed; 32]);
+        (id, q2q_primitives::identity::public_key_of(&key))
       })
       .collect();
     holders.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));

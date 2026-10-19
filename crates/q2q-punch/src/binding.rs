@@ -6,7 +6,7 @@
 //! each time.
 
 use parking_lot::Mutex;
-use q2q_core::identity::PeerId;
+use q2q_primitives::identity::PeerId;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -210,7 +210,7 @@ impl Bindings {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use q2q_core::identity::peer_id_from_public_key;
+  use q2q_primitives::identity::peer_id_from_public_key;
 
   fn peer(n: u8) -> PeerId {
     peer_id_from_public_key(&[n; 32])

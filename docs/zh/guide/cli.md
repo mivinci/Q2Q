@@ -1,6 +1,6 @@
 # 命令行客户端
 
-`q2q-cli` 构建名为 `q2q` 的可执行文件，通过 Rust SDK 发布、下载和恢复文件。
+`q2q` 构建名为 `q2q` 的可执行文件，通过 Rust SDK 发布、下载和恢复文件。
 Track 和 Punch 由网络运营方运行，服务配置见[部署](./deploy.md)。
 
 ## 安装
@@ -8,7 +8,7 @@ Track 和 Punch 由网络运营方运行，服务配置见[部署](./deploy.md)�
 在仓库根目录执行：
 
 ```sh
-cargo install --path crates/q2q-cli --locked
+cargo install --path crates/q2q --locked
 q2q --help
 ```
 

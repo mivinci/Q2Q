@@ -7,7 +7,7 @@
 //! and query on another, the lookup has to succeed.
 
 use parking_lot::Mutex;
-use q2q_core::identity::PeerId;
+use q2q_primitives::identity::PeerId;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -294,7 +294,7 @@ impl TrackState for MemoryState {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use q2q_core::identity::peer_id_from_public_key;
+  use q2q_primitives::identity::peer_id_from_public_key;
 
   fn peer(n: u8) -> PeerId {
     peer_id_from_public_key(&[n; 32])

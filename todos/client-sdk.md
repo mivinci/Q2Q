@@ -4,10 +4,10 @@
 
 README 中的使用场景是：发布者在自己的机器做种并向网络宣告，使用者下载大文件或按需播放；应用不需要自建发布后端。Track、Punch 与 STUN/TURN 由网络运营方提供。SDK 必须在交付和上传数据前校验内容，不能把 Track、Punch 或 CDN 当成内容可信源。
 
-对 Rust 应用只暴露一个主 crate：`q2q`。构建入口是 `q2q::client::builder()` 普通函数，同一个 `Client` 可以同时发布与下载。
+对 Rust 应用只暴露一个主 SDK crate：`q2q-core`。构建入口是 `q2q_core::client::builder()` 普通函数，同一个 `Client` 可以同时发布与下载。
 
 ```rust
-let client = q2q::client::builder()
+let client = q2q_core::client::builder()
     .track_url("https://track.example.net")
     .identity_file("./q2q-identity")
     .storage_dir("./q2q-data")
@@ -16,7 +16,7 @@ let client = q2q::client::builder()
 
 let publication = client.publish_file("video.mp4").await?;
 let seed = publication.seed();
-let receiver = q2q::client::builder()
+let receiver = q2q_core::client::builder()
     .track_url("https://track.example.net")
     .identity_file("./receiver-identity")
     .storage_dir("./receiver-data")
@@ -31,15 +31,16 @@ publication.close().await?;
 
 ## 分层
 
-- `q2q-core`：身份、种子、Merkle、block 与本地文件能力，以及网络无关的 `peer_auth` 签名输入和 `peer_wire` 消息编码。
+- `q2q-primitives`：身份、种子、Merkle、block 与本地文件能力，以及网络无关的 `peer_auth` 签名输入和 `peer_wire` 消息编码。
 - `q2q-track::wire`：Track 的 REST 请求/响应类型。`q2q-track` 的 Redis 实现由可选的 `redis` feature 隔离，SDK 使用默认配置时不引入 Redis。
 - `q2q-punch::message`：Punch 的 RPC 与信令消息、签名和 MAC 校验。`q2q-punch::signal` 保留连接状态机，协议类型从 `message` 引用。
-- `q2q`：应用入口与客户端生命周期；使用 `webrtc-rs/webrtc` 的异步 `PeerConnection`。控制消息和证明走可靠有序通道，1024 字节 piece 走不可靠无序通道；封装 Track/Punch 会话、上传、并行下载与进度通知，使用 HTTP Range 在 P2P 不可用时兜底。
+- `q2q-core`：应用入口与客户端生命周期；使用 `webrtc-rs/webrtc` 的异步 `PeerConnection`。控制消息和证明走可靠有序通道，1024 字节 piece 走不可靠无序通道；封装 Track/Punch 会话、上传、并行下载与进度通知，使用 HTTP Range 在 P2P 不可用时兜底。
+- `q2q`：命令行客户端，依赖 `q2q-core` SDK。
 - 平台适配：原生 Rust 先落地；文件/密钥存储和 WebRTC 留出适配边界，再支持浏览器。
 
 ## 阶段
 
-1. **SDK 基础**：建立 `q2q::client::builder()`；持久化 Ed25519 身份并暴露稳定的 `peer_id`；把 Track 和 Punch 的线协议类型放在各自 crate 中，让 SDK 和服务端使用同一套定义。验收：重新构建得到相同 `peer_id`，损坏的身份文件会报错，现有服务端仍使用相同的 JSON 形状。
+1. **SDK 基础**：建立 `q2q_core::client::builder()`；持久化 Ed25519 身份并暴露稳定的 `peer_id`；把 Track 和 Punch 的线协议类型放在各自 crate 中，让 SDK 和服务端使用同一套定义。验收：重新构建得到相同 `peer_id`，损坏的身份文件会报错，现有服务端仍使用相同的 JSON 形状。
 2. **单 Peer 文件传输**：从本机文件生成种子与 Merkle 根，宣告、Punch join，通过 `webrtc-rs/webrtc` 建连、传输并校验 block；`Publication` 和 `Transfer` 管理生命周期。Punch 转发 SDP offer/answer 和 ICE candidate；piece 写入目标文件后经 Merkle 校验才标记 verified 并确认完成。
 3. **可靠下载**：断点续传、多 Peer 取块、进度/取消、CDN 按 block 回退。所有来源经过相同校验；仅已验证的 block 可被读取或上传。
 4. **VOD**：已实现单游标 AsyncRead/AsyncSeek、固定预取窗口与紧急块 CDN 回退；后续可扩展自适应水位和多游标。
@@ -49,7 +50,7 @@ SDK 的高层 API 不要求应用直接发送 `announce`、`join` 或 `piece` �
 
 ## 当前进度
 
-第一阶段已完成：`q2q::client::builder()` 会准备存储目录、创建或读取版本化的 Ed25519 身份文件；Track 和 Punch 的线协议类型由各自 crate 提供。身份文件含私钥，应由应用保存并备份；损坏或权限过宽的既有文件会报错，不会自动生成新身份。
+第一阶段已完成：`q2q_core::client::builder()` 会准备存储目录、创建或读取版本化的 Ed25519 身份文件；Track 和 Punch 的线协议类型由各自 crate 提供。身份文件含私钥，应由应用保存并备份；损坏或权限过宽的既有文件会报错，不会自动生成新身份。
 
 第二阶段已实现首个完整路径：本地准备 → 宣告 → Track 查询 → Punch 同意与信令 → WebRTC 建连与双向身份确认 → bitfield → block 请求与证明 → piece 传输与缺片重传 → Merkle 校验 → 完成。`Client` 复用同一控制会话，可同时发布和下载；文件宣告导致的 Track 会话密钥轮换与查询、心跳串行处理。Punch 的完整推送消息由独立接收任务排队，避免 select 取消正在读取的 QUIC 流而丢失 candidate。后台任务维护在线状态与文件索引租约。
 
@@ -67,7 +68,7 @@ SDK 的高层 API 不要求应用直接发送 `announce`、`join` 或 `piece` �
 
 当前 SDK 在可靠有序的 `q2q-control` DataChannel 上，先交换 JSON 文本消息 `{"type":"identity_hello","v":1,"nonce":"<base64>"}`（32 字节随机挑战），再交换 `{"type":"identity_proof","v":1,"signature":"<base64>"}`（64 字节 Ed25519 签名）。每条消息上限 512 字节，整个确认过程限时 10 秒；错误版本、阶段、字段、长度或签名均失败并关闭 PeerConnection。业务消息不能代替身份消息。
 
-签名输入由 `q2q-core::peer_auth::Transcript` 定义，按顺序拼接域前缀 `q2q/peer-identity/v1\0`、签名方角色（发起方 0 / 接收方 1）、双方公钥（各 32 字节）、内容哈希（32 字节）、连接 ID 的 UTF-8 字节长度（u64 大端）及内容、双方挑战（各 32 字节）、双方 SDP 中 DTLS 证书的 SHA-256 指纹（各 32 字节）。双方字段一律按信令的发起方 / 接收方排序。期望公钥来自已验证的 connect 票据或 Track query 结果，签名绑定当前 DTLS 连接，避免把证明重放到另一会话或通过终止 DTLS 的中间人转发挑战。WebRTC 的远端证书指纹校验由底层完成；SDK 对缺失、非 SHA-256 或互相冲突的 SDP 指纹报错。
+签名输入由 `q2q_primitives::peer_auth::Transcript` 定义，按顺序拼接域前缀 `q2q/peer-identity/v1\0`、签名方角色（发起方 0 / 接收方 1）、双方公钥（各 32 字节）、内容哈希（32 字节）、连接 ID 的 UTF-8 字节长度（u64 大端）及内容、双方挑战（各 32 字节）、双方 SDP 中 DTLS 证书的 SHA-256 指纹（各 32 字节）。双方字段一律按信令的发起方 / 接收方排序。期望公钥来自已验证的 connect 票据或 Track query 结果，签名绑定当前 DTLS 连接，避免把证明重放到另一会话或通过终止 DTLS 的中间人转发挑战。WebRTC 的远端证书指纹校验由底层完成；SDK 对缺失、非 SHA-256 或互相冲突的 SDP 指纹报错。
 
 ### 第三阶段：Peer 故障切换
 
@@ -97,7 +98,7 @@ let path = transfer.wait().await?;
 ### 第三阶段：多 Peer 并行取块与进度通知
 
 ```rust
-let receiver = q2q::client::builder()
+let receiver = q2q_core::client::builder()
     .track_url("https://track.example.net")
     .identity_file("./receiver-identity")
     .storage_dir("./receiver-data")
@@ -111,7 +112,7 @@ let reporter = tokio::spawn(async move {
         let p = *updates.borrow_and_update();
         println!("{} / {} bytes; {} peers; {:?}",
             p.verified_bytes, p.total_bytes, p.active_peers, p.state);
-        if p.state != q2q::client::TransferState::Downloading { break; }
+        if p.state != q2q_core::client::TransferState::Downloading { break; }
         if updates.changed().await.is_err() { break; }
     }
 });
@@ -148,7 +149,7 @@ transfer.wait().await?;
 
 ### 测试布局
 
-SDK 测试统一放在 `crates/q2q/tests`，保持单层目录。公开 API 用例由 `tests/sdk.rs` 作为独立 Cargo 集成测试运行；需要访问内部状态的用例通过各源码文件的 cfg(test)/path 入口编译，源码中不再内嵌测试实现。HTTP 与真实 WebRTC 测试夹具同样集中到 tests，避免为了测试扩大 SDK 的公开接口。执行 `cargo test -p q2q` 会覆盖两类测试。
+SDK 测试统一放在 `crates/q2q-core/tests`，保持单层目录。公开 API 用例由 `tests/sdk.rs` 作为独立 Cargo 集成测试运行；需要访问内部状态的用例通过各源码文件的 cfg(test)/path 入口编译，源码中不再内嵌测试实现。HTTP 与真实 WebRTC 测试夹具同样集中到 tests，避免为了测试扩大 SDK 的公开接口。执行 `cargo test -p q2q-core` 会覆盖两类测试。
 
 
 ### 第四阶段：VOD 已验证读取
