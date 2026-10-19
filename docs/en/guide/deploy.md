@@ -55,13 +55,13 @@ will reject it.
 
 - **`bind` must be `0.0.0.0`.** The default is loopback, which inside a container
   is unreachable from outside.
-- **Punch's primary listener is UDP.** Map `4433:4433/udp`; a TCP mapping does
-  not expose QUIC. To enable the optional fallback, set `websocket_bind` in
-  `punch.toml`, expose that TCP port with TLS, and set the matching
-  `websocket_url = "wss://.../punch"` on the same Punch entry in `track.toml`.
-  The listener uses the same persisted Ed25519 identity as QUIC. Each process
-  allows up to 1,024 concurrent WSS connections and 32 per source IP, based on
-  the address seen by Punch's TCP listener. Behind a reverse proxy or SNAT,
+- **Punch's QUIC and WSS listeners share one port.** `punch.toml` has one
+  `bind`; the service listens on that address over both UDP and TCP. Map both
+  `4433:4433/udp` and `4433:4433/tcp`. Track only needs
+  `url = "quic://host:4433"`; the SDK derives the WSS fallback at
+  `wss://host:4433/`. Both transports use the same persisted Ed25519 identity.
+  Each process allows up to 1,024 concurrent WSS connections and 32 per source
+  IP, based on the address seen by Punch's TCP listener. Behind a reverse proxy or SNAT,
   clients sharing the proxy's egress IP share that 32-connection quota. TLS
   plus the WebSocket upgrade must finish within 10 seconds, followed by a valid
   `join` or `connect` within 10 seconds.

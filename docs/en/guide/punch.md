@@ -20,11 +20,10 @@ The control channel is QUIC rather than TCP, for two reasons:
    mapping alive, which only periodic UDP packets can do. QUIC is UDP, so no
    second path is needed.
 
-QUIC remains the preferred transport. A deployment can also publish a WSS
-endpoint for networks that block UDP: the SDK tries QUIC first and falls back to
-WebSocket over TLS when the QUIC link cannot be established. Track publishes
-this optional endpoint as `websocket_url`; existing configurations without it
-continue to use QUIC only.
+QUIC remains the preferred transport. Punch listens for UDP/QUIC and TCP/WSS on
+the same `bind` address. The SDK derives `wss://host:port/` from Track's
+`quic://host:port` address, tries QUIC first, and falls back to WebSocket over
+TLS when the QUIC link cannot be established. Track needs no separate WSS URL.
 
 Heartbeats ride QUIC datagrams — small, frequent, and a lost one is simply
 followed by another. On WSS, heartbeats are ordinary bounded WebSocket frames.
@@ -32,10 +31,10 @@ Everything else (`join`, `exit`, and all signalling) uses reliable messages on
 both transports. Both endpoints use the same Punch identity key published by
 Track, so the fallback does not weaken server authentication.
 
-This fallback covers Punch's binding and signalling control plane. Peer file
-data still uses WebRTC DataChannels and its own ICE path; WSS alone does not make
-a transfer work when UDP is blocked. See [Deploy](./deploy) for the optional
-listener configuration. Supporting file transfers on UDP-blocked networks
+This fallback covers Punch's binding and signalling control plane and uses the
+WebSocket root path (`/`). Peer file data still uses WebRTC DataChannels and its
+own ICE path; WSS alone does not make a transfer work when UDP is blocked. See
+[Deploy](./deploy) for the listener configuration. Supporting file transfers on UDP-blocked networks
 requires a separate data-plane path such as TURN over TCP/TLS.
 
 ## Bindings
@@ -122,10 +121,10 @@ Two kinds, because they have different lifetimes:
   asker reconnects and presents the connection id plus that key to resume. Anything
   that arrived while it was away is replayed.
 
-Note that heartbeats are a separate path from the standing channel: keeping the
-channel alive is the transport's job, while heartbeats exist to keep the NAT
-mapping alive and refresh the TTL. Conflating them would make it impossible to
-tell "the channel dropped but the mapping is still there" from "both are gone".
+Heartbeats serve a different purpose from checking whether the standing channel
+is alive. They refresh the NAT mapping and TTL: QUIC sends them as datagrams,
+while WSS carries them as frames over the TLS WebSocket connection. Punch treats
+a failed heartbeat and a dropped channel as separate signals.
 
 ## Running it
 
@@ -133,7 +132,6 @@ See [Deploy](./deploy). A Punch needs:
 
 - a `punch_id` that matches what Track lists
 - a persisted identity keypair
-- inbound **UDP** on its QUIC port; optionally, a **TCP/TLS** WebSocket listener
-  when publishing `websocket_url` in Track
+- inbound **UDP and TCP** on the configured `bind` port for QUIC and WSS
 - `cluster_size` set to the number of instances, so the rate limit is split
   rather than multiplied

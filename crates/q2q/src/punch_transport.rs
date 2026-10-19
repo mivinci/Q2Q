@@ -1,4 +1,4 @@
-//! QUIC Binding to the Punch assigned by Track.
+//! QUIC and WSS bindings to the Punch assigned by Track.
 
 use crate::control::{ControlError, decode_key, hex, next_seq};
 use crate::identity::Identity;
@@ -193,17 +193,7 @@ struct WebSocketPunchTransport {
 
 impl WebSocketPunchTransport {
   async fn connect(assignment: &PunchWire) -> Result<Self, ControlError> {
-    let address = assignment
-      .websocket_url
-      .as_deref()
-      .ok_or_else(|| ControlError::Protocol("Punch has no WebSocket URL".into()))?;
-    let url = Url::parse(address)
-      .map_err(|e| ControlError::Protocol(format!("invalid Punch WebSocket URL: {e}")))?;
-    if url.scheme() != "wss" {
-      return Err(ControlError::Protocol(
-        "Punch WebSocket URL must use wss://".into(),
-      ));
-    }
+    let address = websocket_url(assignment)?;
     let public_key = decode_key(&assignment.public_key, "Punch public_key")?;
     let pin_rejected = Arc::new(AtomicBool::new(false));
     let tls = client_tls_config(public_key, pin_rejected.clone())?;
@@ -521,7 +511,6 @@ async fn connect_transport(
   assignment: &PunchWire,
 ) -> Result<Arc<dyn PunchTransport>, ControlError> {
   connect_transport_with(
-    assignment.websocket_url.is_some(),
     || async {
       QuicPunchTransport::connect(assignment)
         .await
@@ -537,7 +526,6 @@ async fn connect_transport(
 }
 
 async fn connect_transport_with<Q, QFut, W, WFut>(
-  has_websocket: bool,
   connect_quic: Q,
   connect_websocket: W,
 ) -> Result<Arc<dyn PunchTransport>, ControlError>
@@ -549,7 +537,7 @@ where
 {
   match connect_quic().await {
     Ok(transport) => Ok(transport),
-    Err(error) if has_websocket && matches!(&error, ControlError::Transport(_)) => {
+    Err(error) if matches!(&error, ControlError::Transport(_)) => {
       tracing::info!(%error, "QUIC unavailable; trying Punch WebSocket fallback");
       connect_websocket().await
     }
@@ -566,7 +554,6 @@ async fn connect_and_join(
     Ok(joined) => Ok((transport, joined)),
     Err(error)
       if transport.kind() == PunchTransportKind::Quic
-        && assignment.websocket_url.is_some()
         && matches!(&error, ControlError::Transport(_)) =>
     {
       tracing::info!(punch = %assignment.punch_id, %error, "QUIC join failed; retrying Punch join over WebSocket");
@@ -825,6 +812,24 @@ async fn connect_quic(
       }
     })?;
   Ok((endpoint, connection))
+}
+
+fn websocket_url(assignment: &PunchWire) -> Result<String, ControlError> {
+  let mut url = Url::parse(&assignment.url)
+    .map_err(|e| ControlError::Protocol(format!("invalid Punch URL: {e}")))?;
+  if url.scheme() != "quic" {
+    return Err(ControlError::Protocol("Punch URL must use quic://".into()));
+  }
+  url
+    .set_username("")
+    .map_err(|_| ControlError::Protocol("invalid credentials in Punch URL".into()))?;
+  url
+    .set_password(None)
+    .map_err(|_| ControlError::Protocol("invalid credentials in Punch URL".into()))?;
+  url.set_path("/");
+  url.set_query(None);
+  url.set_fragment(None);
+  Ok(url.to_string().replacen("quic://", "wss://", 1))
 }
 
 async fn send_signal(

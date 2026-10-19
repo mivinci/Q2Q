@@ -310,7 +310,6 @@ async fn announce<S: TrackState>(
     punch: PunchWire {
       punch_id: punch.punch_id,
       url: punch.url,
-      websocket_url: punch.websocket_url,
       public_key: B64.encode(punch.public_key),
     },
     turn: turn_credential(&app.config, &peer_id, turn_expires_at),
@@ -474,7 +473,6 @@ async fn query<S: TrackState>(
         punch: PunchWire {
           punch_id: punch.punch_id.clone(),
           url: punch.url.clone(),
-          websocket_url: punch.websocket_url.clone(),
           public_key: B64.encode(&punch.public_key),
         },
         complete: c.complete,
@@ -570,7 +568,6 @@ mod tests {
     PunchList::new(vec![PunchAssignment {
       punch_id: "punch-1".into(),
       url: url.into(),
-      websocket_url: None,
       public_key: vec![7u8; 32],
     }])
   }
@@ -778,7 +775,6 @@ mod tests {
     let retired = PunchList::new(vec![PunchAssignment {
       punch_id: "punch-2".into(),
       url: "https://punch-2.example.com".into(),
-      websocket_url: None,
       public_key: vec![8u8; 32],
     }]);
 
@@ -805,7 +801,6 @@ mod tests {
     let punch = PunchList::new(vec![PunchAssignment {
       punch_id: "punch-1".into(),
       url: "https://before.example.com".into(),
-      websocket_url: None,
       public_key: vec![7u8; 32],
     }]);
     let announce_app = build(state.clone(), punch.clone());
@@ -839,7 +834,6 @@ mod tests {
     punch.replace(vec![PunchAssignment {
       punch_id: "punch-1".into(),
       url: "https://after.example.com".into(),
-      websocket_url: None,
       public_key: vec![7u8; 32],
     }]);
     let json = query(2).await;
@@ -1194,7 +1188,6 @@ mod tests {
             punch: PunchAssignment {
               punch_id: if index < 80 { "retired" } else { "punch-1" }.into(),
               url: "quic://unused".into(),
-              websocket_url: None,
               public_key: vec![7; 32],
             },
             expires_at: now + 600,

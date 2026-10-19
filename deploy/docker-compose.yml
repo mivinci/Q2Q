@@ -30,8 +30,9 @@ services:
       # public key, so it must not change on restart
       - ./punch-identity:/etc/q2q/identity
     ports:
-      # QUIC is UDP; a TCP mapping here would silently do nothing
+      # QUIC and WSS share port 4433 over separate UDP/TCP transports.
       - "4433:4433/udp"
+      - "4433:4433/tcp"
 
   coturn:
     image: coturn/coturn:latest
