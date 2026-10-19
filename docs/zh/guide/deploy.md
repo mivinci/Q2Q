@@ -12,6 +12,7 @@ Track 和 Punch 是普通服务：监听端口、读取 TOML 配置。除 Punch 
 flowchart LR
   P[Peer] -->|HTTPS| T[Track]
   P -->|QUIC over UDP| PS[Punch]
+  P -.->|可选 WSS over TCP/TLS| PS
   P -->|relay| CT[coturn]
 ```
 
@@ -42,7 +43,8 @@ docker compose up -d track coturn
 ### 常见问题
 
 - **`bind` 必须设为 `0.0.0.0`。** 默认值是 loopback，在容器中无法从外部访问。
-- **Punch 使用 UDP。** 端口映射应为 `4433:4433/udp`；映射成 TCP 不会生效。
+- **Punch 默认使用 UDP。** 端口映射应为 `4433:4433/udp`；映射成 TCP 不会生效。需要 TCP 回退时，可在 `punch.toml` 设置 `websocket_bind` 并开放对应 TCP/TLS 端口，再在 Track 的同一 `[[punch]]` 项设置匹配的 `websocket_url = "wss://.../punch"`。WSS 与 QUIC 共用已持久化的 Punch Ed25519 身份。
+- **WSS 连接配额。** 每个进程最多接受 1,024 条并发连接，同一来源 IP 最多 32 条。来源地址按 Punch TCP 监听器实际看到的对端地址计算；经过反向代理或 SNAT 时，共用代理出口 IP 的客户端会共同占用这 32 条配额。TLS 握手和 WebSocket Upgrade 需在 10 秒内完成，连接建立后还需在 10 秒内发送有效的 `join` 或 `connect`。
 - **TURN secret 必须一致。** Track 使用 `HMAC-SHA1(secret, "<expiry>:<user>")` 签发中继凭据，coturn 使用同一个 secret 校验。配置不一致时，直连仍可工作，只有中继会失败；问题通常会在确实需要中继的网络中才暴露。
 
 ## 集群部署

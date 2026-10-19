@@ -13,6 +13,8 @@ use signalling::Sinks;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::net::TcpListener;
+use tokio_rustls::TlsAcceptor;
 
 /// Q2Q Punch 服务：Binding 的接入点。
 #[derive(Debug, Parser)]
@@ -29,6 +31,8 @@ struct Args {
 #[derive(Debug, serde::Deserialize)]
 struct Config {
   bind: SocketAddr,
+  #[serde(default)]
+  websocket_bind: Option<SocketAddr>,
   punch_id: String,
   #[serde(default = "default_ttl")]
   ttl_secs: u64,
@@ -172,6 +176,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
   });
 
-  server::serve(endpoint, state).await;
+  if let Some(bind) = config.websocket_bind {
+    let listener = TcpListener::bind(bind).await?;
+    let acceptor = TlsAcceptor::from(Arc::new(identity.tls_server_config()?));
+    tracing::info!(%bind, "WebSocket listener ready");
+    let quic_state = state.clone();
+    tokio::spawn(server::serve(endpoint, quic_state));
+    server::serve_websocket(listener, acceptor, state).await?;
+  } else {
+    server::serve(endpoint, state).await;
+  }
   Ok(())
 }

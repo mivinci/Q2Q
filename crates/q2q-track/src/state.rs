@@ -40,6 +40,7 @@ pub struct OnlineRecord {
 pub struct PunchAssignment {
   pub punch_id: String,
   pub url: String,
+  pub websocket_url: Option<String>,
   pub public_key: Vec<u8>,
 }
 
@@ -304,6 +305,7 @@ mod tests {
     PunchAssignment {
       punch_id: format!("punch-{n}"),
       url: format!("https://punch-{n}.example.com"),
+      websocket_url: None,
       public_key: vec![n; 32],
     }
   }

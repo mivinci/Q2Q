@@ -24,6 +24,7 @@ async fn add(state: &impl TrackState, n: u64, punch: &str, expiry: u64, ttl: u64
         punch: PunchAssignment {
           punch_id: punch.into(),
           url: "quic://localhost".into(),
+          websocket_url: None,
           public_key: vec![0; 32],
         },
         expires_at: expiry,

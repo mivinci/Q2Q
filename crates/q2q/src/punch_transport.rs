@@ -3,29 +3,613 @@
 use crate::control::{ControlError, decode_key, hex, next_seq};
 use crate::identity::Identity;
 use crate::signal_router::{IncomingSignal, SignalRouter};
+use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
+use futures_util::{SinkExt, StreamExt};
 use q2q_core::identity::Audience;
 use q2q_punch::message::{
   ExitRequest, HeartbeatRequest, HeartbeatResponse, JoinRequest, JoinResponse, Request, Response,
   SignalRequest, SignalResponse, binding_mac, join_signing_bytes,
 };
+use q2q_punch::transport::PunchFrame;
 use q2q_track::wire::PunchWire;
 use rustls::pki_types::CertificateDer;
+use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as SyncMutex};
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::{Connector, WebSocketStream, connect_async_tls_with_config};
 use url::Url;
 
 const RPC_VERSION: u32 = 1;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
-pub(super) struct PunchBinding {
-  punch_id: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PunchTransportKind {
+  Quic,
+  WebSocket,
+}
+
+/// Common operations required by standing and ephemeral Punch channels.
+/// Transport implementations own framing and connection-specific I/O; the
+/// SDK keeps tickets, MACs, routing and lifecycle above this boundary.
+#[async_trait]
+trait PunchTransport: Send + Sync {
+  fn kind(&self) -> PunchTransportKind;
+
+  async fn rpc(&self, request: Request) -> Result<Response, ControlError>;
+
+  async fn heartbeat(&self, request: Request) -> Result<Response, ControlError>;
+
+  async fn recv_signal(&self) -> Result<SignalRequest, ControlError>;
+
+  async fn close(&self);
+}
+
+struct QuicPunchTransport {
   endpoint: quinn::Endpoint,
   connection: quinn::Connection,
+  signals: SignalReceiver,
+}
+
+impl QuicPunchTransport {
+  async fn connect(assignment: &PunchWire) -> Result<Self, ControlError> {
+    let (endpoint, connection) = connect_quic(assignment).await?;
+    Ok(Self {
+      endpoint,
+      signals: SignalReceiver::new(connection.clone()),
+      connection,
+    })
+  }
+}
+
+#[async_trait]
+impl PunchTransport for QuicPunchTransport {
+  fn kind(&self) -> PunchTransportKind {
+    PunchTransportKind::Quic
+  }
+
+  async fn rpc(&self, request: Request) -> Result<Response, ControlError> {
+    tokio::time::timeout(
+      Duration::from_secs(10),
+      rpc_request(&self.connection, request),
+    )
+    .await
+    .map_err(|_| ControlError::Transport("Punch QUIC request timed out".into()))?
+  }
+
+  async fn heartbeat(&self, request: Request) -> Result<Response, ControlError> {
+    let id = request.id.clone();
+    self
+      .connection
+      .send_datagram(
+        serde_json::to_vec(&request)
+          .map_err(|e| ControlError::Protocol(e.to_string()))?
+          .into(),
+      )
+      .map_err(|e| ControlError::Transport(e.to_string()))?;
+    let bytes = tokio::time::timeout(Duration::from_secs(5), self.connection.read_datagram())
+      .await
+      .map_err(|_| ControlError::Transport("Punch heartbeat timed out".into()))?
+      .map_err(|e| ControlError::Transport(e.to_string()))?;
+    let response: Response = serde_json::from_slice(&bytes)
+      .map_err(|e| ControlError::Protocol(format!("bad Punch heartbeat response: {e}")))?;
+    if response.id != id {
+      return Err(ControlError::Protocol(
+        "Punch response id does not match request".into(),
+      ));
+    }
+    Ok(response)
+  }
+
+  async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
+    self.signals.recv().await
+  }
+
+  async fn close(&self) {
+    self.connection.close(0u32.into(), b"client closed");
+    self.endpoint.wait_idle().await;
+  }
+}
+
+impl Drop for QuicPunchTransport {
+  fn drop(&mut self) {
+    self.connection.close(0u32.into(), b"client dropped");
+    self.endpoint.close(0u32.into(), b"client dropped");
+  }
+}
+
+enum WsCommand {
+  Frame(PunchFrame),
+  Pong(Vec<u8>),
+  Close(oneshot::Sender<()>),
+}
+
+type PendingResponses = Arc<SyncMutex<HashMap<String, oneshot::Sender<Response>>>>;
+
+fn publish_transport_failure(failure: &watch::Sender<Option<String>>, error: String) -> String {
+  failure.send_if_modified(|current| {
+    if current.is_some() {
+      return false;
+    }
+    *current = Some(error.clone());
+    true
+  });
+  failure.borrow().clone().unwrap_or(error)
+}
+
+async fn wait_for_transport_failure(failure: &mut watch::Receiver<Option<String>>) -> String {
+  loop {
+    if let Some(error) = failure.borrow_and_update().clone() {
+      return error;
+    }
+    if failure.changed().await.is_err() {
+      return "failure channel closed".into();
+    }
+  }
+}
+
+fn transport_failure(error: String) -> ControlError {
+  ControlError::Transport(format!("Punch WebSocket transport failed: {error}"))
+}
+
+fn lock_pending(
+  pending: &PendingResponses,
+) -> std::sync::MutexGuard<'_, HashMap<String, oneshot::Sender<Response>>> {
+  pending.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+/// Removes an RPC waiter even when its future is cancelled while waiting for
+/// queue capacity or a response.
+struct PendingResponseGuard {
+  pending: PendingResponses,
+  id: String,
+}
+
+impl Drop for PendingResponseGuard {
+  fn drop(&mut self) {
+    lock_pending(&self.pending).remove(&self.id);
+  }
+}
+
+/// A fatal reader or writer error closes the whole socket and wakes every
+/// signal receiver, RPC, and heartbeat that shares this transport.
+struct WebSocketPunchTransport {
+  outgoing: mpsc::Sender<WsCommand>,
+  pending: PendingResponses,
+  signals: Mutex<mpsc::Receiver<Result<SignalRequest, ControlError>>>,
+  failure_tx: watch::Sender<Option<String>>,
+  failure: watch::Receiver<Option<String>>,
+  reader: tokio::task::AbortHandle,
+  writer: tokio::task::AbortHandle,
+}
+
+impl WebSocketPunchTransport {
+  async fn connect(assignment: &PunchWire) -> Result<Self, ControlError> {
+    let address = assignment
+      .websocket_url
+      .as_deref()
+      .ok_or_else(|| ControlError::Protocol("Punch has no WebSocket URL".into()))?;
+    let url = Url::parse(address)
+      .map_err(|e| ControlError::Protocol(format!("invalid Punch WebSocket URL: {e}")))?;
+    if url.scheme() != "wss" {
+      return Err(ControlError::Protocol(
+        "Punch WebSocket URL must use wss://".into(),
+      ));
+    }
+    let public_key = decode_key(&assignment.public_key, "Punch public_key")?;
+    let pin_rejected = Arc::new(AtomicBool::new(false));
+    let tls = client_tls_config(public_key, pin_rejected.clone())?;
+    let ws_config = WebSocketConfig::default()
+      .max_message_size(Some(MAX_RESPONSE_BYTES))
+      .max_frame_size(Some(MAX_RESPONSE_BYTES));
+    let connected = tokio::time::timeout(
+      Duration::from_secs(10),
+      connect_async_tls_with_config(
+        address,
+        Some(ws_config),
+        false,
+        Some(Connector::Rustls(Arc::new(tls))),
+      ),
+    )
+    .await
+    .map_err(|_| ControlError::Transport("Punch WebSocket handshake timed out".into()))?;
+    let (socket, _) = connected.map_err(|error| {
+      if pin_rejected.load(Ordering::Acquire) {
+        ControlError::Authentication("Punch public key does not match Track".into())
+      } else {
+        ControlError::Transport(error.to_string())
+      }
+    })?;
+    Ok(Self::from_socket(socket))
+  }
+
+  fn from_socket<S>(socket: WebSocketStream<S>) -> Self
+  where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+  {
+    let (mut writer, mut reader) = socket.split();
+    let (outgoing, mut commands) = mpsc::channel(64);
+    let pending = Arc::new(SyncMutex::new(
+      HashMap::<String, oneshot::Sender<Response>>::new(),
+    ));
+    let (failure_tx, failure) = watch::channel(None::<String>);
+    let writer_failure_tx = failure_tx.clone();
+    let mut writer_failure = failure.clone();
+    let writer_pending = pending.clone();
+    let writer_task = tokio::spawn(async move {
+      loop {
+        if writer_failure.borrow().is_some() {
+          let _ =
+            tokio::time::timeout(Duration::from_secs(1), writer.send(Message::Close(None))).await;
+          break;
+        }
+        let command = tokio::select! {
+          biased;
+          changed = writer_failure.changed() => {
+            if changed.is_err() || writer_failure.borrow().is_some() {
+              let _ = tokio::time::timeout(
+                Duration::from_secs(1),
+                writer.send(Message::Close(None)),
+              )
+              .await;
+              break;
+            }
+            continue;
+          }
+          command = commands.recv() => command,
+        };
+        let Some(command) = command else {
+          break;
+        };
+        let (result, stop) = match command {
+          WsCommand::Frame(frame) => match serde_json::to_vec(&frame) {
+            Ok(bytes) => (
+              writer
+                .send(Message::Binary(bytes.into()))
+                .await
+                .map_err(|error| error.to_string()),
+              false,
+            ),
+            Err(error) => (Err(error.to_string()), false),
+          },
+          WsCommand::Pong(bytes) => (
+            writer
+              .send(Message::Pong(bytes.into()))
+              .await
+              .map_err(|error| error.to_string()),
+            false,
+          ),
+          WsCommand::Close(ack) => {
+            let result =
+              match tokio::time::timeout(Duration::from_secs(1), writer.send(Message::Close(None)))
+                .await
+              {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(error.to_string()),
+                Err(_) => Err("WebSocket close frame timed out".into()),
+              };
+            let _ = ack.send(());
+            (result, true)
+          }
+        };
+        if let Err(error) = result {
+          tracing::debug!(%error, "Punch WebSocket write failed");
+          publish_transport_failure(
+            &writer_failure_tx,
+            format!("WebSocket write failed: {error}"),
+          );
+          break;
+        }
+        if stop {
+          break;
+        }
+      }
+      lock_pending(&writer_pending).clear();
+    });
+
+    let reader_pending = pending.clone();
+    let reader_outgoing = outgoing.clone();
+    let reader_failure_tx = failure_tx.clone();
+    let mut reader_failure = failure.clone();
+    let (signal_tx, signals) = mpsc::channel(64);
+    let reader_task = tokio::spawn(async move {
+      let mut error = None;
+      loop {
+        if reader_failure.borrow().is_some() {
+          break;
+        }
+        let incoming = tokio::select! {
+          biased;
+          changed = reader_failure.changed() => {
+            if changed.is_err() || reader_failure.borrow().is_some() {
+              break;
+            }
+            continue;
+          }
+          incoming = reader.next() => incoming,
+        };
+        let message = match incoming {
+          Some(Ok(message)) => message,
+          Some(Err(failure)) => {
+            error = Some(failure.to_string());
+            break;
+          }
+          None => {
+            error = Some("WebSocket connection closed".into());
+            break;
+          }
+        };
+        match message {
+          Message::Binary(bytes) => {
+            let frame = match serde_json::from_slice::<PunchFrame>(&bytes) {
+              Ok(frame) => frame,
+              Err(failure) => {
+                error = Some(format!("invalid Punch WebSocket frame: {failure}"));
+                break;
+              }
+            };
+            match frame {
+              PunchFrame::Response(response) => {
+                if let Some(waiter) = lock_pending(&reader_pending).remove(&response.id) {
+                  let _ = waiter.send(response);
+                }
+              }
+              PunchFrame::Signal(signal) => match signal_tx.try_send(Ok(signal)) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                  error = Some("Punch WebSocket signal queue is full".into());
+                  break;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => break,
+              },
+              PunchFrame::Request(_) => {
+                error = Some("server sent a Punch request frame".into());
+                break;
+              }
+            }
+          }
+          Message::Ping(bytes) => match reader_outgoing.try_send(WsCommand::Pong(bytes.to_vec())) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+              error = Some("Punch WebSocket writer queue is full".into());
+              break;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => break,
+          },
+          Message::Close(_) => {
+            error = Some("Punch WebSocket closed by server".into());
+            break;
+          }
+          Message::Pong(_) | Message::Frame(_) => {}
+          Message::Text(_) => {
+            error = Some("server sent a text WebSocket frame".into());
+            break;
+          }
+        }
+      }
+      if let Some(error) = error {
+        let error = publish_transport_failure(&reader_failure_tx, error);
+        let _ = signal_tx.try_send(Err(transport_failure(error)));
+      }
+      lock_pending(&reader_pending).clear();
+    });
+
+    Self {
+      outgoing,
+      pending,
+      signals: Mutex::new(signals),
+      failure_tx,
+      failure,
+      reader: reader_task.abort_handle(),
+      writer: writer_task.abort_handle(),
+    }
+  }
+
+  async fn rpc_with_timeout(
+    &self,
+    request: Request,
+    timeout: Duration,
+  ) -> Result<Response, ControlError> {
+    let id = request.id.clone();
+    let (waiter, response) = oneshot::channel();
+    lock_pending(&self.pending).insert(id.clone(), waiter);
+    let _pending_guard = PendingResponseGuard {
+      pending: self.pending.clone(),
+      id,
+    };
+    let mut failure = self.failure.clone();
+    match tokio::time::timeout(timeout, async {
+      tokio::select! {
+        biased;
+        error = wait_for_transport_failure(&mut failure) => Err(transport_failure(error)),
+        response = async {
+          self
+            .outgoing
+            .send(WsCommand::Frame(PunchFrame::Request(request)))
+            .await
+            .map_err(|_| ControlError::Transport("Punch WebSocket writer is closed".into()))?;
+          response
+            .await
+            .map_err(|_| ControlError::Transport("Punch WebSocket reader is closed".into()))
+        } => response,
+      }
+    })
+    .await
+    {
+      Ok(response) => response,
+      Err(_) => Err(ControlError::Transport(
+        "Punch WebSocket request timed out".into(),
+      )),
+    }
+  }
+
+  async fn close_with_timeout(&self, timeout: Duration) {
+    let close = async {
+      let (ack, closed) = oneshot::channel();
+      self.outgoing.send(WsCommand::Close(ack)).await.ok()?;
+      closed.await.ok()
+    };
+    let _ = tokio::time::timeout(timeout, close).await;
+    publish_transport_failure(&self.failure_tx, "transport closed".into());
+    lock_pending(&self.pending).clear();
+    self.reader.abort();
+    self.writer.abort();
+  }
+}
+
+#[async_trait]
+impl PunchTransport for WebSocketPunchTransport {
+  fn kind(&self) -> PunchTransportKind {
+    PunchTransportKind::WebSocket
+  }
+
+  async fn rpc(&self, request: Request) -> Result<Response, ControlError> {
+    self
+      .rpc_with_timeout(request, Duration::from_secs(10))
+      .await
+  }
+
+  async fn heartbeat(&self, request: Request) -> Result<Response, ControlError> {
+    self.rpc(request).await
+  }
+
+  async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
+    let mut failure = self.failure.clone();
+    let mut signals = self.signals.lock().await;
+    loop {
+      if let Some(error) = failure.borrow_and_update().clone() {
+        return Err(transport_failure(error));
+      }
+      tokio::select! {
+        biased;
+        changed = failure.changed() => {
+          if changed.is_err() {
+            return Err(ControlError::Transport("Punch WebSocket failure channel closed".into()));
+          }
+        }
+        signal = signals.recv() => {
+          return signal
+            .ok_or_else(|| ControlError::Transport("Punch WebSocket signal channel closed".into()))?;
+        }
+      }
+    }
+  }
+
+  async fn close(&self) {
+    self.close_with_timeout(Duration::from_secs(2)).await;
+  }
+}
+
+impl Drop for WebSocketPunchTransport {
+  fn drop(&mut self) {
+    publish_transport_failure(&self.failure_tx, "transport dropped".into());
+    lock_pending(&self.pending).clear();
+    self.reader.abort();
+    self.writer.abort();
+  }
+}
+
+async fn connect_transport(
+  assignment: &PunchWire,
+) -> Result<Arc<dyn PunchTransport>, ControlError> {
+  connect_transport_with(
+    assignment.websocket_url.is_some(),
+    || async {
+      QuicPunchTransport::connect(assignment)
+        .await
+        .map(|transport| Arc::new(transport) as Arc<dyn PunchTransport>)
+    },
+    || async {
+      WebSocketPunchTransport::connect(assignment)
+        .await
+        .map(|transport| Arc::new(transport) as Arc<dyn PunchTransport>)
+    },
+  )
+  .await
+}
+
+async fn connect_transport_with<Q, QFut, W, WFut>(
+  has_websocket: bool,
+  connect_quic: Q,
+  connect_websocket: W,
+) -> Result<Arc<dyn PunchTransport>, ControlError>
+where
+  Q: FnOnce() -> QFut,
+  QFut: Future<Output = Result<Arc<dyn PunchTransport>, ControlError>>,
+  W: FnOnce() -> WFut,
+  WFut: Future<Output = Result<Arc<dyn PunchTransport>, ControlError>>,
+{
+  match connect_quic().await {
+    Ok(transport) => Ok(transport),
+    Err(error) if has_websocket && matches!(&error, ControlError::Transport(_)) => {
+      tracing::info!(%error, "QUIC unavailable; trying Punch WebSocket fallback");
+      connect_websocket().await
+    }
+    Err(error) => Err(error),
+  }
+}
+
+async fn connect_and_join(
+  identity: &Identity,
+  assignment: &PunchWire,
+) -> Result<(Arc<dyn PunchTransport>, JoinResponse), ControlError> {
+  let transport = connect_transport(assignment).await?;
+  match join_transport(identity, assignment, transport.as_ref()).await {
+    Ok(joined) => Ok((transport, joined)),
+    Err(error)
+      if transport.kind() == PunchTransportKind::Quic
+        && assignment.websocket_url.is_some()
+        && matches!(&error, ControlError::Transport(_)) =>
+    {
+      tracing::info!(punch = %assignment.punch_id, %error, "QUIC join failed; retrying Punch join over WebSocket");
+      transport.close().await;
+      let fallback = Arc::new(WebSocketPunchTransport::connect(assignment).await?);
+      let joined = join_transport(identity, assignment, fallback.as_ref()).await?;
+      Ok((fallback, joined))
+    }
+    Err(error) => Err(error),
+  }
+}
+
+async fn join_transport(
+  identity: &Identity,
+  assignment: &PunchWire,
+  transport: &dyn PunchTransport,
+) -> Result<JoinResponse, ControlError> {
+  // A join ticket is single-use. Create a fresh nonce when retrying another
+  // transport, because the first request may have reached Punch even if its
+  // response was lost.
+  let now = q2q_punch::binding::now();
+  let mut nonce = [0u8; 16];
+  getrandom::fill(&mut nonce).map_err(ControlError::Random)?;
+  let token = identity.ticket(
+    Audience::Punch(assignment.punch_id.clone()),
+    now,
+    Some(hex(&nonce)),
+  );
+  let token = serde_json::to_string(&token).map_err(|e| ControlError::Protocol(e.to_string()))?;
+  let join = JoinRequest {
+    join_token: token.clone(),
+    public_key: B64.encode(identity.public_key()),
+    signature: B64.encode(identity.sign(&join_signing_bytes(&token, now))),
+    timestamp: now,
+  };
+  let response = rpc_value(transport, "join", "punch.join", &join).await?;
+  serde_json::from_value(response)
+    .map_err(|e| ControlError::Protocol(format!("bad Punch join response: {e}")))
+}
+
+pub(super) struct PunchBinding {
+  punch_id: String,
+  transport: Arc<dyn PunchTransport>,
   signals: SignalRouter,
   binding_id: String,
   key: [u8; 32],
@@ -37,36 +621,18 @@ impl PunchBinding {
     identity: &Identity,
     assignment: &PunchWire,
   ) -> Result<Self, ControlError> {
-    let (endpoint, connection) = connect_quic(assignment).await?;
-
-    let now = q2q_punch::binding::now();
-    let mut nonce = [0u8; 16];
-    getrandom::fill(&mut nonce).map_err(ControlError::Random)?;
-    let token = identity.ticket(
-      Audience::Punch(assignment.punch_id.clone()),
-      now,
-      Some(hex(&nonce)),
-    );
-    let token = serde_json::to_string(&token).map_err(|e| ControlError::Protocol(e.to_string()))?;
-    let join = JoinRequest {
-      join_token: token.clone(),
-      public_key: B64.encode(identity.public_key()),
-      signature: B64.encode(identity.sign(&join_signing_bytes(&token, now))),
-      timestamp: now,
-    };
-    let response = rpc(&connection, "join", "punch.join", &join).await?;
-    let joined: JoinResponse = serde_json::from_value(response)
-      .map_err(|e| ControlError::Protocol(format!("bad Punch join response: {e}")))?;
+    let (transport, joined) = connect_and_join(identity, assignment).await?;
     let key = decode_key(&joined.binding_key, "Punch binding_key")?;
-    let receiver = Arc::new(SignalReceiver::new(connection.clone()));
-    let sending = connection.clone();
+    let receiver = transport.clone();
+    let sending = transport.clone();
+    tracing::debug!(transport = ?transport.kind(), punch = %assignment.punch_id, "Punch transport connected");
     let signals = SignalRouter::new(
       move || {
         let receiver = receiver.clone();
-        async move { receiver.recv().await }
+        async move { receiver.recv_signal().await }
       },
       move |id| {
-        let connection = sending.clone();
+        let transport = sending.clone();
         async move {
           let reject = SignalRequest {
             kind: q2q_punch::message::SignalType::Reject,
@@ -78,15 +644,14 @@ impl PunchBinding {
             accept_token: None,
             signal_key: None,
           };
-          let _ = send_signal(&connection, &reject).await;
+          let _ = send_signal(transport.as_ref(), &reject).await;
         }
       },
     );
     Ok(Self {
       punch_id: assignment.punch_id.clone(),
-      endpoint,
+      transport,
       signals,
-      connection,
       binding_id: joined.binding_id,
       key,
       seq: Mutex::new(0),
@@ -102,7 +667,7 @@ impl PunchBinding {
     &self,
     request: &SignalRequest,
   ) -> Result<SignalResponse, ControlError> {
-    send_signal(&self.connection, request).await
+    send_signal(self.transport.as_ref(), request).await
   }
 
   pub(crate) async fn set_accepting(&self, enabled: bool) {
@@ -131,25 +696,7 @@ impl PunchBinding {
       method: "punch.heartbeat".into(),
       params: serde_json::to_value(request).map_err(|e| ControlError::Protocol(e.to_string()))?,
     };
-    self
-      .connection
-      .send_datagram(
-        serde_json::to_vec(&request)
-          .map_err(|e| ControlError::Protocol(e.to_string()))?
-          .into(),
-      )
-      .map_err(|e| ControlError::Transport(e.to_string()))?;
-    let bytes = tokio::time::timeout(Duration::from_secs(5), self.connection.read_datagram())
-      .await
-      .map_err(|_| ControlError::Transport("Punch heartbeat timed out".into()))?
-      .map_err(|e| ControlError::Transport(e.to_string()))?;
-    let response: Response = serde_json::from_slice(&bytes)
-      .map_err(|e| ControlError::Protocol(format!("bad Punch heartbeat response: {e}")))?;
-    if response.id != id {
-      return Err(ControlError::Protocol(
-        "Punch response id does not match request".into(),
-      ));
-    }
+    let response = self.transport.heartbeat(request).await?;
     let value = result(response, "Punch")?;
     let _: HeartbeatResponse = serde_json::from_value(value)
       .map_err(|e| ControlError::Protocol(format!("bad Punch heartbeat result: {e}")))?;
@@ -167,54 +714,33 @@ impl PunchBinding {
       generation: 0,
       mac: binding_mac(&self.key, &self.binding_id, seq, now, 0),
     };
-    let response = rpc(&self.connection, "exit", "punch.exit", &request).await;
-    self.connection.close(0u32.into(), b"client closed");
-    self.endpoint.wait_idle().await;
+    let response = rpc_value(self.transport.as_ref(), "exit", "punch.exit", &request).await;
+    self.transport.close().await;
     response.map(|_| ())
-  }
-}
-
-impl Drop for PunchBinding {
-  fn drop(&mut self) {
-    self.connection.close(0u32.into(), b"client dropped");
-    self.endpoint.close(0u32.into(), b"client dropped");
   }
 }
 
 /// The initiator talks directly to the target peer's Punch. Its connect ticket
 /// authenticates this short-lived channel; it does not create a standing Binding.
 pub(crate) struct PunchEphemeral {
-  endpoint: quinn::Endpoint,
-  connection: quinn::Connection,
-  signals: SignalReceiver,
+  transport: Arc<dyn PunchTransport>,
 }
 
 impl PunchEphemeral {
   pub(crate) async fn connect(assignment: &PunchWire) -> Result<Self, ControlError> {
-    let (endpoint, connection) = connect_quic(assignment).await?;
-    Ok(Self {
-      endpoint,
-      signals: SignalReceiver::new(connection.clone()),
-      connection,
-    })
+    let transport = connect_transport(assignment).await?;
+    Ok(Self { transport })
   }
 
   pub(crate) async fn signal(
     &self,
     request: &SignalRequest,
   ) -> Result<SignalResponse, ControlError> {
-    send_signal(&self.connection, request).await
+    send_signal(self.transport.as_ref(), request).await
   }
 
   pub(crate) async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
-    self.signals.recv().await
-  }
-}
-
-impl Drop for PunchEphemeral {
-  fn drop(&mut self) {
-    self.connection.close(0u32.into(), b"client dropped");
-    self.endpoint.close(0u32.into(), b"client dropped");
+    self.transport.recv_signal().await
   }
 }
 
@@ -284,28 +810,32 @@ async fn connect_quic(
     .map_err(|e| ControlError::Transport(e.to_string()))?
     .next()
     .ok_or_else(|| ControlError::Transport("Punch host resolved to no addresses".into()))?;
-  let endpoint = endpoint(addr, public_key)?;
-  let connection = tokio::time::timeout(
-    Duration::from_secs(10),
-    endpoint
-      .connect(addr, &assignment.punch_id)
-      .map_err(|e| ControlError::Transport(e.to_string()))?,
-  )
-  .await
-  .map_err(|_| ControlError::Transport("Punch handshake timed out".into()))?
-  .map_err(|e| ControlError::Transport(e.to_string()))?;
+  let (endpoint, pin_rejected) = endpoint(addr, public_key)?;
+  let connecting = endpoint
+    .connect(addr, &assignment.punch_id)
+    .map_err(|e| ControlError::Transport(e.to_string()))?;
+  let connection = tokio::time::timeout(Duration::from_secs(10), connecting)
+    .await
+    .map_err(|_| ControlError::Transport("Punch handshake timed out".into()))?
+    .map_err(|e| {
+      if pin_rejected.load(Ordering::Acquire) {
+        ControlError::Authentication("Punch public key does not match Track".into())
+      } else {
+        ControlError::Transport(e.to_string())
+      }
+    })?;
   Ok((endpoint, connection))
 }
 
 async fn send_signal(
-  connection: &quinn::Connection,
+  transport: &dyn PunchTransport,
   request: &SignalRequest,
 ) -> Result<SignalResponse, ControlError> {
   let mut nonce = [0u8; 16];
   getrandom::fill(&mut nonce).map_err(ControlError::Random)?;
   let value = tokio::time::timeout(
     Duration::from_secs(10),
-    rpc(connection, &hex(&nonce), "punch.signal", request),
+    rpc_value(transport, &hex(&nonce), "punch.signal", request),
   )
   .await
   .map_err(|_| ControlError::Transport("Punch signal timed out".into()))??;
@@ -329,14 +859,29 @@ async fn read_signal(connection: &quinn::Connection) -> Result<SignalRequest, Co
     .map_err(|e| ControlError::Protocol(format!("bad forwarded Punch signal: {e}")))
 }
 
-fn endpoint(addr: SocketAddr, public_key: [u8; 32]) -> Result<quinn::Endpoint, ControlError> {
+fn client_tls_config(
+  public_key: [u8; 32],
+  pin_rejected: Arc<AtomicBool>,
+) -> Result<rustls::ClientConfig, ControlError> {
   let provider = rustls::crypto::aws_lc_rs::default_provider();
-  let crypto = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+  let config = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
     .with_safe_default_protocol_versions()
     .map_err(|e| ControlError::Transport(e.to_string()))?
     .dangerous()
-    .with_custom_certificate_verifier(Arc::new(PinnedKey(public_key)))
+    .with_custom_certificate_verifier(Arc::new(PinnedKey {
+      public_key,
+      rejected: pin_rejected,
+    }))
     .with_no_client_auth();
+  Ok(config)
+}
+
+fn endpoint(
+  addr: SocketAddr,
+  public_key: [u8; 32],
+) -> Result<(quinn::Endpoint, Arc<AtomicBool>), ControlError> {
+  let pin_rejected = Arc::new(AtomicBool::new(false));
+  let crypto = client_tls_config(public_key, pin_rejected.clone())?;
   let config = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
     .map_err(|e| ControlError::Transport(e.to_string()))?;
   let bind: SocketAddr = if addr.is_ipv4() {
@@ -353,11 +898,11 @@ fn endpoint(addr: SocketAddr, public_key: [u8; 32]) -> Result<quinn::Endpoint, C
   let mut client = quinn::ClientConfig::new(Arc::new(config));
   client.transport_config(Arc::new(transport));
   endpoint.set_default_client_config(client);
-  Ok(endpoint)
+  Ok((endpoint, pin_rejected))
 }
 
-async fn rpc<T: serde::Serialize>(
-  connection: &quinn::Connection,
+async fn rpc_value<T: serde::Serialize>(
+  transport: &dyn PunchTransport,
   id: &str,
   method: &str,
   params: &T,
@@ -368,6 +913,15 @@ async fn rpc<T: serde::Serialize>(
     method: method.into(),
     params: serde_json::to_value(params).map_err(|e| ControlError::Protocol(e.to_string()))?,
   };
+  let response = transport.rpc(request).await?;
+  result(response, "Punch")
+}
+
+async fn rpc_request(
+  connection: &quinn::Connection,
+  request: Request,
+) -> Result<Response, ControlError> {
+  let id = request.id.as_str();
   let (mut send, mut recv) = connection
     .open_bi()
     .await
@@ -390,7 +944,7 @@ async fn rpc<T: serde::Serialize>(
       "Punch response id does not match request".into(),
     ));
   }
-  result(response, "Punch")
+  Ok(response)
 }
 
 fn result(response: Response, service: &'static str) -> Result<serde_json::Value, ControlError> {
@@ -408,7 +962,10 @@ fn result(response: Response, service: &'static str) -> Result<serde_json::Value
 }
 
 #[derive(Debug)]
-struct PinnedKey([u8; 32]);
+struct PinnedKey {
+  public_key: [u8; 32],
+  rejected: Arc<AtomicBool>,
+}
 
 impl rustls::client::danger::ServerCertVerifier for PinnedKey {
   fn verify_server_cert(
@@ -419,14 +976,17 @@ impl rustls::client::danger::ServerCertVerifier for PinnedKey {
     _ocsp_response: &[u8],
     _now: rustls::pki_types::UnixTime,
   ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-    let (rest, cert) = x509_parser::parse_x509_certificate(end_entity.as_ref())
-      .map_err(|_| rustls::Error::General("Punch certificate is malformed".into()))?;
+    let (rest, cert) = x509_parser::parse_x509_certificate(end_entity.as_ref()).map_err(|_| {
+      self.rejected.store(true, Ordering::Release);
+      rustls::Error::General("Punch certificate is malformed".into())
+    })?;
     let key = cert.public_key();
     if !rest.is_empty()
       || key.algorithm.algorithm.to_id_string() != "1.3.101.112"
       || key.subject_public_key.unused_bits != 0
-      || key.subject_public_key.data.as_ref() != self.0
+      || key.subject_public_key.data.as_ref() != self.public_key
     {
+      self.rejected.store(true, Ordering::Release);
       return Err(rustls::Error::General(
         "Punch public key does not match Track".into(),
       ));

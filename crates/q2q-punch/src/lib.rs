@@ -8,6 +8,7 @@
 pub mod binding;
 pub mod message;
 pub mod signal;
+pub mod transport;
 
 pub use binding::{Binding, BindingError, Bindings, Generation, UnixSeconds};
 pub use message::{
@@ -17,3 +18,4 @@ pub use message::{
 pub use signal::{
   Connection, ConnectionState, Connections, RejectReason, SignalError, SignalRequest, SignalType,
 };
+pub use transport::PunchFrame;

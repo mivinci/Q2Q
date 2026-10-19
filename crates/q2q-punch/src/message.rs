@@ -388,13 +388,22 @@ pub fn parse_request(bytes: &[u8]) -> Result<Request, RpcError> {
     code: "malformed_request".into(),
     detail: Some(e.to_string()),
   })?;
+  validate_request_version(&req)?;
+  Ok(req)
+}
+
+/// Validate the version of an already decoded request envelope.
+///
+/// Transports that wrap requests in another framing format (such as Punch's
+/// WebSocket envelope) must apply the same version check as [`parse_request`].
+pub fn validate_request_version(req: &Request) -> Result<(), RpcError> {
   if req.v != PROTOCOL_VERSION {
     return Err(RpcError {
       code: "unsupported_version".into(),
       detail: Some(format!("server speaks {PROTOCOL_VERSION}")),
     });
   }
-  Ok(req)
+  Ok(())
 }
 
 #[cfg(test)]

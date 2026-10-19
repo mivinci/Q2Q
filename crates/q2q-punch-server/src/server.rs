@@ -13,21 +13,30 @@
 //! all.
 
 use crate::cert::{CertError, PunchIdentity};
-use crate::signalling::{Caller, Outcome, Sinks, handle_signal};
+use crate::signalling::{Caller, ChannelSink, Outcome, Sinks, handle_signal};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
+use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use q2q_core::identity::PeerId;
 use q2q_punch::binding::{Binding, Bindings, UnixSeconds, now};
 use q2q_punch::message::{
   CLOCK_TOLERANCE, ExitRequest, HeartbeatRequest, HeartbeatResponse, JoinRequest, JoinResponse,
-  Method, Request, Response, parse_request, verify_binding_mac,
+  Method, Request, Response, parse_request, validate_request_version, verify_binding_mac,
 };
 use q2q_punch::signal::{Connections, SignalRequest};
+use q2q_punch::transport::PunchFrame;
 use q2q_ratelimit::Limiter;
 use quinn::{Connection, Endpoint};
-use std::net::SocketAddr;
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use tokio::net::TcpListener;
+use tokio::sync::{Semaphore, mpsc, oneshot};
+use tokio_rustls::TlsAcceptor;
+use tokio_tungstenite::accept_async_with_config;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 pub struct State {
   pub bindings: Bindings,
@@ -40,6 +49,54 @@ pub struct State {
   pub punch_id: String,
   pub ttl: UnixSeconds,
   pub max_request_bytes: usize,
+}
+
+const WEBSOCKET_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const WEBSOCKET_AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const WEBSOCKET_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const WEBSOCKET_CONNECTION_LIMIT: usize = 1024;
+const WEBSOCKET_CONNECTIONS_PER_IP: usize = 32;
+const WEBSOCKET_WRITE_QUEUE: usize = 64;
+
+#[derive(Clone)]
+struct PerIpConnections(Arc<Mutex<HashMap<IpAddr, usize>>>);
+
+impl PerIpConnections {
+  fn acquire(&self, ip: IpAddr) -> Option<PerIpConnectionGuard> {
+    let mut counts = self.0.lock();
+    let count = counts.entry(ip).or_default();
+    if *count >= WEBSOCKET_CONNECTIONS_PER_IP {
+      return None;
+    }
+    *count += 1;
+    Some(PerIpConnectionGuard {
+      counts: self.clone(),
+      ip,
+    })
+  }
+}
+
+struct PerIpConnectionGuard {
+  counts: PerIpConnections,
+  ip: IpAddr,
+}
+
+impl Drop for PerIpConnectionGuard {
+  fn drop(&mut self) {
+    let mut counts = self.counts.0.lock();
+    if let Some(count) = counts.get_mut(&self.ip) {
+      *count -= 1;
+      if *count == 0 {
+        counts.remove(&self.ip);
+      }
+    }
+  }
+}
+
+enum WebSocketWrite {
+  Binary(Vec<u8>),
+  Pong(Vec<u8>),
+  Close,
 }
 
 // ------------------------------------------------------------------- dispatch
@@ -263,6 +320,69 @@ fn handle_guarded(state: &State, req: Request, caller: &Caller, ip: std::net::Ip
   dispatch(state, &req, now(), caller)
 }
 
+/// Per-connection identity and signal routes shared by every transport
+/// adapter. The adapter owns framing and socket I/O; request authorization,
+/// dispatch, and channel lifecycle stay here.
+struct PunchChannel {
+  sink: ChannelSink,
+  authenticated_peer: Mutex<Option<PeerId>>,
+  ephemeral_ids: Mutex<Vec<String>>,
+}
+
+impl PunchChannel {
+  fn new(sink: ChannelSink) -> Self {
+    Self {
+      sink,
+      authenticated_peer: Mutex::new(None),
+      ephemeral_ids: Mutex::new(Vec::new()),
+    }
+  }
+
+  async fn dispatch(&self, state: &State, req: Request, ip: std::net::IpAddr) -> Response {
+    let ephemeral_peer = serde_json::from_value::<SignalRequest>(req.params.clone())
+      .ok()
+      .filter(|sig| {
+        self.ephemeral_ids.lock().contains(&sig.connection_id)
+          && state
+            .sinks
+            .ephemeral_is_current(&sig.connection_id, &self.sink)
+      })
+      .and_then(|sig| state.connections.get(&sig.connection_id))
+      .map(|connection| connection.a);
+    let caller = Caller {
+      peer: self.authenticated_peer.lock().clone().or(ephemeral_peer),
+    };
+    let outcome = handle_guarded(state, req, &caller, ip);
+
+    if let Some(peer) = &outcome.joined {
+      state.sinks.put_standing(peer, self.sink.clone());
+      *self.authenticated_peer.lock() = Some(peer.clone());
+    }
+    if let Some(connection_id) = &outcome.ephemeral {
+      state.sinks.put_ephemeral(connection_id, self.sink.clone());
+      self.ephemeral_ids.lock().push(connection_id.clone());
+    }
+
+    crate::signalling::deliver(&state.sinks, outcome.forwards).await;
+    outcome.response
+  }
+
+  fn is_authenticated(&self) -> bool {
+    self.authenticated_peer.lock().is_some() || !self.ephemeral_ids.lock().is_empty()
+  }
+
+  fn cleanup(&self, state: &State) {
+    if let Some(peer) = self.authenticated_peer.lock().as_ref() {
+      state.sinks.drop_standing_if_current(peer, &self.sink);
+    }
+    for connection_id in self.ephemeral_ids.lock().iter() {
+      state
+        .sinks
+        .drop_ephemeral_if_current(connection_id, &self.sink);
+    }
+  }
+}
+
 // ------------------------------------------------------------------ transport
 
 pub fn endpoint(identity: &PunchIdentity, bind: SocketAddr) -> Result<Endpoint, CertError> {
@@ -282,10 +402,230 @@ pub async fn serve(endpoint: Endpoint, state: Arc<State>) {
   }
 }
 
+pub async fn serve_websocket(
+  listener: TcpListener,
+  acceptor: TlsAcceptor,
+  state: Arc<State>,
+) -> std::io::Result<()> {
+  let global_connections = Arc::new(Semaphore::new(WEBSOCKET_CONNECTION_LIMIT));
+  let per_ip_connections = PerIpConnections(Arc::new(Mutex::new(HashMap::new())));
+  loop {
+    let (stream, remote) = listener.accept().await?;
+    let Ok(global_permit) = global_connections.clone().try_acquire_owned() else {
+      tracing::debug!(%remote, "WebSocket connection limit reached");
+      continue;
+    };
+    let Some(ip_permit) = per_ip_connections.acquire(remote.ip()) else {
+      tracing::debug!(%remote, "WebSocket per-IP connection limit reached");
+      continue;
+    };
+    let st = state.clone();
+    let tls = acceptor.clone();
+    tokio::spawn(async move {
+      let ws_config = WebSocketConfig::default()
+        .max_message_size(Some(st.max_request_bytes))
+        .max_frame_size(Some(st.max_request_bytes));
+      let handshake = tokio::time::timeout(WEBSOCKET_HANDSHAKE_TIMEOUT, async {
+        let tls_stream = tls
+          .accept(stream)
+          .await
+          .map_err(|error| error.to_string())?;
+        accept_async_with_config(tls_stream, Some(ws_config))
+          .await
+          .map_err(|error| error.to_string())
+      })
+      .await;
+      match handshake {
+        Ok(Ok(socket)) => {
+          let _global_permit = global_permit;
+          let _ip_permit = ip_permit;
+          handle_websocket(socket, st, remote).await;
+        }
+        Ok(Err(error)) => tracing::debug!(%remote, %error, "WebSocket handshake failed"),
+        Err(_) => tracing::debug!(%remote, "WebSocket TLS or upgrade handshake timed out"),
+      }
+    });
+  }
+}
+
+async fn handle_websocket<S>(
+  socket: tokio_tungstenite::WebSocketStream<S>,
+  state: Arc<State>,
+  remote: SocketAddr,
+) where
+  S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+  handle_websocket_with_auth_timeout(socket, state, remote, WEBSOCKET_AUTH_TIMEOUT).await;
+}
+
+async fn handle_websocket_with_auth_timeout<S>(
+  socket: tokio_tungstenite::WebSocketStream<S>,
+  state: Arc<State>,
+  remote: SocketAddr,
+  auth_timeout: std::time::Duration,
+) where
+  S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+  let ip = remote.ip();
+  let (writer, mut reader) = socket.split();
+  let (mine, mut outgoing) = ChannelSink::channel(64);
+  let channel = PunchChannel::new(mine.clone());
+  let (write_tx, mut write_rx) = mpsc::channel(WEBSOCKET_WRITE_QUEUE);
+  let (writer_done_tx, mut writer_done_rx) = oneshot::channel();
+  let mut writer_task = tokio::spawn(async move {
+    let mut writer = writer;
+    loop {
+      tokio::select! {
+        pending = outgoing.recv() => {
+          let Some(pending) = pending else { break; };
+          let delivered = match serde_json::to_vec(&PunchFrame::Signal(pending.signal)) {
+            Ok(bytes) => writer.send(Message::Binary(bytes.into())).await
+              .map_err(|error| error.to_string()),
+            Err(error) => Err(error.to_string()),
+          };
+          let ok = delivered.is_ok();
+          let _ = pending.delivered.send(ok);
+          if let Err(error) = delivered {
+            tracing::debug!(%remote, %error, "WebSocket signal delivery failed");
+            break;
+          }
+        }
+        message = write_rx.recv() => {
+          let Some(message) = message else { break; };
+          let result = match message {
+            WebSocketWrite::Binary(bytes) => writer.send(Message::Binary(bytes.into())).await,
+            WebSocketWrite::Pong(bytes) => writer.send(Message::Pong(bytes.into())).await,
+            WebSocketWrite::Close => {
+              let _ = writer.send(Message::Close(None)).await;
+              break;
+            }
+          };
+          if let Err(error) = result {
+            tracing::debug!(%remote, %error, "WebSocket write failed");
+            break;
+          }
+        }
+      }
+    }
+    let _ = writer_done_tx.send(());
+  });
+
+  tracing::debug!(%remote, "WebSocket Punch connection accepted");
+  let auth_deadline = tokio::time::sleep(auth_timeout);
+  tokio::pin!(auth_deadline);
+  let mut authenticated = channel.is_authenticated();
+
+  loop {
+    tokio::select! {
+      _ = &mut auth_deadline, if !authenticated => {
+        tracing::debug!(%remote, "WebSocket Punch authentication timed out");
+        break;
+      }
+      _ = &mut writer_done_rx => break,
+      incoming = reader.next() => {
+        let Some(incoming) = incoming else { break; };
+        let message = match incoming {
+          Ok(message) => message,
+          Err(error) => {
+            tracing::debug!(%remote, %error, "WebSocket read failed");
+            break;
+          }
+        };
+        match message {
+          Message::Binary(bytes) => {
+            let frame = match serde_json::from_slice::<PunchFrame>(&bytes) {
+              Ok(frame) => frame,
+              Err(error) => {
+                tracing::debug!(%remote, %error, "invalid WebSocket Punch frame");
+                break;
+              }
+            };
+            let PunchFrame::Request(req) = frame else {
+              tracing::debug!(%remote, "client sent a non-request Punch frame");
+              break;
+            };
+            let response = if let Err(error) = validate_request_version(&req) {
+              Response::err(&req.id, &error.code, error.detail)
+            } else {
+              channel.dispatch(&state, req, ip).await
+            };
+            authenticated |= channel.is_authenticated();
+            let bytes = match serde_json::to_vec(&PunchFrame::Response(response)) {
+              Ok(bytes) => bytes,
+              Err(error) => {
+                tracing::error!(%error, "could not encode WebSocket Punch response");
+                break;
+              }
+            };
+            if !matches!(tokio::time::timeout(
+              WEBSOCKET_WRITE_TIMEOUT,
+              write_tx.send(WebSocketWrite::Binary(bytes)),
+            ).await, Ok(Ok(()))) {
+              tracing::debug!(%remote, "WebSocket writer did not accept the response");
+              break;
+            }
+          }
+          Message::Ping(bytes) => {
+            if !matches!(tokio::time::timeout(
+              WEBSOCKET_WRITE_TIMEOUT,
+              write_tx.send(WebSocketWrite::Pong(bytes.to_vec())),
+            ).await, Ok(Ok(()))) {
+              break;
+            }
+          }
+          Message::Close(_) => break,
+          Message::Pong(_) => {}
+          Message::Text(_) | Message::Frame(_) => {
+            tracing::debug!(%remote, "unsupported WebSocket frame");
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  channel.cleanup(&state);
+  drop(channel);
+  drop(mine);
+  let _ = write_tx.try_send(WebSocketWrite::Close);
+  if tokio::time::timeout(std::time::Duration::from_secs(2), &mut writer_task)
+    .await
+    .is_err()
+  {
+    writer_task.abort();
+  }
+  tracing::debug!(%remote, "WebSocket Punch connection closed");
+}
+
 async fn handle_connection(conn: Connection, state: Arc<State>) {
   let remote = conn.remote_address();
   let ip = remote.ip();
   tracing::debug!(%remote, "connection accepted");
+
+  // Routes keep only this transport-neutral handle. This writer task owns the
+  // QUIC-specific stream mechanics; the WebSocket adapter owns frame writes.
+  let (mine, mut outgoing) = ChannelSink::channel(64);
+  let writer = conn.clone();
+  tokio::spawn(async move {
+    while let Some(pending) = outgoing.recv().await {
+      let delivered = match writer.open_uni().await {
+        Ok(mut send) => {
+          if let Ok(bytes) = serde_json::to_vec(&pending.signal)
+            && send.write_all(&bytes).await.is_ok()
+          {
+            send.finish().is_ok()
+          } else {
+            false
+          }
+        }
+        Err(_) => false,
+      };
+      let _ = pending.delivered.send(delivered);
+      if !delivered {
+        break;
+      }
+    }
+  });
 
   // heartbeats: loss is tolerated, so they do not need a stream
   let datagrams = conn.clone();
@@ -310,68 +650,32 @@ async fn handle_connection(conn: Connection, state: Arc<State>) {
     }
   });
 
-  // identity and channels this connection owns; shared with the per-stream
-  // tasks, and released when the connection ends
-  let authed: Arc<Mutex<Option<PeerId>>> = Arc::new(Mutex::new(None));
-  let ephemeral: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+  // The shared dispatcher owns identity and routes; QUIC tasks only decode
+  // the request stream and encode its response.
+  let channel = Arc::new(PunchChannel::new(mine.clone()));
 
   while let Ok((mut send, mut recv)) = conn.accept_bi().await {
     let st = state.clone();
-    let bound_peer = authed.lock().clone();
-    let joined = authed.clone();
-    let opened = ephemeral.clone();
-    let mine = conn.clone();
+    let channel = channel.clone();
     tokio::spawn(async move {
       let Ok(bytes) = recv.read_to_end(st.max_request_bytes).await else {
         return;
       };
-      let outcome = match parse_request(&bytes) {
-        Ok(req) => {
-          let ephemeral_peer = serde_json::from_value::<SignalRequest>(req.params.clone())
-            .ok()
-            .filter(|sig| {
-              opened.lock().contains(&sig.connection_id)
-                && st.sinks.ephemeral_is_current(&sig.connection_id, &mine)
-            })
-            .and_then(|sig| st.connections.get(&sig.connection_id))
-            .map(|connection| connection.a);
-          let caller = Caller {
-            peer: bound_peer.or(ephemeral_peer),
-          };
-          handle_guarded(&st, req, &caller, ip)
-        }
-        Err(e) => Outcome {
-          response: Response::err("unknown", &e.code, e.detail),
-          forwards: Vec::new(),
-          joined: None,
-          ephemeral: None,
-        },
+      let response = match parse_request(&bytes) {
+        Ok(req) => channel.dispatch(&st, req, ip).await,
+        Err(e) => Response::err("unknown", &e.code, e.detail),
       };
-      let out = match serde_json::to_vec(&outcome.response) {
+      let out = match serde_json::to_vec(&response) {
         Ok(o) => o,
         Err(_) => return,
       };
-      if let Some(peer) = &outcome.joined {
-        st.sinks.put_standing(peer, mine.clone());
-        *joined.lock() = Some(peer.clone());
-      }
-      if let Some(cid) = &outcome.ephemeral {
-        st.sinks.put_ephemeral(cid, mine.clone());
-        opened.lock().push(cid.clone());
-      }
-      crate::signalling::deliver(&st.sinks, outcome.forwards).await;
       let _ = send.write_all(&out).await;
       let _ = send.finish();
     });
   }
 
   // a closed standing channel means an unreachable peer, so drop it here
-  if let Some(peer) = authed.lock().as_ref() {
-    state.sinks.drop_standing_if_current(peer, &conn);
-  }
-  for cid in ephemeral.lock().iter() {
-    state.sinks.drop_ephemeral_if_current(cid, &conn);
-  }
+  channel.cleanup(&state);
   tracing::debug!(%remote, "connection closed");
 }
 
@@ -434,6 +738,69 @@ mod tests {
       ttl,
       max_request_bytes: 64 * 1024,
     }
+  }
+
+  type TestWebSocket = tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>;
+
+  async fn websocket_client(
+    state: Arc<State>,
+    port: u16,
+  ) -> (TestWebSocket, tokio::task::JoinHandle<()>) {
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let server_socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+      server_io,
+      tokio_tungstenite::tungstenite::protocol::Role::Server,
+      None,
+    )
+    .await;
+    let client_socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+      client_io,
+      tokio_tungstenite::tungstenite::protocol::Role::Client,
+      None,
+    )
+    .await;
+    let handler = tokio::spawn(async move {
+      handle_websocket(
+        server_socket,
+        state,
+        format!("127.0.0.1:{port}").parse().unwrap(),
+      )
+      .await;
+    });
+    (client_socket, handler)
+  }
+
+  async fn send_ws_request(socket: &mut TestWebSocket, request: Request) {
+    socket
+      .send(tokio_tungstenite::tungstenite::Message::Binary(
+        serde_json::to_vec(&PunchFrame::Request(request))
+          .unwrap()
+          .into(),
+      ))
+      .await
+      .unwrap();
+  }
+
+  async fn recv_ws_frame(socket: &mut TestWebSocket) -> PunchFrame {
+    let message = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next())
+      .await
+      .expect("timed out waiting for a WebSocket Punch frame")
+      .unwrap()
+      .unwrap();
+    let tokio_tungstenite::tungstenite::Message::Binary(bytes) = message else {
+      panic!("Punch WebSocket frames must be binary");
+    };
+    serde_json::from_slice(&bytes).unwrap()
+  }
+
+  async fn close_ws_client(socket: &mut TestWebSocket, handler: tokio::task::JoinHandle<()>) {
+    let _ = socket
+      .send(tokio_tungstenite::tungstenite::Message::Close(None))
+      .await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), handler)
+      .await
+      .expect("WebSocket handler did not stop after close")
+      .unwrap();
   }
 
   fn join_request(seed: u8, aud: &str, now: u64) -> JoinRequest {
@@ -690,6 +1057,493 @@ mod tests {
 
     conn.close(0u32.into(), b"done");
     client.wait_idle().await;
+  }
+
+  #[tokio::test]
+  async fn websocket_adapter_dispatches_and_forwards_typed_signals() {
+    let st = Arc::new(state(60));
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let server_socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+      server_io,
+      tokio_tungstenite::tungstenite::protocol::Role::Server,
+      None,
+    )
+    .await;
+    let mut client_socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+      client_io,
+      tokio_tungstenite::tungstenite::protocol::Role::Client,
+      None,
+    )
+    .await;
+    let server_state = st.clone();
+    let handler = tokio::spawn(async move {
+      handle_websocket(
+        server_socket,
+        server_state,
+        "127.0.0.1:41000".parse().unwrap(),
+      )
+      .await;
+    });
+
+    let peer = peer(11);
+    let now = q2q_punch::binding::now();
+    let join = join_request(11, "punch-1", now);
+    let request = Request {
+      v: 1,
+      id: "ws-join".into(),
+      method: "punch.join".into(),
+      params: serde_json::to_value(join).unwrap(),
+    };
+    client_socket
+      .send(tokio_tungstenite::tungstenite::Message::Binary(
+        serde_json::to_vec(&PunchFrame::Request(request))
+          .unwrap()
+          .into(),
+      ))
+      .await
+      .unwrap();
+
+    let message = tokio::time::timeout(std::time::Duration::from_secs(2), client_socket.next())
+      .await
+      .unwrap()
+      .unwrap()
+      .unwrap();
+    let tokio_tungstenite::tungstenite::Message::Binary(bytes) = message else {
+      panic!("Punch WebSocket response must be binary");
+    };
+    let PunchFrame::Response(response) = serde_json::from_slice(&bytes).unwrap() else {
+      panic!("server should answer the Punch request");
+    };
+    assert_eq!(response.id, "ws-join");
+    assert!(response.error.is_none(), "{:?}", response.error);
+    assert!(st.sinks.has_standing(&peer));
+
+    let (server_io_a, client_io_a) = tokio::io::duplex(64 * 1024);
+    let server_socket_a = tokio_tungstenite::WebSocketStream::from_raw_socket(
+      server_io_a,
+      tokio_tungstenite::tungstenite::protocol::Role::Server,
+      None,
+    )
+    .await;
+    let mut client_socket_a = tokio_tungstenite::WebSocketStream::from_raw_socket(
+      client_io_a,
+      tokio_tungstenite::tungstenite::protocol::Role::Client,
+      None,
+    )
+    .await;
+    let server_state_a = st.clone();
+    let handler_a = tokio::spawn(async move {
+      handle_websocket(
+        server_socket_a,
+        server_state_a,
+        "127.0.0.1:41001".parse().unwrap(),
+      )
+      .await;
+    });
+    let mut connect = signal(SignalType::Connect, "ws-connect");
+    connect.connect_token = Some(connect_token(12, "punch-1", &peer, "ws-connect", now));
+    client_socket_a
+      .send(tokio_tungstenite::tungstenite::Message::Binary(
+        serde_json::to_vec(&PunchFrame::Request(Request {
+          v: 1,
+          id: "ws-connect-request".into(),
+          method: "punch.signal".into(),
+          params: serde_json::to_value(connect).unwrap(),
+        }))
+        .unwrap()
+        .into(),
+      ))
+      .await
+      .unwrap();
+
+    let forwarded = tokio::time::timeout(std::time::Duration::from_secs(2), client_socket.next())
+      .await
+      .unwrap()
+      .unwrap()
+      .unwrap();
+    let tokio_tungstenite::tungstenite::Message::Binary(bytes) = forwarded else {
+      panic!("forwarded Punch signals must be binary");
+    };
+    let PunchFrame::Signal(forwarded) = serde_json::from_slice(&bytes).unwrap() else {
+      panic!("target should receive a signal frame");
+    };
+    assert_eq!(forwarded.kind, SignalType::Connect);
+    assert_eq!(forwarded.connection_id, "ws-connect");
+
+    let response_a =
+      tokio::time::timeout(std::time::Duration::from_secs(2), client_socket_a.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let tokio_tungstenite::tungstenite::Message::Binary(bytes) = response_a else {
+      panic!("Punch response must be binary");
+    };
+    let PunchFrame::Response(response_a) = serde_json::from_slice(&bytes).unwrap() else {
+      panic!("initiator should receive an RPC response");
+    };
+    assert_eq!(response_a.id, "ws-connect-request");
+    assert!(response_a.error.is_none(), "{:?}", response_a.error);
+
+    client_socket
+      .send(tokio_tungstenite::tungstenite::Message::Close(None))
+      .await
+      .unwrap();
+    client_socket_a
+      .send(tokio_tungstenite::tungstenite::Message::Close(None))
+      .await
+      .unwrap();
+    handler.await.unwrap();
+    handler_a.await.unwrap();
+    assert!(!st.sinks.has_standing(&peer));
+  }
+
+  #[tokio::test]
+  async fn websocket_self_connect_does_not_deadlock_and_close_cleans_binding() {
+    let st = Arc::new(state(60));
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let server_socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+      server_io,
+      tokio_tungstenite::tungstenite::protocol::Role::Server,
+      None,
+    )
+    .await;
+    let mut client_socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+      client_io,
+      tokio_tungstenite::tungstenite::protocol::Role::Client,
+      None,
+    )
+    .await;
+    let server_state = st.clone();
+    let handler = tokio::spawn(async move {
+      handle_websocket(
+        server_socket,
+        server_state,
+        "127.0.0.1:41002".parse().unwrap(),
+      )
+      .await;
+    });
+
+    let now = q2q_punch::binding::now();
+    let peer = peer(21);
+    let join = Request {
+      v: 1,
+      id: "self-join".into(),
+      method: "punch.join".into(),
+      params: serde_json::to_value(join_request(21, "punch-1", now)).unwrap(),
+    };
+    client_socket
+      .send(tokio_tungstenite::tungstenite::Message::Binary(
+        serde_json::to_vec(&PunchFrame::Request(join))
+          .unwrap()
+          .into(),
+      ))
+      .await
+      .unwrap();
+    let _join_response =
+      tokio::time::timeout(std::time::Duration::from_secs(2), client_socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(st.sinks.has_standing(&peer));
+
+    let mut connect = signal(SignalType::Connect, "self-connect");
+    connect.connect_token = Some(connect_token(21, "punch-1", &peer, "self-connect", now));
+    client_socket
+      .send(tokio_tungstenite::tungstenite::Message::Binary(
+        serde_json::to_vec(&PunchFrame::Request(Request {
+          v: 1,
+          id: "self-connect-rpc".into(),
+          method: "punch.signal".into(),
+          params: serde_json::to_value(connect).unwrap(),
+        }))
+        .unwrap()
+        .into(),
+      ))
+      .await
+      .unwrap();
+
+    let mut saw_signal = false;
+    let mut saw_response = false;
+    for _ in 0..2 {
+      let message = tokio::time::timeout(std::time::Duration::from_secs(2), client_socket.next())
+        .await
+        .expect("self-connect should not deadlock")
+        .unwrap()
+        .unwrap();
+      let tokio_tungstenite::tungstenite::Message::Binary(bytes) = message else {
+        panic!("server frames must be binary");
+      };
+      match serde_json::from_slice::<PunchFrame>(&bytes).unwrap() {
+        PunchFrame::Signal(signal) => {
+          assert_eq!(signal.connection_id, "self-connect");
+          saw_signal = true;
+        }
+        PunchFrame::Response(response) => {
+          assert_eq!(response.id, "self-connect-rpc");
+          assert!(response.error.is_none(), "{:?}", response.error);
+          saw_response = true;
+        }
+        PunchFrame::Request(_) => panic!("server must not send request frames"),
+      }
+    }
+    assert!(saw_signal && saw_response);
+
+    client_socket
+      .send(tokio_tungstenite::tungstenite::Message::Close(None))
+      .await
+      .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), handler)
+      .await
+      .unwrap()
+      .unwrap();
+    assert!(!st.sinks.has_standing(&peer));
+  }
+
+  #[tokio::test]
+  async fn websocket_simultaneous_signal_forwards_do_not_deadlock() {
+    let st = Arc::new(state(60));
+    let (mut a, a_handler) = websocket_client(st.clone(), 41005).await;
+    let (mut b, b_handler) = websocket_client(st.clone(), 41006).await;
+    let now = q2q_punch::binding::now();
+    let b_peer = peer(32);
+
+    send_ws_request(
+      &mut b,
+      Request {
+        v: 1,
+        id: "b-join".into(),
+        method: "punch.join".into(),
+        params: serde_json::to_value(join_request(32, "punch-1", now)).unwrap(),
+      },
+    )
+    .await;
+    let PunchFrame::Response(response) = recv_ws_frame(&mut b).await else {
+      panic!("join should return an RPC response");
+    };
+    assert!(response.error.is_none(), "{:?}", response.error);
+
+    let connection_id = "ws-bidirectional";
+    let mut connect = signal(SignalType::Connect, connection_id);
+    connect.connect_token = Some(connect_token(31, "punch-1", &b_peer, connection_id, now));
+    send_ws_request(
+      &mut a,
+      Request {
+        v: 1,
+        id: "a-connect".into(),
+        method: "punch.signal".into(),
+        params: serde_json::to_value(connect.clone()).unwrap(),
+      },
+    )
+    .await;
+    let PunchFrame::Signal(forwarded) = recv_ws_frame(&mut b).await else {
+      panic!("target should receive connect before A receives its response");
+    };
+    assert_eq!(forwarded.kind, SignalType::Connect);
+    let PunchFrame::Response(response) = recv_ws_frame(&mut a).await else {
+      panic!("connect should return an RPC response");
+    };
+    assert!(response.error.is_none(), "{:?}", response.error);
+
+    send_ws_request(
+      &mut b,
+      Request {
+        v: 1,
+        id: "b-accept".into(),
+        method: "punch.signal".into(),
+        params: serde_json::to_value(signal(SignalType::Accept, connection_id)).unwrap(),
+      },
+    )
+    .await;
+    let PunchFrame::Signal(forwarded) = recv_ws_frame(&mut a).await else {
+      panic!("initiator should receive accept");
+    };
+    assert_eq!(forwarded.kind, SignalType::Accept);
+    let PunchFrame::Response(response) = recv_ws_frame(&mut b).await else {
+      panic!("accept should return an RPC response");
+    };
+    assert!(response.error.is_none(), "{:?}", response.error);
+
+    let mut offer = signal(SignalType::Offer, connection_id);
+    offer.connect_token = connect.connect_token.clone();
+    offer.sdp = Some("v=0".into());
+    send_ws_request(
+      &mut a,
+      Request {
+        v: 1,
+        id: "a-offer".into(),
+        method: "punch.signal".into(),
+        params: serde_json::to_value(offer).unwrap(),
+      },
+    )
+    .await;
+    let PunchFrame::Signal(forwarded) = recv_ws_frame(&mut b).await else {
+      panic!("target should receive the offer");
+    };
+    assert_eq!(forwarded.kind, SignalType::Offer);
+    let PunchFrame::Response(response) = recv_ws_frame(&mut a).await else {
+      panic!("offer should return an RPC response");
+    };
+    assert!(response.error.is_none(), "{:?}", response.error);
+
+    let mut candidate_a = signal(SignalType::Candidate, connection_id);
+    candidate_a.candidate = Some("candidate:a".into());
+    let mut candidate_b = signal(SignalType::Candidate, connection_id);
+    candidate_b.candidate = Some("candidate:b".into());
+    send_ws_request(
+      &mut a,
+      Request {
+        v: 1,
+        id: "a-candidate".into(),
+        method: "punch.signal".into(),
+        params: serde_json::to_value(candidate_a).unwrap(),
+      },
+    )
+    .await;
+    send_ws_request(
+      &mut b,
+      Request {
+        v: 1,
+        id: "b-candidate".into(),
+        method: "punch.signal".into(),
+        params: serde_json::to_value(candidate_b).unwrap(),
+      },
+    )
+    .await;
+
+    let (a_frames, b_frames) = tokio::join!(
+      async { [recv_ws_frame(&mut a).await, recv_ws_frame(&mut a).await] },
+      async { [recv_ws_frame(&mut b).await, recv_ws_frame(&mut b).await] },
+    );
+    assert!(a_frames.iter().any(|frame| matches!(frame,
+      PunchFrame::Signal(signal) if signal.candidate.as_deref() == Some("candidate:b")
+    )));
+    assert!(a_frames.iter().any(|frame| matches!(frame,
+      PunchFrame::Response(response) if response.id == "a-candidate" && response.error.is_none()
+    )));
+    assert!(b_frames.iter().any(|frame| matches!(frame,
+      PunchFrame::Signal(signal) if signal.candidate.as_deref() == Some("candidate:a")
+    )));
+    assert!(b_frames.iter().any(|frame| matches!(frame,
+      PunchFrame::Response(response) if response.id == "b-candidate" && response.error.is_none()
+    )));
+
+    close_ws_client(&mut a, a_handler).await;
+    close_ws_client(&mut b, b_handler).await;
+  }
+
+  #[tokio::test]
+  async fn websocket_rejects_unsupported_request_versions_before_dispatch() {
+    let st = Arc::new(state(60));
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let server_socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+      server_io,
+      tokio_tungstenite::tungstenite::protocol::Role::Server,
+      None,
+    )
+    .await;
+    let mut client_socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+      client_io,
+      tokio_tungstenite::tungstenite::protocol::Role::Client,
+      None,
+    )
+    .await;
+    let server_state = st.clone();
+    let handler = tokio::spawn(async move {
+      handle_websocket(
+        server_socket,
+        server_state,
+        "127.0.0.1:41003".parse().unwrap(),
+      )
+      .await;
+    });
+
+    let now = q2q_punch::binding::now();
+    let join = join_request(22, "punch-1", now);
+    for (id, version) in [("unsupported", 2), ("supported", 1)] {
+      client_socket
+        .send(tokio_tungstenite::tungstenite::Message::Binary(
+          serde_json::to_vec(&PunchFrame::Request(Request {
+            v: version,
+            id: id.into(),
+            method: "punch.join".into(),
+            params: serde_json::to_value(&join).unwrap(),
+          }))
+          .unwrap()
+          .into(),
+        ))
+        .await
+        .unwrap();
+      let message = tokio::time::timeout(std::time::Duration::from_secs(2), client_socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+      let tokio_tungstenite::tungstenite::Message::Binary(bytes) = message else {
+        panic!("server response must be binary");
+      };
+      let PunchFrame::Response(response) = serde_json::from_slice(&bytes).unwrap() else {
+        panic!("server should answer the request frame");
+      };
+      assert_eq!(response.id, id);
+      if version == 2 {
+        assert_eq!(response.error.unwrap().code, "unsupported_version");
+        assert_eq!(st.bindings.len(), 0);
+      } else {
+        assert!(response.error.is_none());
+        assert_eq!(st.bindings.len(), 1);
+      }
+    }
+
+    client_socket
+      .send(tokio_tungstenite::tungstenite::Message::Close(None))
+      .await
+      .unwrap();
+    handler.await.unwrap();
+  }
+
+  #[tokio::test]
+  async fn websocket_closes_channels_that_never_authenticate() {
+    let st = Arc::new(state(60));
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let server_socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+      server_io,
+      tokio_tungstenite::tungstenite::protocol::Role::Server,
+      None,
+    )
+    .await;
+    let _client_socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
+      client_io,
+      tokio_tungstenite::tungstenite::protocol::Role::Client,
+      None,
+    )
+    .await;
+    tokio::time::timeout(
+      std::time::Duration::from_secs(1),
+      handle_websocket_with_auth_timeout(
+        server_socket,
+        st.clone(),
+        "127.0.0.1:41004".parse().unwrap(),
+        std::time::Duration::from_millis(20),
+      ),
+    )
+    .await
+    .expect("unauthenticated WebSocket should be closed at its deadline");
+    assert_eq!(st.bindings.len(), 0);
+    assert!(!st.sinks.has_standing(&peer(23)));
+  }
+
+  #[test]
+  fn websocket_per_ip_connection_quota_is_released_on_drop() {
+    let counts = PerIpConnections(Arc::new(Mutex::new(HashMap::new())));
+    let ip = "192.0.2.10".parse().unwrap();
+    let mut permits = (0..WEBSOCKET_CONNECTIONS_PER_IP)
+      .map(|_| counts.acquire(ip).unwrap())
+      .collect::<Vec<_>>();
+    assert!(counts.acquire(ip).is_none());
+    permits.pop();
+    assert!(counts.acquire(ip).is_some());
   }
 
   #[tokio::test]
@@ -1040,8 +1894,7 @@ mod tests {
     assert!(
       matches!(&outcome.forwards[0].to, crate::signalling::Recipient::Initiator(id) if id == "cid-reject")
     );
-    let forwarded: SignalRequest = serde_json::from_str(&outcome.forwards[0].message).unwrap();
-    assert_eq!(forwarded.reason, reject.reason);
+    assert_eq!(outcome.forwards[0].signal.reason, reject.reason);
   }
 
   fn peer(seed: u8) -> PeerId {
