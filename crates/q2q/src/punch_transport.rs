@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as SyncMutex};
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
@@ -132,9 +132,30 @@ enum WsCommand {
   Close(oneshot::Sender<()>),
 }
 
+type PendingResponses = Arc<SyncMutex<HashMap<String, oneshot::Sender<Response>>>>;
+
+fn lock_pending(
+  pending: &PendingResponses,
+) -> std::sync::MutexGuard<'_, HashMap<String, oneshot::Sender<Response>>> {
+  pending.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+/// Removes an RPC waiter even when its future is cancelled while waiting for
+/// queue capacity or a response.
+struct PendingResponseGuard {
+  pending: PendingResponses,
+  id: String,
+}
+
+impl Drop for PendingResponseGuard {
+  fn drop(&mut self) {
+    lock_pending(&self.pending).remove(&self.id);
+  }
+}
+
 struct WebSocketPunchTransport {
   outgoing: mpsc::Sender<WsCommand>,
-  pending: Arc<Mutex<HashMap<String, oneshot::Sender<Response>>>>,
+  pending: PendingResponses,
   signals: Mutex<mpsc::Receiver<Result<SignalRequest, ControlError>>>,
   reader: tokio::task::AbortHandle,
   writer: tokio::task::AbortHandle,
@@ -186,7 +207,7 @@ impl WebSocketPunchTransport {
   {
     let (mut writer, mut reader) = socket.split();
     let (outgoing, mut commands) = mpsc::channel(64);
-    let pending = Arc::new(Mutex::new(
+    let pending = Arc::new(SyncMutex::new(
       HashMap::<String, oneshot::Sender<Response>>::new(),
     ));
     let writer_pending = pending.clone();
@@ -212,7 +233,7 @@ impl WebSocketPunchTransport {
           break;
         }
       }
-      writer_pending.lock().await.clear();
+      lock_pending(&writer_pending).clear();
     });
 
     let reader_pending = pending.clone();
@@ -239,30 +260,32 @@ impl WebSocketPunchTransport {
             };
             match frame {
               PunchFrame::Response(response) => {
-                if let Some(waiter) = reader_pending.lock().await.remove(&response.id) {
+                if let Some(waiter) = lock_pending(&reader_pending).remove(&response.id) {
                   let _ = waiter.send(response);
                 }
               }
-              PunchFrame::Signal(signal) => {
-                if signal_tx.send(Ok(signal)).await.is_err() {
+              PunchFrame::Signal(signal) => match signal_tx.try_send(Ok(signal)) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                  failure = Some("Punch WebSocket signal queue is full".into());
                   break;
                 }
-              }
+                Err(mpsc::error::TrySendError::Closed(_)) => break,
+              },
               PunchFrame::Request(_) => {
                 failure = Some("server sent a Punch request frame".into());
                 break;
               }
             }
           }
-          Message::Ping(bytes) => {
-            if reader_outgoing
-              .send(WsCommand::Pong(bytes.to_vec()))
-              .await
-              .is_err()
-            {
+          Message::Ping(bytes) => match reader_outgoing.try_send(WsCommand::Pong(bytes.to_vec())) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+              failure = Some("Punch WebSocket writer queue is full".into());
               break;
             }
-          }
+            Err(mpsc::error::TrySendError::Closed(_)) => break,
+          },
           Message::Close(_) => break,
           Message::Pong(_) | Message::Frame(_) => {}
           Message::Text(_) => {
@@ -271,7 +294,7 @@ impl WebSocketPunchTransport {
           }
         }
       }
-      reader_pending.lock().await.clear();
+      lock_pending(&reader_pending).clear();
       if let Some(error) = failure {
         let _ = signal_tx.send(Err(ControlError::Transport(error))).await;
       }
@@ -285,6 +308,49 @@ impl WebSocketPunchTransport {
       writer: writer_task.abort_handle(),
     }
   }
+
+  async fn rpc_with_timeout(
+    &self,
+    request: Request,
+    timeout: Duration,
+  ) -> Result<Response, ControlError> {
+    let id = request.id.clone();
+    let (waiter, response) = oneshot::channel();
+    lock_pending(&self.pending).insert(id.clone(), waiter);
+    let _pending_guard = PendingResponseGuard {
+      pending: self.pending.clone(),
+      id,
+    };
+    match tokio::time::timeout(timeout, async {
+      self
+        .outgoing
+        .send(WsCommand::Frame(PunchFrame::Request(request)))
+        .await
+        .map_err(|_| ControlError::Transport("Punch WebSocket writer is closed".into()))?;
+      response
+        .await
+        .map_err(|_| ControlError::Transport("Punch WebSocket reader is closed".into()))
+    })
+    .await
+    {
+      Ok(response) => response,
+      Err(_) => Err(ControlError::Transport(
+        "Punch WebSocket request timed out".into(),
+      )),
+    }
+  }
+
+  async fn close_with_timeout(&self, timeout: Duration) {
+    let close = async {
+      let (ack, closed) = oneshot::channel();
+      self.outgoing.send(WsCommand::Close(ack)).await.ok()?;
+      closed.await.ok()
+    };
+    let _ = tokio::time::timeout(timeout, close).await;
+    lock_pending(&self.pending).clear();
+    self.reader.abort();
+    self.writer.abort();
+  }
 }
 
 #[async_trait]
@@ -294,32 +360,9 @@ impl PunchTransport for WebSocketPunchTransport {
   }
 
   async fn rpc(&self, request: Request) -> Result<Response, ControlError> {
-    let id = request.id.clone();
-    let (waiter, response) = oneshot::channel();
-    self.pending.lock().await.insert(id.clone(), waiter);
-    if self
-      .outgoing
-      .send(WsCommand::Frame(PunchFrame::Request(request)))
+    self
+      .rpc_with_timeout(request, Duration::from_secs(10))
       .await
-      .is_err()
-    {
-      self.pending.lock().await.remove(&id);
-      return Err(ControlError::Transport(
-        "Punch WebSocket writer is closed".into(),
-      ));
-    }
-    match tokio::time::timeout(Duration::from_secs(10), response).await {
-      Ok(Ok(response)) => Ok(response),
-      Ok(Err(_)) => Err(ControlError::Transport(
-        "Punch WebSocket reader is closed".into(),
-      )),
-      Err(_) => {
-        self.pending.lock().await.remove(&id);
-        Err(ControlError::Transport(
-          "Punch WebSocket request timed out".into(),
-        ))
-      }
-    }
   }
 
   async fn heartbeat(&self, request: Request) -> Result<Response, ControlError> {
@@ -337,17 +380,13 @@ impl PunchTransport for WebSocketPunchTransport {
   }
 
   async fn close(&self) {
-    let (ack, closed) = oneshot::channel();
-    if self.outgoing.send(WsCommand::Close(ack)).await.is_ok() {
-      let _ = tokio::time::timeout(Duration::from_secs(2), closed).await;
-    }
-    self.reader.abort();
-    self.writer.abort();
+    self.close_with_timeout(Duration::from_secs(2)).await;
   }
 }
 
 impl Drop for WebSocketPunchTransport {
   fn drop(&mut self) {
+    lock_pending(&self.pending).clear();
     self.reader.abort();
     self.writer.abort();
   }

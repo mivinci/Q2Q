@@ -8,7 +8,8 @@ use base64::engine::general_purpose::STANDARD as B64;
 use q2q_core::identity::{Audience, PeerId};
 use q2q_track::auth::mac_bytes;
 use q2q_track::wire::{
-  AnnounceRequest, AnnounceResponse, ErrorBody, HeartbeatRequest, HeartbeatResponse, QueryResponse,
+  AnnounceRequest, AnnounceResponse, ErrorBody, HeartbeatRequest, HeartbeatResponse, PunchWire,
+  QueryResponse,
 };
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -364,9 +365,7 @@ impl ControlSession {
       .store(announced.expires_at, Ordering::Release);
     let changed = {
       let current = self.assignment.read().unwrap_or_else(|e| e.into_inner());
-      current.punch_id != announced.punch.punch_id
-        || current.url != announced.punch.url
-        || current.public_key != announced.punch.public_key
+      punch_assignment_changed(&current, &announced.punch)
     };
     if changed {
       let replacement = Arc::new(PunchBinding::connect(&self.identity, &announced.punch).await?);
@@ -386,6 +385,13 @@ impl ControlSession {
     *self.turn.write().await = announced.turn;
     Ok(announced.expires_at)
   }
+}
+
+fn punch_assignment_changed(current: &PunchWire, next: &PunchWire) -> bool {
+  current.punch_id != next.punch_id
+    || current.url != next.url
+    || current.websocket_url != next.websocket_url
+    || current.public_key != next.public_key
 }
 
 fn endpoint(base: &Url, segments: &[&str]) -> Result<Url, ControlError> {

@@ -2,7 +2,7 @@
 
 ## 状态
 
-方案已确认，传输接口边界已完成设计，首轮实现进行中。目标是让 UDP 不可用的网络仍能连接 Punch 控制面；是否继续扩展到 UDP 不可用时的文件数据面，单独按下文验收。
+首版实现与 PR 复审修复已完成。目标是让 UDP 不可用的网络仍能连接 Punch 控制面；是否继续扩展到 UDP 不可用时的文件数据面，单独按下文验收。
 
 ## 已确认的设计约束
 
@@ -73,7 +73,8 @@ Track 配置兼容地增加可选 WSS 地址，协议响应也以可选字段下
 - [x] Punch WSS/TLS listener、共用 Ed25519 身份、有限帧大小和 PunchFrame envelope。
 - [x] SDK QUIC/WSS transport 与 QUIC 链路失败回退；身份校验错误和远端业务错误不会触发回退。
 - [x] 中英文 Punch/Deploy 文档和示例配置已更新。
-- [x] `cargo check --workspace` 类型检查；SDK transport factory / WebSocket framing 单测 4 项和 Punch WebSocket 共享 dispatch / 信令转发单测 1 项通过。
+- [x] PR 复审修复：WSS 独立 writer 避免双向转发和自转发死锁；连接总量/单 IP 配额、握手和首次认证超时；SDK 队列溢出失败策略、全程 RPC/关闭期限与取消安全 waiter；WSS envelope 版本校验及 `websocket_url` assignment 更新检测。
+- [x] `cargo check --workspace` 通过；`cargo test -p q2q-punch-server` 29 项通过；`cargo test -p q2q --lib` 132 项通过、1 项手动基准忽略。
 - [ ] 完整 QUIC/WSS 真实网络矩阵、旧版本兼容与身份失败集成验收；完成后再做生产渐进上线。
 
-本轮未部署生产 Punch。已尝试运行 SDK 中已有的两个真实 QUIC/UDP 测试，但本地 socket 在当前沙箱返回 `PermissionDenied`；其余新增的适配层与选择策略单测通过。当前 WSS 测试使用内存 WebSocket stream，未覆盖真实 TLS 握手。WSS 目前只打通控制与信令；UDP 全封锁下的数据面仍需独立验证 TURN/TCP/TLS。
+本轮未部署生产 Punch。SDK 的现有真实 QUIC/UDP 测试已在本地测试套件中通过；WSS 自动化测试使用内存 WebSocket stream，未覆盖真实 TLS 握手。WSS 目前只打通控制与信令；UDP 全封锁下的数据面仍需独立验证 TURN/TCP/TLS。

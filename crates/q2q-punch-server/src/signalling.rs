@@ -21,6 +21,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{mpsc, oneshot};
 
+const DELIVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 static NEXT_SINK_ID: AtomicU64 = AtomicU64::new(1);
 
 /// A transport-neutral route for signals pushed to a live Punch channel.
@@ -55,18 +57,22 @@ impl ChannelSink {
 
   async fn push(&self, signal: &SignalRequest) -> bool {
     let (delivered, result) = oneshot::channel();
-    if self
-      .sender
-      .send(PendingPush {
-        signal: signal.clone(),
-        delivered,
-      })
-      .await
-      .is_err()
-    {
-      return false;
-    }
-    result.await.unwrap_or(false)
+    tokio::time::timeout(DELIVERY_TIMEOUT, async {
+      if self
+        .sender
+        .send(PendingPush {
+          signal: signal.clone(),
+          delivered,
+        })
+        .await
+        .is_err()
+      {
+        return false;
+      }
+      result.await.unwrap_or(false)
+    })
+    .await
+    .unwrap_or(false)
   }
 }
 

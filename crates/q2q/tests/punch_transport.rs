@@ -302,3 +302,193 @@ async fn websocket_adapter_multiplexes_responses_and_routes_push_frames() {
   transport.close().await;
   server.await.unwrap();
 }
+
+#[tokio::test]
+async fn websocket_reader_fails_explicitly_when_signal_queue_is_full() {
+  let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+  let client_socket = WebSocketStream::from_raw_socket(
+    client_io,
+    tokio_tungstenite::tungstenite::protocol::Role::Client,
+    None,
+  )
+  .await;
+  let server_socket = WebSocketStream::from_raw_socket(
+    server_io,
+    tokio_tungstenite::tungstenite::protocol::Role::Server,
+    None,
+  )
+  .await;
+  let transport = WebSocketPunchTransport::from_socket(client_socket);
+  let server = tokio::spawn(async move {
+    let (mut writer, mut reader) = server_socket.split();
+    let request = reader.next().await.unwrap().unwrap();
+    let Message::Binary(bytes) = request else {
+      panic!("client RPC must be binary");
+    };
+    let PunchFrame::Request(request) = serde_json::from_slice(&bytes).unwrap() else {
+      panic!("client frame must contain a Punch request");
+    };
+    for index in 0..65 {
+      let signal = SignalRequest {
+        kind: q2q_punch::message::SignalType::Candidate,
+        connection_id: format!("queue-{index}"),
+        connect_token: None,
+        sdp: None,
+        candidate: Some(format!("candidate:{index}")),
+        reason: None,
+        accept_token: None,
+        signal_key: None,
+      };
+      writer
+        .send(Message::Binary(
+          serde_json::to_vec(&PunchFrame::Signal(signal))
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    }
+    writer
+      .send(Message::Binary(
+        serde_json::to_vec(&PunchFrame::Response(Response::ok(
+          &request.id,
+          &"should-not-be-observed",
+        )))
+        .unwrap()
+        .into(),
+      ))
+      .await
+      .unwrap();
+    while let Some(Ok(message)) = reader.next().await {
+      if matches!(message, Message::Close(_)) {
+        break;
+      }
+    }
+  });
+
+  let request = Request {
+    v: RPC_VERSION,
+    id: "rpc-with-signal-backlog".into(),
+    method: "punch.test".into(),
+    params: serde_json::Value::Null,
+  };
+  let error = tokio::time::timeout(Duration::from_secs(2), transport.rpc(request))
+    .await
+    .unwrap()
+    .unwrap_err();
+  assert!(error.to_string().contains("reader is closed"));
+
+  for _ in 0..64 {
+    transport.recv_signal().await.unwrap();
+  }
+  let error = transport.recv_signal().await.unwrap_err();
+  assert!(error.to_string().contains("signal queue is full"));
+  transport.close().await;
+  server.await.unwrap();
+}
+
+fn blocked_websocket_transport() -> (
+  WebSocketPunchTransport,
+  mpsc::Receiver<WsCommand>,
+  tokio::task::JoinHandle<()>,
+  tokio::task::JoinHandle<()>,
+) {
+  let (outgoing, commands) = mpsc::channel(1);
+  let (signal_tx, signals) = mpsc::channel(1);
+  drop(signal_tx);
+  let pending = Arc::new(SyncMutex::new(HashMap::new()));
+  let reader_task = tokio::spawn(std::future::pending::<()>());
+  let writer_task = tokio::spawn(std::future::pending::<()>());
+  let transport = WebSocketPunchTransport {
+    outgoing,
+    pending,
+    signals: Mutex::new(signals),
+    reader: reader_task.abort_handle(),
+    writer: writer_task.abort_handle(),
+  };
+  (transport, commands, reader_task, writer_task)
+}
+
+#[tokio::test]
+async fn websocket_rpc_deadline_covers_enqueue_and_cleans_pending_waiter() {
+  let (transport, commands, _reader, _writer) = blocked_websocket_transport();
+  transport
+    .outgoing
+    .send(WsCommand::Pong(vec![]))
+    .await
+    .unwrap();
+  let request = Request {
+    v: RPC_VERSION,
+    id: "rpc-enqueue-timeout".into(),
+    method: "punch.test".into(),
+    params: serde_json::Value::Null,
+  };
+  let error = transport
+    .rpc_with_timeout(request, Duration::from_millis(20))
+    .await
+    .unwrap_err();
+  assert!(error.to_string().contains("timed out"));
+  assert!(lock_pending(&transport.pending).is_empty());
+  drop(commands);
+}
+
+#[tokio::test]
+async fn cancelling_websocket_rpc_removes_pending_waiter() {
+  let (transport, commands, reader, writer) = blocked_websocket_transport();
+  transport
+    .outgoing
+    .send(WsCommand::Pong(vec![]))
+    .await
+    .unwrap();
+  let transport = Arc::new(transport);
+  let request = Request {
+    v: RPC_VERSION,
+    id: "rpc-cancelled".into(),
+    method: "punch.test".into(),
+    params: serde_json::Value::Null,
+  };
+  let call_transport = transport.clone();
+  let call = tokio::spawn(async move {
+    call_transport
+      .rpc_with_timeout(request, Duration::from_secs(30))
+      .await
+  });
+  tokio::time::timeout(Duration::from_secs(1), async {
+    while lock_pending(&transport.pending).is_empty() {
+      tokio::task::yield_now().await;
+    }
+  })
+  .await
+  .unwrap();
+  call.abort();
+  let _ = call.await;
+  assert!(lock_pending(&transport.pending).is_empty());
+
+  transport
+    .close_with_timeout(Duration::from_millis(20))
+    .await;
+  drop(commands);
+  assert!(reader.await.unwrap_err().is_cancelled());
+  assert!(writer.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
+async fn websocket_close_deadline_aborts_tasks_and_clears_pending_waiters() {
+  let (transport, commands, reader, writer) = blocked_websocket_transport();
+  transport
+    .outgoing
+    .send(WsCommand::Pong(vec![]))
+    .await
+    .unwrap();
+  let (sender, waiter) = oneshot::channel();
+  lock_pending(&transport.pending).insert("in-flight".into(), sender);
+
+  transport
+    .close_with_timeout(Duration::from_millis(20))
+    .await;
+  assert!(lock_pending(&transport.pending).is_empty());
+  assert!(waiter.await.is_err());
+  drop(commands);
+  assert!(reader.await.unwrap_err().is_cancelled());
+  assert!(writer.await.unwrap_err().is_cancelled());
+}

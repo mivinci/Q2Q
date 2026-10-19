@@ -59,7 +59,10 @@ will reject it.
   not expose QUIC. To enable the optional fallback, set `websocket_bind` in
   `punch.toml`, expose that TCP port with TLS, and set the matching
   `websocket_url = "wss://.../punch"` on the same Punch entry in `track.toml`.
-  The listener uses the same persisted Ed25519 identity as QUIC.
+  The listener uses the same persisted Ed25519 identity as QUIC. Each process
+  allows up to 1,024 concurrent WSS connections and 32 per source IP. TLS plus
+  the WebSocket upgrade must finish within 10 seconds, followed by a valid
+  `join` or `connect` within 10 seconds.
 - **TURN secret must match.** Track signs relay credentials with
   `HMAC-SHA1(secret, "<expiry>:<user>")` and coturn verifies with the same
   secret. If they differ, direct connections still work and only relaying fails
