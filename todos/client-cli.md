@@ -96,3 +96,8 @@
 - SDK 单元测试 136 项通过、0 失败，1 项手动缓存基准忽略；SDK 公开 API 测试 10 项通过；CLI 初始化/信号生命周期测试 4 项通过。此前因沙箱禁止绑定端口而失败的网络单元测试在获得本地网络权限后全部通过。
 - 临时 Track/Punch、身份和数据已清理；未验证 Windows/macOS 运行时，也未执行 GitHub 发布流程。
 - `--insecure` 专项：临时自签名 HTTPS 服务验证默认模式拒绝 Track/CDN 证书，显式开启后 Track 请求、CDN 内容/证明下载和 VOD 读取成功，损坏内容仍被拒绝；实际 CLI 进程验证开关生效。该次回归 SDK 单元测试 136 项、公开 API 11 项、CLI 生命周期 4 项及常规 CLI 集成 7 项通过；缓存基准与需单独启动服务的 CLI 联机用例默认忽略。
+
+### PR #73 CI 修复
+
+- 将 `OfflineResume::NeedsNetwork` 的已校验句柄装箱，避免恢复结果枚举过大；下载请求参数集中为 `DownloadRequest`，错误判断直接借用错误对象，严格 Clippy 检查通过。
+- 共用下载初始化 future 在 SDK 边界装箱，避免 CLI 组合多个下载模式时扩大栈占用。Linux 上将进程栈限制为 1 MiB 可复现 Windows CI 的三项栈溢出；修复后常规 CLI 集成测试 7 项全部通过。Windows 实际运行结果以 PR 检查为准。

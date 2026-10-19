@@ -33,7 +33,7 @@ pub enum OfflineResume {
   /// an existing destination will still be protected from being overwritten.
   NoCheckpoint,
   /// A checkpoint was found and validated, but some blocks need network recovery.
-  NeedsNetwork(OfflineDownload),
+  NeedsNetwork(Box<OfflineDownload>),
   /// Every block was revalidated locally; wait on this handle to finish syncing.
   Complete(Transfer),
 }
@@ -76,12 +76,12 @@ pub async fn resume_offline(
     crate::destination::Destination::open_in(seed, &path, true, &checkpoint_directory).await?;
   let bits = store.bitfield().await?;
   if !store.complete().await? {
-    return Ok(OfflineResume::NeedsNetwork(OfflineDownload {
+    return Ok(OfflineResume::NeedsNetwork(Box::new(OfflineDownload {
       seed: seed.clone(),
       path,
       checkpoint_directory,
       store,
-    }));
+    })));
   }
   let progress = crate::progress::channel(seed, &bits);
   let mut guard = crate::destination::DownloadGuard::new(store.clone());

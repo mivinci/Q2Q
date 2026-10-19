@@ -113,12 +113,14 @@ pub(crate) async fn run(args: Args, mut stop: Stop) -> Result<Outcome> {
         &args,
         &identity_path,
         &home,
-        seed.as_ref().expect("download seed loaded"),
-        download_output
-          .as_deref()
-          .expect("download output path resolved"),
-        *resume || resume_from_checkpoint,
-        offline_resume.as_ref(),
+        DownloadRequest {
+          seed: seed.as_ref().expect("download seed loaded"),
+          output: download_output
+            .as_deref()
+            .expect("download output path resolved"),
+          resume: *resume || resume_from_checkpoint,
+          offline_resume: offline_resume.as_deref(),
+        },
         &mut stop,
       )
       .await
@@ -459,17 +461,27 @@ async fn serve(
   }
 }
 
+struct DownloadRequest<'a> {
+  seed: &'a Seed,
+  output: &'a Path,
+  resume: bool,
+  offline_resume: Option<&'a q2q_core::client::OfflineDownload>,
+}
+
 async fn download_with_track_failover(
   candidates: &[String],
   args: &Args,
   identity_path: &Path,
   home: &Path,
-  seed: &Seed,
-  output: &Path,
-  resume: bool,
-  offline_resume: Option<&q2q_core::client::OfflineDownload>,
+  request: DownloadRequest<'_>,
   stop: &mut Stop,
 ) -> Result<Outcome> {
+  let DownloadRequest {
+    seed,
+    output,
+    resume,
+    offline_resume,
+  } = request;
   let mut last_error = None;
   for (index, track) in candidates.iter().enumerate() {
     let try_another_track = index + 1 < candidates.len();
@@ -515,7 +527,7 @@ async fn download_with_track_failover(
         return Ok(Outcome::Interrupted);
       }
       Ok((transfer, false)) => return finish_download(transfer, args.quiet, stop).await,
-      Err(error) if index + 1 < candidates.len() && is_retryable_track_failure(&error) => {
+      Err(error) if index + 1 < candidates.len() && is_retryable_track_failure(error.as_ref()) => {
         if !args.quiet {
           eprintln!(
             "Track candidate {} failed during session setup or initial peer discovery, or returned no peers ({error}); trying candidate {}.",
@@ -533,7 +545,7 @@ async fn download_with_track_failover(
   )
 }
 
-fn is_retryable_track_failure(error: &Box<dyn std::error::Error + Send + Sync>) -> bool {
+fn is_retryable_track_failure(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
   error
     .downcast_ref::<q2q_core::client::TransferError>()
     .is_some_and(|error| {
