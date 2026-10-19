@@ -72,74 +72,75 @@ impl BindingError {
 
 /// Track's state is behind a trait because several instances share it; a
 /// binding belongs to exactly one Punch Server, so this one is concrete.
+#[derive(Default)]
+struct BindingTable {
+  by_peer: HashMap<String, Binding>,
+  by_id: HashMap<String, String>,
+}
+
 pub struct Bindings {
-  /// peer_id → binding. Joining again replaces the previous one.
-  by_peer: Mutex<HashMap<String, Binding>>,
-  /// binding_id → peer_id. Heartbeats and exits only carry the binding id.
-  by_id: Mutex<HashMap<String, String>>,
-  /// One-shot ticket ids, kept for twice the ticket lifetime.
+  table: Mutex<BindingTable>,
   spent: Mutex<HashMap<String, UnixSeconds>>,
   ttl: UnixSeconds,
 }
 
 impl Bindings {
   pub fn new(ttl: UnixSeconds) -> Self {
-    Bindings {
-      by_peer: Mutex::new(HashMap::new()),
-      by_id: Mutex::new(HashMap::new()),
+    Self {
+      table: Mutex::new(BindingTable::default()),
       spent: Mutex::new(HashMap::new()),
       ttl,
     }
   }
 
-  /// Mark a ticket id as used. Returns false if it was already spent, which is
-  /// what stops a captured join from being replayed.
   pub fn spend(&self, token_id: &str, now: UnixSeconds, ticket_exp: UnixSeconds) -> bool {
     let mut spent = self.spent.lock();
     if spent.get(token_id).is_some_and(|until| *until > now) {
       return false;
     }
-    // keep it for twice the ticket's remaining life
     spent.insert(
       token_id.to_string(),
-      now + (ticket_exp.saturating_sub(now)) * 2 + self.ttl,
+      now + ticket_exp.saturating_sub(now) * 2 + self.ttl,
     );
     true
   }
 
   pub fn insert(&self, binding: Binding) {
-    let mut map = self.by_peer.lock();
-    // joining again replaces the old binding, so drop the stale id first
-    if let Some(old) = map.get(binding.peer_id.as_str())
-      && old.binding_id != binding.binding_id
+    let mut table = self.table.lock();
+    if let Some(old) = table
+      .by_peer
+      .insert(binding.peer_id.as_str().to_string(), binding.clone())
     {
-      self.by_id.lock().remove(&old.binding_id);
+      table.by_id.remove(&old.binding_id);
     }
-    self.by_id.lock().insert(
-      binding.binding_id.clone(),
-      binding.peer_id.as_str().to_string(),
-    );
-    map.insert(binding.peer_id.as_str().to_string(), binding);
+    table
+      .by_id
+      .insert(binding.binding_id, binding.peer_id.as_str().to_string());
   }
 
   pub fn get(&self, peer_id: &PeerId) -> Option<Binding> {
-    let map = self.by_peer.lock();
-    map.get(peer_id.as_str()).cloned()
+    self.table.lock().by_peer.get(peer_id.as_str()).cloned()
   }
 
   pub fn find(&self, binding_id: &str) -> Option<Binding> {
-    let peer = self.by_id.lock().get(binding_id).cloned()?;
-    self.get(&PeerId::unchecked(peer))
+    let table = self.table.lock();
+    table.by_peer.get(table.by_id.get(binding_id)?).cloned()
   }
 
   pub fn remove(&self, peer_id: &PeerId) -> Option<Binding> {
-    let mut map = self.by_peer.lock();
-    let old = map.remove(peer_id.as_str())?;
-    self.by_id.lock().remove(&old.binding_id);
+    let mut table = self.table.lock();
+    let old = table.by_peer.remove(peer_id.as_str())?;
+    table.by_id.remove(&old.binding_id);
     Some(old)
   }
 
-  /// Look up a binding that is still alive.
+  /// Transport cleanup must never remove a replacement binding for the same peer.
+  pub fn remove_if_current(&self, binding_id: &str) -> Option<Binding> {
+    let mut table = self.table.lock();
+    let peer = table.by_id.remove(binding_id)?;
+    table.by_peer.remove(&peer)
+  }
+
   pub fn live(&self, peer_id: &PeerId, now: UnixSeconds) -> Result<Binding, BindingError> {
     let b = self.get(peer_id).ok_or(BindingError::Unknown)?;
     if b.expires_at <= now {
@@ -148,10 +149,52 @@ impl Bindings {
     Ok(b)
   }
 
-  /// Accept a heartbeat: check mac, generation and sequence, then extend.
-  ///
-  /// `mac_ok` is passed in rather than computed here so this stays about state;
-  /// the wire layer owns the MAC construction.
+  /// Authenticate against the current key and advance the lease in one critical section.
+  pub fn heartbeat_authenticated(
+    &self,
+    binding_id: &str,
+    seq: u64,
+    generation: Generation,
+    now: UnixSeconds,
+    verify: impl FnOnce(&Binding) -> bool,
+  ) -> Result<Binding, BindingError> {
+    let mut table = self.table.lock();
+    let peer = table
+      .by_id
+      .get(binding_id)
+      .ok_or(BindingError::Unknown)?
+      .clone();
+    let b = table.by_peer.get_mut(&peer).ok_or(BindingError::Unknown)?;
+    validate(b, seq, generation, now, verify)?;
+    b.last_seq = seq;
+    b.generation = generation;
+    b.expires_at = now + self.ttl;
+    Ok(b.clone())
+  }
+
+  pub fn exit_authenticated(
+    &self,
+    binding_id: &str,
+    seq: u64,
+    generation: Generation,
+    now: UnixSeconds,
+    verify: impl FnOnce(&Binding) -> bool,
+  ) -> Result<Binding, BindingError> {
+    let mut table = self.table.lock();
+    let peer = table
+      .by_id
+      .get(binding_id)
+      .ok_or(BindingError::Unknown)?
+      .clone();
+    let b = table.by_peer.get(&peer).ok_or(BindingError::Unknown)?;
+    validate(b, seq, generation, now, verify)?;
+    let removed = table.by_peer.remove(&peer).ok_or(BindingError::Unknown)?;
+    table.by_id.remove(binding_id);
+    Ok(removed)
+  }
+
+  /// Refresh a previously authenticated peer. Wire handlers use the binding-id
+  /// variant above so a concurrent rejoin cannot change the key being checked.
   pub fn heartbeat(
     &self,
     peer_id: &PeerId,
@@ -160,51 +203,58 @@ impl Bindings {
     mac_ok: bool,
     now: UnixSeconds,
   ) -> Result<Binding, BindingError> {
-    if !mac_ok {
-      return Err(BindingError::BadMac);
-    }
-    let b = self.live(peer_id, now)?;
-    if generation < b.generation {
-      return Err(BindingError::StaleGeneration(generation));
-    }
-    if seq <= b.last_seq {
-      return Err(BindingError::StaleSequence(seq));
-    }
-
-    let updated = Binding {
-      expires_at: now + self.ttl,
-      last_seq: seq,
-      generation: generation.max(b.generation),
-      ..b
-    };
-    self.insert(updated.clone());
-    Ok(updated)
+    let mut table = self.table.lock();
+    let b = table
+      .by_peer
+      .get_mut(peer_id.as_str())
+      .ok_or(BindingError::Unknown)?;
+    validate(b, seq, generation, now, |_| mac_ok)?;
+    b.last_seq = seq;
+    b.generation = generation;
+    b.expires_at = now + self.ttl;
+    Ok(b.clone())
   }
 
-  /// Drop expired bindings and spent-token records. Call it on a timer.
   pub fn sweep(&self, now: UnixSeconds) -> usize {
-    let mut map = self.by_peer.lock();
-    let before = map.len();
-    map.retain(|_, b| b.expires_at > now);
-    let dropped = before - map.len();
-
-    let mut ids = self.by_id.lock();
-    ids.retain(|_, peer| map.contains_key(peer));
-    drop(ids);
-    drop(map);
-
-    let mut spent = self.spent.lock();
-    spent.retain(|_, until| *until > now);
+    let mut table = self.table.lock();
+    let before = table.by_peer.len();
+    table.by_peer.retain(|_, b| b.expires_at > now);
+    let BindingTable { by_peer, by_id } = &mut *table;
+    by_id.retain(|_, peer| by_peer.contains_key(peer));
+    let dropped = before - by_peer.len();
+    drop(table);
+    self.spent.lock().retain(|_, until| *until > now);
     dropped
   }
 
   pub fn len(&self) -> usize {
-    self.by_peer.lock().len()
+    self.table.lock().by_peer.len()
   }
-
   pub fn is_empty(&self) -> bool {
     self.len() == 0
   }
+}
+
+fn validate(
+  binding: &Binding,
+  seq: u64,
+  generation: Generation,
+  now: UnixSeconds,
+  verify: impl FnOnce(&Binding) -> bool,
+) -> Result<(), BindingError> {
+  if !verify(binding) {
+    return Err(BindingError::BadMac);
+  }
+  if binding.expires_at <= now {
+    return Err(BindingError::Expired);
+  }
+  if generation < binding.generation {
+    return Err(BindingError::StaleGeneration(generation));
+  }
+  if seq <= binding.last_seq {
+    return Err(BindingError::StaleSequence(seq));
+  }
+  Ok(())
 }
 
 #[cfg(test)]
@@ -329,5 +379,49 @@ mod tests {
     b.insert(binding(9, now() + 10_000));
     assert_eq!(b.sweep(now() + 500), 1);
     assert_eq!(b.len(), 1);
+  }
+  #[test]
+  fn concurrent_replays_advance_the_sequence_only_once() {
+    let bindings = std::sync::Arc::new(store());
+    bindings.insert(binding(1, 1000));
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+    let accepted = std::thread::scope(|scope| {
+      let handles: Vec<_> = (0..16)
+        .map(|_| {
+          let bindings = bindings.clone();
+          let barrier = barrier.clone();
+          scope.spawn(move || {
+            barrier.wait();
+            bindings
+              .heartbeat_authenticated("b1", 1, 0, 900, |_| true)
+              .is_ok()
+          })
+        })
+        .collect();
+      handles
+        .into_iter()
+        .map(|handle| usize::from(handle.join().unwrap()))
+        .sum::<usize>()
+    });
+    assert_eq!(accepted, 1);
+  }
+
+  #[test]
+  fn old_lease_operations_cannot_replace_or_remove_a_new_join() {
+    let bindings = store();
+    bindings.insert(binding(1, 1000));
+    let mut replacement = binding(1, 2000);
+    replacement.binding_id = "replacement".into();
+    bindings.insert(replacement.clone());
+    assert_eq!(
+      bindings.heartbeat_authenticated("b1", 99, 0, 900, |_| true),
+      Err(BindingError::Unknown)
+    );
+    assert_eq!(
+      bindings.exit_authenticated("b1", 99, 0, 900, |_| true),
+      Err(BindingError::Unknown)
+    );
+    assert!(bindings.remove_if_current("b1").is_none());
+    assert_eq!(bindings.find("replacement"), Some(replacement));
   }
 }

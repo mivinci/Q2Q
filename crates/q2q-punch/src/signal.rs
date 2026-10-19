@@ -60,6 +60,7 @@ pub enum SignalError {
   MissingTicket,
   /// B has no binding — the standing channel is what makes it reachable.
   PeerOffline,
+  DeliveryFailed,
 }
 
 impl SignalError {
@@ -81,6 +82,7 @@ impl SignalError {
       SignalError::BadSignalKey => "unauthorized",
       SignalError::MissingTicket => "malformed_request",
       SignalError::PeerOffline => "peer_offline",
+      SignalError::DeliveryFailed => "signal_delivery_failed",
       SignalError::Internal => "internal_error",
     }
   }
@@ -99,6 +101,7 @@ impl std::fmt::Display for SignalError {
       SignalError::BadSignalKey => write!(f, "signal key does not match"),
       SignalError::MissingTicket => write!(f, "connect and offer need a token"),
       SignalError::PeerOffline => write!(f, "target has no binding"),
+      SignalError::DeliveryFailed => write!(f, "signal could not be delivered or buffered"),
       SignalError::Internal => write!(f, "could not mint a key"),
     }
   }
@@ -306,11 +309,21 @@ impl Connections {
   }
 
   /// Queue signalling for A while it is away, so a resume can replay it.
-  pub fn buffer_for_a(&self, connection_id: &str, message: &str) {
+  pub fn buffer_for_a(&self, connection_id: &str, message: &str, now: UnixSeconds) -> bool {
     let mut map = self.map.lock();
     if let Some(c) = map.get_mut(connection_id) {
+      // Leave room for JSON escaping and the RPC envelope within the client's
+      // bounded response size. An expired connection cannot accept new mail.
+      if c.expires_at <= now
+        || c.pending.len() >= 64
+        || c.pending.iter().map(String::len).sum::<usize>() + message.len() > 16 * 1024
+      {
+        return false;
+      }
       c.pending.push(message.to_string());
+      return true;
     }
+    false
   }
 
   /// A reconnecting with `signal_key`: the channel replaces the ticket.
@@ -541,8 +554,8 @@ mod tests {
     let c = cs.offer("cid-9", &a, "sdp", now).unwrap();
     let key = B64.encode(c.signal_key.unwrap());
 
-    cs.buffer_for_a("cid-9", "answer-1");
-    cs.buffer_for_a("cid-9", "candidate-1");
+    assert!(cs.buffer_for_a("cid-9", "answer-1", now));
+    assert!(cs.buffer_for_a("cid-9", "candidate-1", now));
 
     let (_, pending) = cs.resume("cid-9", &key, now).unwrap();
     assert_eq!(pending, vec!["answer-1", "candidate-1"]);
@@ -591,5 +604,25 @@ mod tests {
 
     cs.open(&t, &b, true, now).unwrap();
     assert_eq!(cs.sweep(now + 120), 1);
+  }
+  #[test]
+  fn pending_signals_are_bounded_and_reject_expired_connections() {
+    let now = 1_000_000;
+    let cs = Connections::new(60);
+    let b = peer(2);
+    cs.open(
+      &ticket(1, "punch-1", Some(&b), "pending", now),
+      &b,
+      true,
+      now,
+    )
+    .unwrap();
+    assert!(!cs.buffer_for_a("pending", &"x".repeat(16 * 1024 + 1), now));
+    assert!(cs.buffer_for_a("pending", "answer", now));
+    assert!(!cs.buffer_for_a("pending", "late", now + 60));
+    for _ in 1..64 {
+      assert!(cs.buffer_for_a("pending", "candidate", now));
+    }
+    assert!(!cs.buffer_for_a("pending", "overflow", now));
   }
 }

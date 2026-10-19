@@ -10,7 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use q2q_primitives::identity::Audience;
 use q2q_punch::message::{
   ExitRequest, HeartbeatRequest, HeartbeatResponse, JoinRequest, JoinResponse, Request, Response,
-  SignalRequest, SignalResponse, binding_mac, join_signing_bytes,
+  SignalRequest, SignalResponse, binding_mac, exit_mac, join_signing_bytes,
 };
 use q2q_punch::transport::PunchFrame;
 use q2q_track::wire::PunchWire;
@@ -86,27 +86,9 @@ impl PunchTransport for QuicPunchTransport {
   }
 
   async fn heartbeat(&self, request: Request) -> Result<Response, ControlError> {
-    let id = request.id.clone();
-    self
-      .connection
-      .send_datagram(
-        serde_json::to_vec(&request)
-          .map_err(|e| ControlError::Protocol(e.to_string()))?
-          .into(),
-      )
-      .map_err(|e| ControlError::Transport(e.to_string()))?;
-    let bytes = tokio::time::timeout(Duration::from_secs(5), self.connection.read_datagram())
-      .await
-      .map_err(|_| ControlError::Transport("Punch heartbeat timed out".into()))?
-      .map_err(|e| ControlError::Transport(e.to_string()))?;
-    let response: Response = serde_json::from_slice(&bytes)
-      .map_err(|e| ControlError::Protocol(format!("bad Punch heartbeat response: {e}")))?;
-    if response.id != id {
-      return Err(ControlError::Protocol(
-        "Punch response id does not match request".into(),
-      ));
-    }
-    Ok(response)
+    // A single lost datagram must not tear down an otherwise healthy publisher.
+    // Reuse the reliable RPC stream for heartbeat requests as well.
+    self.rpc(request).await
   }
 
   async fn recv_signal(&self) -> Result<SignalRequest, ControlError> {
@@ -699,7 +681,7 @@ impl PunchBinding {
       seq,
       timestamp: now,
       generation: 0,
-      mac: binding_mac(&self.key, &self.binding_id, seq, now, 0),
+      mac: exit_mac(&self.key, &self.binding_id, seq, now, 0),
     };
     let response = rpc_value(self.transport.as_ref(), "exit", "punch.exit", &request).await;
     self.transport.close().await;

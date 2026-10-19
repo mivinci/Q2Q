@@ -13,7 +13,7 @@ Punch 不解析经手的 SDP，只把它视作不透明字符串；它不签发�
 
 QUIC 仍是首选传输。Punch 在同一个 `bind` 地址上分别监听 UDP/QUIC 与 TCP/WSS。SDK 从 Track 下发的 `quic://host:port` 派生 `wss://host:port/`，先尝试 QUIC，只有链路无法建立时才回退到 TLS 上的 WebSocket。Track 无需单独配置 WSS 地址。
 
-QUIC 心跳通过 datagram 发送，数据小、频率高；丢失时下次再发即可。WSS 上的心跳则使用有界 WebSocket 控制帧。其他消息（`join`、`exit` 和全部信令）在两种传输上都使用可靠消息。两种方式都复用 Track 下发的 Punch 公钥验证服务身份。
+QUIC 心跳通过可靠双向 stream 发送，降低单个 UDP 包丢失导致长时间发布退出的风险；stream 仍由 QUIC 的 UDP 连接承载。WSS 上的心跳则使用有界 WebSocket 控制帧。其他消息（`join`、`exit` 和全部信令）在两种传输上也都使用可靠消息。两种方式都复用 Track 下发的 Punch 公钥验证服务身份。
 
 WSS 只覆盖 Punch 绑定和信令控制面，握手使用根路径 `/`。文件数据仍通过 WebRTC DataChannel 和 ICE 传输；仅启用 WSS 不代表 UDP 被阻断时文件也能传完。要在这种网络中完成传输，还需单独验证 TURN/TCP 或 TURN/TLS 数据通路。
 
@@ -34,9 +34,11 @@ sequenceDiagram
   P->>PS: exit（seq、MAC）
 ```
 
-`join` 之后的每条消息都用 `HMAC(binding_key, binding_id || seq || timestamp || generation)` 验证。序列号必须递增，时间戳也必须接近服务器时钟。`generation` 计数器只增不减；网络变化后重新 join 时，服务端就能区分新连接和重放消息。
+心跳使用 `HMAC(binding_key, binding_id || seq || timestamp || generation)`；exit 在相同字段前加上 ASCII 字节 `punch.exit`，因此心跳的 MAC 不能用于退出。两者都检查时间窗口、严格递增的序列号与不回退的 generation，并在同一个临界区内完成当前 Binding 的校验与更新。
 
-连接通道本身就是在线凭据。通道关闭后 binding 随之失效。因此，“可连接 Peer”就是当前仍有在线通道的 Peer 集合，无需另建一张状态表。
+Peer 可连接需要同时具备有效 Binding 和常驻通道。过期、exit 或通道关闭都会撤销 standing 身份。重新 join 会替换旧 Binding，旧通道随后清理时不会误删新 Binding。
+
+exit 的 MAC 格式需要配套更新 SDK/CLI 与 Punch 服务端；旧格式会被拒绝。心跳的 MAC 格式保持兼容。
 
 ## 信令流程
 
@@ -78,7 +80,11 @@ sequenceDiagram
 - **常驻通道（Standing）。** Peer 在 `join` 时建立并持续绑定。通道关闭后，该 Peer 不可达；连接请求会收到可区分的“目标离线”错误。
 - **临时通道（Ephemeral）。** 发起方在创建连接时建立，连接结束后关闭。首个 offer 的响应会携带 `signal_key`；通道中断后，发起方可以带连接 ID 和该密钥重新连接并恢复，离线期间积压的消息会重放。
 
-心跳的作用与常驻通道的存活检测不同：它负责维持 NAT 映射并刷新 TTL。QUIC 将心跳作为 datagram 发送；WSS 则通过 TLS WebSocket 连接发送控制帧。Punch 会分别判断心跳是否有效、通道是否断开。
+心跳的作用与常驻通道的存活检测不同：它负责维持 NAT 映射并刷新 TTL。QUIC 通过可靠 stream（底层仍是 UDP）发送心跳；WSS 则通过 TLS WebSocket 连接发送控制帧。Punch 会分别判断心跳是否有效、通道是否断开。
+
+connect/offer 票据必须匹配连接 ID、目标 Peer 和内容哈希。首次 offer 还必须来自已认证的发起方通道，目标 Peer 不能用收到的转发票据冒充发起方。每个连接的信令在路由切换期间按序处理。向断线发起方投递失败时，Punch 会缓冲消息供 resume 补发，每个连接最多 64 条且序列化信令总量不超过 16 KiB；无法投递或缓冲时返回 `signal_delivery_failed`。resume 响应本身丢失后的应用层确认暂未实现。
+
+QUIC 与 WSS 握手独立并发处理，握手期限为 10 秒，每种传输最多 1,024 条连接、每 IP 最多 32 条。QUIC 另有限制并发请求数及请求读写期限。
 
 ## 运行服务
 

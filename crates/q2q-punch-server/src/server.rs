@@ -1,16 +1,8 @@
 //! QUIC transport for the binding RPCs.
 //!
-//! Two paths, because the traffic is not the same shape:
-//!
-//! - `join` / `exit` are request-response and must arrive → bidirectional stream
-//! - `heartbeat` is a small packet every few seconds, and a lost one is simply
-//!   followed by another → datagram
-//!
-//! QUIC is the right substrate for both: it is UDP, which is what keeps a NAT
-//! mapping alive, and a connection survives the client changing network
-//! (WiFi ↔ cellular) because it is identified by a connection id rather than by
-//! the four-tuple. That second property is why `transport_generation` exists at
-//! all.
+//! Binding RPCs, including heartbeats, use reliable bidirectional streams.
+//! Legacy heartbeat datagrams are still accepted. QUIC and TLS WebSocket share
+//! the authenticated channel dispatcher and routing lifecycle.
 
 use crate::cert::{CertError, PunchIdentity};
 use crate::signalling::{Caller, ChannelSink, Outcome, Sinks, handle_signal};
@@ -41,7 +33,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 pub struct State {
   pub bindings: Bindings,
   pub connections: Connections,
-  /// Channels to the peers themselves. Reachability lives here, not in a table.
+  /// Routes to peers with live authenticated bindings and to ephemeral channels.
   pub sinks: Arc<Sinks>,
   pub limits: Limiter,
   /// Tickets must name this exact server, so one leak cannot be replayed
@@ -51,11 +43,11 @@ pub struct State {
   pub max_request_bytes: usize,
 }
 
-const WEBSOCKET_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const WEBSOCKET_AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const WEBSOCKET_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const WEBSOCKET_CONNECTION_LIMIT: usize = 1024;
-const WEBSOCKET_CONNECTIONS_PER_IP: usize = 32;
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const CONNECTION_LIMIT: usize = 1024;
+const CONNECTIONS_PER_IP: usize = 32;
 const WEBSOCKET_WRITE_QUEUE: usize = 64;
 
 #[derive(Clone)]
@@ -65,7 +57,7 @@ impl PerIpConnections {
   fn acquire(&self, ip: IpAddr) -> Option<PerIpConnectionGuard> {
     let mut counts = self.0.lock();
     let count = counts.entry(ip).or_default();
-    if *count >= WEBSOCKET_CONNECTIONS_PER_IP {
+    if *count >= CONNECTIONS_PER_IP {
       return None;
     }
     *count += 1;
@@ -216,14 +208,14 @@ fn handle_join(state: &State, req: &Request, join: &JoinRequest, now: UnixSecond
     response: Response::ok(
       &req.id,
       &JoinResponse {
-        binding_id: binding.binding_id,
+        binding_id: binding.binding_id.clone(),
         binding_key: B64.encode(binding.key),
         expires_at: binding.expires_at,
       },
     ),
     forwards: Vec::new(),
     // the caller is now reachable: this channel is its standing one
-    joined: Some(binding.peer_id),
+    joined: Some(binding),
     ephemeral: None,
   }
 }
@@ -234,69 +226,54 @@ fn handle_heartbeat(
   hb: &HeartbeatRequest,
   now: UnixSeconds,
 ) -> Response {
-  let binding = match authenticated(state, hb.binding_id.as_str(), now) {
-    Ok(b) => b,
-    Err(e) => return Response::err(&req.id, e, None),
-  };
   if hb.timestamp.abs_diff(now) > CLOCK_TOLERANCE {
     return Response::err(&req.id, "stale_timestamp", None);
   }
-
-  let mac_ok = verify_binding_mac(
-    &binding.key,
+  match state.bindings.heartbeat_authenticated(
     &hb.binding_id,
     hb.seq,
-    hb.timestamp,
     hb.generation,
-    &hb.mac,
-  );
-  match state
-    .bindings
-    .heartbeat(&binding.peer_id, hb.seq, hb.generation, mac_ok, now)
-  {
-    Ok(updated) => Response::ok(
+    now,
+    |binding| {
+      verify_binding_mac(
+        &binding.key,
+        &hb.binding_id,
+        hb.seq,
+        hb.timestamp,
+        hb.generation,
+        &hb.mac,
+      )
+    },
+  ) {
+    Ok(binding) => Response::ok(
       &req.id,
       &HeartbeatResponse {
-        expires_at: updated.expires_at,
+        expires_at: binding.expires_at,
       },
     ),
-    Err(e) => Response::err(&req.id, e.code(), Some(e.to_string())),
+    Err(error) => Response::err(&req.id, error.code(), Some(error.to_string())),
   }
 }
 
 fn handle_exit(state: &State, req: &Request, ex: &ExitRequest, now: UnixSeconds) -> Response {
-  let binding = match authenticated(state, ex.binding_id.as_str(), now) {
-    Ok(b) => b,
-    Err(e) => return Response::err(&req.id, e, None),
-  };
-  if !verify_binding_mac(
-    &binding.key,
-    &ex.binding_id,
-    ex.seq,
-    ex.timestamp,
-    ex.generation,
-    &ex.mac,
-  ) {
-    return Response::err(&req.id, "bad_mac", None);
+  if ex.timestamp.abs_diff(now) > CLOCK_TOLERANCE {
+    return Response::err(&req.id, "stale_timestamp", None);
   }
-  state.bindings.remove(&binding.peer_id);
-  Response::ok(&req.id, &serde_json::json!({ "ok": true }))
-}
-
-/// Look up a live binding by id, reporting problems as error codes.
-///
-/// `now` is passed in rather than read from the clock, so tests can reason
-/// about expiry without waiting for it.
-fn authenticated(
-  state: &State,
-  binding_id: &str,
-  now: UnixSeconds,
-) -> Result<Binding, &'static str> {
-  let binding = state.bindings.find(binding_id).ok_or("unknown_binding")?;
-  if binding.expires_at <= now {
-    return Err("binding_expired");
+  match state
+    .bindings
+    .exit_authenticated(&ex.binding_id, ex.seq, ex.generation, now, |binding| {
+      q2q_punch::message::verify_exit_mac(
+        &binding.key,
+        &ex.binding_id,
+        ex.seq,
+        ex.timestamp,
+        ex.generation,
+        &ex.mac,
+      )
+    }) {
+    Ok(_) => Response::ok(&req.id, &serde_json::json!({ "ok": true })),
+    Err(error) => Response::err(&req.id, error.code(), Some(error.to_string())),
   }
-  Ok(binding)
 }
 
 /// Rate limit first, then dispatch. Identities are free to mint, so the limit is
@@ -325,7 +302,8 @@ fn handle_guarded(state: &State, req: Request, caller: &Caller, ip: std::net::Ip
 /// dispatch, and channel lifecycle stay here.
 struct PunchChannel {
   sink: ChannelSink,
-  authenticated_peer: Mutex<Option<PeerId>>,
+  lifecycle: Mutex<()>,
+  authenticated_peer: Mutex<Option<(PeerId, String)>>,
   ephemeral_ids: Mutex<Vec<String>>,
 }
 
@@ -333,14 +311,46 @@ impl PunchChannel {
   fn new(sink: ChannelSink) -> Self {
     Self {
       sink,
+      lifecycle: Mutex::new(()),
       authenticated_peer: Mutex::new(None),
       ephemeral_ids: Mutex::new(Vec::new()),
     }
   }
 
   async fn dispatch(&self, state: &State, req: Request, ip: std::net::IpAddr) -> Response {
-    let ephemeral_peer = serde_json::from_value::<SignalRequest>(req.params.clone())
-      .ok()
+    let signal = if req.method == "punch.signal" {
+      serde_json::from_value::<SignalRequest>(req.params.clone()).ok()
+    } else {
+      None
+    };
+    let serial = signal
+      .as_ref()
+      .map(|signal| state.sinks.connection_lock(&signal.connection_id));
+    let _guard = match serial {
+      Some(lock) => Some(lock.lock_owned().await),
+      None => None,
+    };
+    let outcome = match self.handle_request(state, req, ip, signal.as_ref()) {
+      Ok(outcome) => outcome,
+      Err(response) => return response,
+    };
+    if let Err(error) = crate::signalling::deliver(state, outcome.forwards).await {
+      return Response::err(&outcome.response.id, error, None);
+    }
+    outcome.response
+  }
+
+  fn handle_request(
+    &self,
+    state: &State,
+    req: Request,
+    ip: IpAddr,
+    signal: Option<&SignalRequest>,
+  ) -> Result<Outcome, Response> {
+    // QUIC streams may execute concurrently. Protect channel identity and route
+    // registration together, and release this guard before any delivery I/O.
+    let _lifecycle = self.lifecycle.lock();
+    let ephemeral_peer = signal
       .filter(|sig| {
         self.ephemeral_ids.lock().contains(&sig.connection_id)
           && state
@@ -348,23 +358,68 @@ impl PunchChannel {
             .ephemeral_is_current(&sig.connection_id, &self.sink)
       })
       .and_then(|sig| state.connections.get(&sig.connection_id))
+      .filter(|connection| connection.expires_at > now())
       .map(|connection| connection.a);
     let caller = Caller {
-      peer: self.authenticated_peer.lock().clone().or(ephemeral_peer),
+      peer: self.current_peer(state).or(ephemeral_peer),
     };
+    if signal.is_some_and(|sig| !self.ephemeral_ids.lock().contains(&sig.connection_id))
+      && self.ephemeral_ids.lock().len() >= 64
+    {
+      return Err(Response::err(&req.id, "too_many_connections", None));
+    }
     let outcome = handle_guarded(state, req, &caller, ip);
 
-    if let Some(peer) = &outcome.joined {
-      state.sinks.put_standing(peer, self.sink.clone());
-      *self.authenticated_peer.lock() = Some(peer.clone());
+    if let Some(binding) = &outcome.joined {
+      if !state
+        .sinks
+        .put_standing(binding, self.sink.clone(), &state.bindings)
+      {
+        return Err(Response::err(
+          &outcome.response.id,
+          "binding_replaced",
+          None,
+        ));
+      }
+      let previous = self
+        .authenticated_peer
+        .lock()
+        .replace((binding.peer_id.clone(), binding.binding_id.clone()));
+      if let Some((peer, id)) = previous
+        && id != binding.binding_id
+      {
+        if peer != binding.peer_id {
+          state.sinks.drop_standing_if_current(&peer, &self.sink);
+        }
+        state.bindings.remove_if_current(&id);
+      }
     }
     if let Some(connection_id) = &outcome.ephemeral {
       state.sinks.put_ephemeral(connection_id, self.sink.clone());
-      self.ephemeral_ids.lock().push(connection_id.clone());
+      let mut ids = self.ephemeral_ids.lock();
+      if !ids.contains(connection_id) {
+        ids.push(connection_id.clone());
+      }
     }
+    // Exit and expiry revoke this channel's standing identity immediately.
+    self.current_peer(state);
+    Ok(outcome)
+  }
 
-    crate::signalling::deliver(&state.sinks, outcome.forwards).await;
-    outcome.response
+  fn current_peer(&self, state: &State) -> Option<PeerId> {
+    let mut authenticated = self.authenticated_peer.lock();
+    let (peer, id) = authenticated.as_ref()?;
+    if state
+      .bindings
+      .find(id)
+      .is_some_and(|binding| binding.expires_at > now())
+      && state.sinks.standing_is_current(peer, id, &self.sink)
+    {
+      return Some(peer.clone());
+    }
+    state.sinks.drop_standing_if_current(peer, &self.sink);
+    *authenticated = None;
+    None
   }
 
   fn is_authenticated(&self) -> bool {
@@ -372,8 +427,9 @@ impl PunchChannel {
   }
 
   fn cleanup(&self, state: &State) {
-    if let Some(peer) = self.authenticated_peer.lock().as_ref() {
+    if let Some((peer, binding_id)) = self.authenticated_peer.lock().as_ref() {
       state.sinks.drop_standing_if_current(peer, &self.sink);
+      state.bindings.remove_if_current(binding_id);
     }
     for connection_id in self.ephemeral_ids.lock().iter() {
       state
@@ -391,14 +447,28 @@ pub fn endpoint(identity: &PunchIdentity, bind: SocketAddr) -> Result<Endpoint, 
 }
 
 pub async fn serve(endpoint: Endpoint, state: Arc<State>) {
+  let connections = Arc::new(Semaphore::new(CONNECTION_LIMIT));
+  let per_ip = PerIpConnections(Arc::new(Mutex::new(HashMap::new())));
   while let Some(incoming) = endpoint.accept().await {
-    let st = state.clone();
-    match incoming.await {
-      Ok(conn) => {
-        tokio::spawn(handle_connection(conn, st));
+    let Ok(permit) = connections.clone().try_acquire_owned() else {
+      incoming.refuse();
+      continue;
+    };
+    let Some(ip_permit) = per_ip.acquire(incoming.remote_address().ip()) else {
+      incoming.refuse();
+      continue;
+    };
+    let state = state.clone();
+    // Each handshake proceeds independently; one silent client cannot block accept.
+    tokio::spawn(async move {
+      let _permit = permit;
+      let _ip_permit = ip_permit;
+      match tokio::time::timeout(HANDSHAKE_TIMEOUT, incoming).await {
+        Ok(Ok(connection)) => handle_connection(connection, state).await,
+        Ok(Err(error)) => tracing::debug!(%error, "QUIC handshake failed"),
+        Err(_) => tracing::debug!("QUIC handshake timed out"),
       }
-      Err(e) => tracing::warn!("incoming connection failed: {e}"),
-    }
+    });
   }
 }
 
@@ -407,7 +477,7 @@ pub async fn serve_websocket(
   acceptor: TlsAcceptor,
   state: Arc<State>,
 ) -> std::io::Result<()> {
-  let global_connections = Arc::new(Semaphore::new(WEBSOCKET_CONNECTION_LIMIT));
+  let global_connections = Arc::new(Semaphore::new(CONNECTION_LIMIT));
   let per_ip_connections = PerIpConnections(Arc::new(Mutex::new(HashMap::new())));
   loop {
     let (stream, remote) = listener.accept().await?;
@@ -425,7 +495,7 @@ pub async fn serve_websocket(
       let ws_config = WebSocketConfig::default()
         .max_message_size(Some(st.max_request_bytes))
         .max_frame_size(Some(st.max_request_bytes));
-      let handshake = tokio::time::timeout(WEBSOCKET_HANDSHAKE_TIMEOUT, async {
+      let handshake = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let tls_stream = tls
           .accept(stream)
           .await
@@ -455,7 +525,7 @@ async fn handle_websocket<S>(
 ) where
   S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-  handle_websocket_with_auth_timeout(socket, state, remote, WEBSOCKET_AUTH_TIMEOUT).await;
+  handle_websocket_with_auth_timeout(socket, state, remote, AUTH_TIMEOUT).await;
 }
 
 async fn handle_websocket_with_auth_timeout<S>(
@@ -558,7 +628,7 @@ async fn handle_websocket_with_auth_timeout<S>(
               }
             };
             if !matches!(tokio::time::timeout(
-              WEBSOCKET_WRITE_TIMEOUT,
+              WRITE_TIMEOUT,
               write_tx.send(WebSocketWrite::Binary(bytes)),
             ).await, Ok(Ok(()))) {
               tracing::debug!(%remote, "WebSocket writer did not accept the response");
@@ -567,7 +637,7 @@ async fn handle_websocket_with_auth_timeout<S>(
           }
           Message::Ping(bytes) => {
             if !matches!(tokio::time::timeout(
-              WEBSOCKET_WRITE_TIMEOUT,
+              WRITE_TIMEOUT,
               write_tx.send(WebSocketWrite::Pong(bytes.to_vec())),
             ).await, Ok(Ok(()))) {
               break;
@@ -606,34 +676,44 @@ async fn handle_connection(conn: Connection, state: Arc<State>) {
   // QUIC-specific stream mechanics; the WebSocket adapter owns frame writes.
   let (mine, mut outgoing) = ChannelSink::channel(64);
   let writer = conn.clone();
-  tokio::spawn(async move {
+  let writer_task = tokio::spawn(async move {
     while let Some(pending) = outgoing.recv().await {
-      let delivered = match writer.open_uni().await {
-        Ok(mut send) => {
-          if let Ok(bytes) = serde_json::to_vec(&pending.signal)
-            && send.write_all(&bytes).await.is_ok()
-          {
-            send.finish().is_ok()
-          } else {
-            false
-          }
-        }
-        Err(_) => false,
-      };
+      if pending.delivered.is_closed() {
+        continue;
+      }
+      let delivered = matches!(
+        tokio::time::timeout(WRITE_TIMEOUT, async {
+          let mut send = writer.open_uni().await.ok()?;
+          let bytes = serde_json::to_vec(&pending.signal).ok()?;
+          send.write_all(&bytes).await.ok()?;
+          send.finish().ok()
+        })
+        .await,
+        Ok(Some(()))
+      );
       let _ = pending.delivered.send(delivered);
       if !delivered {
+        writer.close(0u32.into(), b"signal delivery failed");
         break;
       }
     }
   });
 
-  // heartbeats: loss is tolerated, so they do not need a stream
+  // Retain best-effort heartbeat support for older clients.
   let datagrams = conn.clone();
   let dg_state = state.clone();
-  tokio::spawn(async move {
+  let datagram_task = tokio::spawn(async move {
     while let Ok(bytes) = datagrams.read_datagram().await {
       let outcome = match parse_request(&bytes) {
-        Ok(req) => handle_guarded(&dg_state, req, &Caller::default(), ip),
+        Ok(req) if req.method == "punch.heartbeat" => {
+          handle_guarded(&dg_state, req, &Caller::default(), ip)
+        }
+        Ok(req) => Outcome {
+          response: Response::err(&req.id, "stream_required", None),
+          forwards: Vec::new(),
+          joined: None,
+          ephemeral: None,
+        },
         Err(e) => Outcome {
           response: Response::err("unknown", &e.code, e.detail),
           forwards: Vec::new(),
@@ -654,26 +734,53 @@ async fn handle_connection(conn: Connection, state: Arc<State>) {
   // the request stream and encode its response.
   let channel = Arc::new(PunchChannel::new(mine.clone()));
 
-  while let Ok((mut send, mut recv)) = conn.accept_bi().await {
-    let st = state.clone();
+  let mut requests = tokio::task::JoinSet::new();
+  let auth_deadline = tokio::time::Instant::now() + AUTH_TIMEOUT;
+  loop {
+    let streams = tokio::select! {
+      biased;
+      _ = requests.join_next(), if !requests.is_empty() => continue,
+      _ = tokio::time::sleep_until(auth_deadline), if !channel.is_authenticated() => {
+        if !channel.is_authenticated() { conn.close(0u32.into(), b"authentication timed out"); break; }
+        continue;
+      }
+      streams = conn.accept_bi() => streams,
+    };
+    let Ok((mut send, mut recv)) = streams else {
+      break;
+    };
+    if requests.len() >= 32 {
+      conn.close(0u32.into(), b"too many concurrent requests");
+      break;
+    }
+    let state = state.clone();
     let channel = channel.clone();
-    tokio::spawn(async move {
-      let Ok(bytes) = recv.read_to_end(st.max_request_bytes).await else {
+    requests.spawn(async move {
+      let Ok(Ok(bytes)) =
+        tokio::time::timeout(HANDSHAKE_TIMEOUT, recv.read_to_end(state.max_request_bytes)).await
+      else {
         return;
       };
       let response = match parse_request(&bytes) {
-        Ok(req) => channel.dispatch(&st, req, ip).await,
-        Err(e) => Response::err("unknown", &e.code, e.detail),
+        Ok(req) => channel.dispatch(&state, req, ip).await,
+        Err(error) => Response::err("unknown", &error.code, error.detail),
       };
-      let out = match serde_json::to_vec(&response) {
-        Ok(o) => o,
-        Err(_) => return,
+      let Ok(bytes) = serde_json::to_vec(&response) else {
+        return;
       };
-      let _ = send.write_all(&out).await;
-      let _ = send.finish();
+      if matches!(
+        tokio::time::timeout(WRITE_TIMEOUT, send.write_all(&bytes)).await,
+        Ok(Ok(()))
+      ) {
+        let _ = send.finish();
+      }
     });
   }
-
+  // No request may register a route after its transport has been cleaned up.
+  requests.abort_all();
+  while requests.join_next().await.is_some() {}
+  writer_task.abort();
+  datagram_task.abort();
   // a closed standing channel means an unreachable peer, so drop it here
   channel.cleanup(&state);
   tracing::debug!(%remote, "connection closed");
@@ -874,7 +981,7 @@ mod tests {
       seq: 2,
       timestamp: now,
       generation: 0,
-      mac: binding_mac(&key, &joined.binding_id, 2, now, 0),
+      mac: q2q_punch::message::exit_mac(&key, &joined.binding_id, 2, now, 0),
     };
     let resp = call(&st, "punch.exit", serde_json::to_value(&exit).unwrap());
     assert!(resp.error.is_none(), "{:?}", resp.error);
@@ -1031,7 +1138,7 @@ mod tests {
     assert!(resp.error.is_none(), "{:?}", resp.error);
     let joined: JoinResponse = serde_json::from_value(resp.result.unwrap()).unwrap();
 
-    // heartbeat rides a datagram: no stream, no ordering
+    // Datagrams remain supported for heartbeat clients that choose best-effort delivery.
     let key: [u8; 32] = B64.decode(&joined.binding_key).unwrap().try_into().unwrap();
     let hb = Request {
       v: 1,
@@ -1053,6 +1160,23 @@ mod tests {
     let bytes = conn.read_datagram().await.unwrap();
     let resp: Response = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(resp.id, "r-2");
+    assert!(resp.error.is_none(), "{:?}", resp.error);
+
+    let hb_stream = Request {
+      v: 1,
+      id: "r-3".into(),
+      method: "punch.heartbeat".into(),
+      params: serde_json::to_value(&HeartbeatRequest {
+        binding_id: joined.binding_id.clone(),
+        seq: 2,
+        timestamp: now,
+        generation: 0,
+        mac: binding_mac(&key, &joined.binding_id, 2, now, 0),
+      })
+      .unwrap(),
+    };
+    let resp = rpc(&conn, &hb_stream).await;
+    assert_eq!(resp.id, "r-3");
     assert!(resp.error.is_none(), "{:?}", resp.error);
 
     conn.close(0u32.into(), b"done");
@@ -1538,7 +1662,7 @@ mod tests {
   fn websocket_per_ip_connection_quota_is_released_on_drop() {
     let counts = PerIpConnections(Arc::new(Mutex::new(HashMap::new())));
     let ip = "192.0.2.10".parse().unwrap();
-    let mut permits = (0..WEBSOCKET_CONNECTIONS_PER_IP)
+    let mut permits = (0..CONNECTIONS_PER_IP)
       .map(|_| counts.acquire(ip).unwrap())
       .collect::<Vec<_>>();
     assert!(counts.acquire(ip).is_none());
@@ -1900,5 +2024,370 @@ mod tests {
   fn peer(seed: u8) -> PeerId {
     let (sk, _) = keypair_from_seed(&[seed; 32]);
     peer_id_of(&sk)
+  }
+  #[test]
+  fn offer_tickets_must_match_the_original_connection_scope() {
+    let now = 1_000_000;
+    for field in ["cid", "tgt", "ih"] {
+      let st = state(300);
+      let b = peer(2);
+      let token = connect_token(1, "punch-1", &b, "original", now);
+      let body: q2q_primitives::identity::TicketBody = serde_json::from_str(&token).unwrap();
+      st.connections.open(&body, &b, true, now).unwrap();
+      st.connections.accept("original", &b, now).unwrap();
+      let mut ticket = body.to_ticket().unwrap();
+      match field {
+        "cid" => ticket.cid = Some("other".into()),
+        "tgt" => ticket.tgt = Some(peer(3)),
+        _ => ticket.ih = Some([8; 32]),
+      }
+      ticket.sign(&keypair_from_seed(&[1; 32]).0);
+      let mut offer = signal(SignalType::Offer, "original");
+      offer.sdp = Some("offer".into());
+      offer.connect_token = Some(serde_json::to_string(&ticket.to_body()).unwrap());
+      let response = call_with(
+        &st,
+        "punch.signal",
+        serde_json::to_value(offer).unwrap(),
+        Caller {
+          peer: Some(peer(1)),
+        },
+      )
+      .response;
+      assert_eq!(response.error.unwrap().code, "unauthorized", "{field}");
+      assert!(st.connections.get("original").unwrap().signal_key.is_none());
+    }
+  }
+
+  #[tokio::test]
+  async fn old_channel_cleanup_preserves_a_replacement_join() {
+    let st = state(300);
+    let now = now();
+    let (sink_a, _receiver_a) = ChannelSink::channel(1);
+    let channel_a = PunchChannel::new(sink_a);
+    let (sink_b, _receiver_b) = ChannelSink::channel(1);
+    let channel_b = PunchChannel::new(sink_b);
+    for (channel, time) in [(&channel_a, now), (&channel_b, now + 1)] {
+      let response = channel
+        .dispatch(
+          &st,
+          Request {
+            v: 1,
+            id: "join".into(),
+            method: "punch.join".into(),
+            params: serde_json::to_value(join_request(2, "punch-1", time)).unwrap(),
+          },
+          "127.0.0.1".parse().unwrap(),
+        )
+        .await;
+      assert!(response.error.is_none());
+    }
+    let current = st.bindings.get(&peer(2)).unwrap();
+    assert!(channel_a.current_peer(&st).is_none());
+    channel_a.cleanup(&st);
+    assert_eq!(
+      st.bindings.get(&peer(2)).unwrap().binding_id,
+      current.binding_id
+    );
+    assert_eq!(channel_b.current_peer(&st), Some(peer(2)));
+    channel_b.cleanup(&st);
+    assert!(st.bindings.get(&peer(2)).is_none());
+  }
+
+  #[tokio::test]
+  async fn expired_and_exited_bindings_revoke_standing_identity() {
+    for expire in [true, false] {
+      let st = state(300);
+      let now = now();
+      let (sink, _receiver) = ChannelSink::channel(1);
+      let channel = PunchChannel::new(sink);
+      let response = channel
+        .dispatch(
+          &st,
+          Request {
+            v: 1,
+            id: "join".into(),
+            method: "punch.join".into(),
+            params: serde_json::to_value(join_request(2, "punch-1", now)).unwrap(),
+          },
+          "127.0.0.1".parse().unwrap(),
+        )
+        .await;
+      assert!(response.error.is_none());
+      let mut binding = st.bindings.get(&peer(2)).unwrap();
+      if expire {
+        binding.expires_at = now - 1;
+        st.bindings.insert(binding);
+        st.bindings.sweep(now);
+      } else {
+        let exit = ExitRequest {
+          binding_id: binding.binding_id.clone(),
+          seq: 1,
+          timestamp: now,
+          generation: 0,
+          mac: q2q_punch::message::exit_mac(&binding.key, &binding.binding_id, 1, now, 0),
+        };
+        let response = channel
+          .dispatch(
+            &st,
+            Request {
+              v: 1,
+              id: "exit".into(),
+              method: "punch.exit".into(),
+              params: serde_json::to_value(exit).unwrap(),
+            },
+            "127.0.0.1".parse().unwrap(),
+          )
+          .await;
+        assert!(response.error.is_none());
+      }
+      assert!(channel.current_peer(&st).is_none());
+      let mut connect = signal(SignalType::Connect, "offline");
+      connect.connect_token = Some(connect_token(1, "punch-1", &peer(2), "offline", now));
+      let response = dispatch(
+        &st,
+        &Request {
+          v: 1,
+          id: "connect".into(),
+          method: "punch.signal".into(),
+          params: serde_json::to_value(connect).unwrap(),
+        },
+        now,
+        &Caller::default(),
+      )
+      .response;
+      assert_eq!(response.error.unwrap().code, "peer_offline");
+      assert!(!st.sinks.has_standing(&peer(2)));
+    }
+  }
+
+  #[test]
+  fn exit_rejects_stale_sequence_clock_generation_and_heartbeat_credentials() {
+    let st = state(300);
+    let now = 1_000_000;
+    let response = call(
+      &st,
+      "punch.join",
+      serde_json::to_value(join_request(2, "punch-1", now)).unwrap(),
+    );
+    assert!(response.error.is_none());
+    let binding = st.bindings.get(&peer(2)).unwrap();
+    st.bindings
+      .heartbeat_authenticated(&binding.binding_id, 5, 3, now, |_| true)
+      .unwrap();
+    for (seq, timestamp, generation, heartbeat_mac, expected) in [
+      (5, now, 3, false, "stale_sequence"),
+      (6, now - 61, 3, false, "stale_timestamp"),
+      (6, now, 2, false, "stale_generation"),
+      (6, now, 3, true, "bad_mac"),
+    ] {
+      let mac = if heartbeat_mac {
+        binding_mac(
+          &binding.key,
+          &binding.binding_id,
+          seq,
+          timestamp,
+          generation,
+        )
+      } else {
+        q2q_punch::message::exit_mac(
+          &binding.key,
+          &binding.binding_id,
+          seq,
+          timestamp,
+          generation,
+        )
+      };
+      let request = ExitRequest {
+        binding_id: binding.binding_id.clone(),
+        seq,
+        timestamp,
+        generation,
+        mac,
+      };
+      assert_eq!(
+        call(&st, "punch.exit", serde_json::to_value(request).unwrap())
+          .error
+          .unwrap()
+          .code,
+        expected
+      );
+      assert!(st.bindings.find(&binding.binding_id).is_some());
+    }
+  }
+
+  #[tokio::test]
+  async fn failed_signal_delivery_is_buffered_before_concurrent_resume() {
+    let st = Arc::new(state(300));
+    let now = now();
+    let b = peer(2);
+    let body: q2q_primitives::identity::TicketBody =
+      serde_json::from_str(&connect_token(1, "punch-1", &b, "resume-race", now)).unwrap();
+    st.connections.open(&body, &b, true, now).unwrap();
+    st.connections.accept("resume-race", &b, now).unwrap();
+    let connection = st
+      .connections
+      .offer("resume-race", &peer(1), "offer", now)
+      .unwrap();
+    let (old_sink, mut writes) = ChannelSink::channel(1);
+    st.sinks.put_ephemeral("resume-race", old_sink);
+    let delivering = st.clone();
+    let delivery = tokio::spawn(async move {
+      let _guard = delivering
+        .sinks
+        .connection_lock("resume-race")
+        .lock_owned()
+        .await;
+      crate::signalling::deliver(
+        &delivering,
+        vec![crate::signalling::Forward {
+          to: crate::signalling::Recipient::Initiator("resume-race".into()),
+          signal: signal(SignalType::Answer, "resume-race"),
+        }],
+      )
+      .await
+    });
+    let pending = tokio::time::timeout(std::time::Duration::from_secs(2), writes.recv())
+      .await
+      .unwrap()
+      .unwrap();
+    let resuming = st.clone();
+    let resumed = tokio::spawn(async move {
+      let (sink, _writes) = ChannelSink::channel(1);
+      let channel = PunchChannel::new(sink);
+      let mut resume = signal(SignalType::Offer, "resume-race");
+      resume.signal_key = Some(B64.encode(connection.signal_key.unwrap()));
+      channel
+        .dispatch(
+          &resuming,
+          Request {
+            v: 1,
+            id: "resume".into(),
+            method: "punch.signal".into(),
+            params: serde_json::to_value(resume).unwrap(),
+          },
+          "127.0.0.1".parse().unwrap(),
+        )
+        .await
+    });
+    pending.delivered.send(false).unwrap();
+    assert!(delivery.await.unwrap().is_ok());
+    let response = resumed.await.unwrap();
+    assert!(response.error.is_none());
+    let result: SignalResponse = serde_json::from_value(response.result.unwrap()).unwrap();
+    assert_eq!(result.pending.len(), 1);
+    assert_eq!(
+      serde_json::from_str::<SignalRequest>(&result.pending[0])
+        .unwrap()
+        .kind,
+      SignalType::Answer
+    );
+    assert_eq!(
+      crate::signalling::deliver(
+        &st,
+        vec![crate::signalling::Forward {
+          to: crate::signalling::Recipient::Peer(peer(9)),
+          signal: signal(SignalType::Offer, "missing")
+        }]
+      )
+      .await,
+      Err("signal_delivery_failed")
+    );
+  }
+
+  #[tokio::test]
+  async fn a_stalled_quic_handshake_does_not_block_other_clients() {
+    let identity = crate::cert::PunchIdentity::generate("punch-1").unwrap();
+    let server = endpoint(&identity, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = server.local_addr().unwrap();
+    let running = tokio::spawn(serve(server.clone(), Arc::new(state(300))));
+    let relay = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let stalled_client = test_client();
+    let stalled = tokio::spawn(
+      stalled_client
+        .connect(relay.local_addr().unwrap(), "punch-1")
+        .unwrap(),
+    );
+    let mut packet = [0; 65536];
+    let (len, _) = tokio::time::timeout(
+      std::time::Duration::from_secs(2),
+      relay.recv_from(&mut packet),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    relay.send_to(&packet[..len], addr).await.unwrap();
+    // Observe the server's handshake response but never forward it to this client.
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+      loop {
+        let (len, from) = relay.recv_from(&mut packet).await.unwrap();
+        if from == addr {
+          break;
+        }
+        relay.send_to(&packet[..len], addr).await.unwrap();
+      }
+    })
+    .await
+    .unwrap();
+    let client = test_client();
+    let connection = tokio::time::timeout(
+      std::time::Duration::from_secs(2),
+      client.connect(addr, "punch-1").unwrap(),
+    )
+    .await
+    .expect("a stalled handshake blocked another client")
+    .unwrap();
+    connection.close(0u32.into(), b"done");
+    stalled_client.close(0u32.into(), b"done");
+    server.close(0u32.into(), b"done");
+    stalled.abort();
+    running.abort();
+  }
+  #[test]
+  fn a_forwarded_ticket_does_not_authenticate_the_offer_sender() {
+    let st = state(300);
+    let now = 1_000_000;
+    let b = peer(2);
+    let token = connect_token(1, "punch-1", &b, "private-offer", now);
+    let body = serde_json::from_str(&token).unwrap();
+    st.connections.open(&body, &b, true, now).unwrap();
+    st.connections.accept("private-offer", &b, now).unwrap();
+    let mut offer = signal(SignalType::Offer, "private-offer");
+    offer.connect_token = Some(token);
+    offer.sdp = Some("offer".into());
+    for caller in [Caller::default(), Caller { peer: Some(b) }] {
+      let response = call_with(
+        &st,
+        "punch.signal",
+        serde_json::to_value(&offer).unwrap(),
+        caller,
+      )
+      .response;
+      assert_eq!(response.error.unwrap().code, "unauthorized");
+      assert!(
+        st.connections
+          .get("private-offer")
+          .unwrap()
+          .signal_key
+          .is_none()
+      );
+    }
+    let response = call_with(
+      &st,
+      "punch.signal",
+      serde_json::to_value(&offer).unwrap(),
+      Caller {
+        peer: Some(peer(1)),
+      },
+    )
+    .response;
+    assert!(response.error.is_none());
+    assert!(
+      st.connections
+        .get("private-offer")
+        .unwrap()
+        .signal_key
+        .is_some()
+    );
   }
 }

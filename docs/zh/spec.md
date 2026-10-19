@@ -273,9 +273,9 @@ Track 的查询结果仅包含 B 的 `peer_id`、B 的身份公钥、B 所在 Pu
 
 因此，A 直接请求 **Punch B**，而不是先经由 Punch A 再转发。Punch A 的职责仅是维护 A 自己的在线 Binding；只有当其他 Peer 主动连接 A 时，Punch A 才进入信令路径——本流程中 A 是发起方，Punch A 不出现。Punch B 则因为持有 B 的有效 Binding，能够把信令送达 B。
 
-A 一侧的信令走**连接范围的瞬时加密信道**：随 A 的首个 `signal`（offer）建立，生命周期与 Punch B 上的连接记录一致（连接建立成功或超时即关闭），answer、trickle candidate、cancel 与错误都经它双向传递。首个 `signal` 以 connect 票据 认证；此后同一信道上的消息不再重复验证票据——信道即凭据，relay 回退阶段的 candidate 交换因此不受票据 `exp` 限制。Punch B 在首个 `signal` 的响应中同时下发随机生成的 `signal_key`（对称密钥，只在加密信道内出现，有效期与连接记录一致）；这与 Binding 的模式同构：join 票据 之于 `binding_key`，正如 connect 票据 之于 `signal_key`。若瞬时信道意外断开，A 重连 Punch B 并出示 `connection_id` 与 `signal_key` 即可恢复该连接的信令；Punch B 在连接记录中保留已收到但未送达 A 的信令（通常是 answer 与少量 candidate），重连后按序补发，送达或超时后丢弃。
+A 一侧的信令走**连接范围的瞬时加密信道**：随 A 的首个 `signal`（connect）建立，生命周期与 Punch B 上的连接记录一致（连接建立成功或超时即关闭），answer、trickle candidate、cancel 与错误都经它双向传递。首个 `connect` 以 connect 票据认证；`offer` 必须来自已认证的发起方信道，且票据的 `cid`、`tgt`、`ih` 与连接记录匹配；后续信令在同一信道上不再重复验证票据——信道即凭据，relay 回退阶段的 candidate 交换因此不受票据 `exp` 限制。Punch B 在首个 `signal` 的响应中同时下发随机生成的 `signal_key`（对称密钥，只在加密信道内出现，有效期与连接记录一致）；这与 Binding 的模式同构：join 票据 之于 `binding_key`，正如 connect 票据 之于 `signal_key`。若瞬时信道意外断开，A 重连 Punch B 并出示 `connection_id` 与 `signal_key` 即可恢复该连接的信令；Punch B 在连接记录中保留已收到但未送达 A 的信令（通常是 answer 与少量 candidate），重连后按序补发，送达或超时后丢弃。
 
-B 一侧的信令送达依赖 B 与 Punch B 之间在 join 时建立的常驻加密信道；信道断开即视为 Binding 失效，Punch 对后续连接请求返回可区分的"目标不可达"错误。`heartbeat` 负责维持 NAT 映射与刷新 Binding TTL；常驻信道是否存活由传输层自身判定。当前 SDK 在 QUIC 下通过 UDP datagram 发送 heartbeat，在 WSS 回退下则通过 TLS WebSocket 控制帧发送；即使复用同一 WSS 连接，heartbeat 的有效性仍不替代对常驻信道的存活检查。常驻信道的具体传输可为 TCP+TLS、UDP+DTLS 或 QUIC，硬性要求相同——机密性与完整性（`binding_key`、`signal_key` 与 connect 票据均只经此类信道传输）、服务器认证（防止假 Punch 接管信令面；验证锚点为 announce / query 响应下发的 Punch 公钥，客户端连接 Punch 时校验其证书与公钥匹配）、以及网络切换后的可恢复性（常驻信道凭重新 join 与 `transport_generation` 语义恢复，瞬时信道凭 `signal_key` 重连）。
+B 一侧的信令送达依赖 B 与 Punch B 之间在 join 时建立的常驻加密信道；信道断开即视为 Binding 失效，Punch 对后续连接请求返回可区分的"目标不可达"错误。`heartbeat` 负责维持 NAT 映射与刷新 Binding TTL；常驻信道是否存活由传输层自身判定。当前 SDK 在 QUIC 下通过可靠双向 stream 发送 heartbeat（stream 数据仍经 UDP 承载），在 WSS 回退下则通过 TLS WebSocket 控制帧发送；即使复用同一 WSS 连接，heartbeat 的有效性仍不替代对常驻信道的存活检查。常驻信道的具体传输可为 TCP+TLS、UDP+DTLS 或 QUIC，硬性要求相同——机密性与完整性（`binding_key`、`signal_key` 与 connect 票据均只经此类信道传输）、服务器认证（防止假 Punch 接管信令面；验证锚点为 announce / query 响应下发的 Punch 公钥，客户端连接 Punch 时校验其证书与公钥匹配）、以及网络切换后的可恢复性（常驻信道凭重新 join 与 `transport_generation` 语义恢复，瞬时信道凭 `signal_key` 重连）。
 
 这也是部署前提：Punch 的容量需按两类连接估算——面向 B 的常驻 Binding 数（小时级），以及面向 A 的挂起瞬时信道数（数十秒级，受 connect 票据 有效期与连接超时共同框定），并对单个 peer/IP 的并发挂起信道数设上限，防止批量挂连接耗尽资源。
 
@@ -574,7 +574,7 @@ Track **可以**部署为无状态多实例：实例间共享一致的状态存�
 
 **两者的存储扩展模型是相反的**：Track 多实例**必须**共享状态存储（在线记录、`session_key`、`peer_id → public_key` 缓存、文件索引）；Punch 侧的状态（Binding、已消费 `cid`、连接记录）**不必**跨实例共享——票据的 `aud` 绑定到单个 Punch（`punch_id` / `punch_b_id`），每张票只可能被那一台消费。只有当同一个 `punch_id` 需要多实例容灾时，才需要为 Binding 引入共享存储或粘性路由。
 
-`punch.join` / `punch.exit` / `punch.signal` 的请求响应控制面经加密认证信道传输（TCP+TLS、UDP+DTLS 或 QUIC 均可，客户端与 Punch 间的常驻与瞬时信令信道同此要求）；为维持 NAT 映射的 `punch.heartbeat` **必须**遵循前述 MAC、时钟窗口和序列号校验。当前 SDK 在 QUIC 下使用 UDP datagram，在 WSS 回退下使用同一 TLS WebSocket 连接上的控制帧。消息使用版本化 schema；未知必填字段、超出大小限制的 candidate 列表和不匹配的 `connection_id` 都**必须**拒绝。每个响应至少带协议版本、请求 ID 和明确的错误码。所有时钟校验（`nbf`/`exp`、heartbeat 的时间戳窗口）使用统一的服务端可配置容差（如 ±60 秒），客户端**应当**与可信时间源对时，容差需计入 Punch/Track 的 `cid` 去重窗口与序列号乱序窗口的计算。
+`punch.join` / `punch.exit` / `punch.signal` 的请求响应控制面经加密认证信道传输（TCP+TLS、UDP+DTLS 或 QUIC 均可，客户端与 Punch 间的常驻与瞬时信令信道同此要求）；为维持 NAT 映射的 `punch.heartbeat` **必须**遵循前述 MAC、时钟窗口和序列号校验。当前 SDK 在 QUIC 下通过可靠双向 stream 传输 heartbeat（QUIC 仍运行在 UDP 上），在 WSS 回退下使用同一 TLS WebSocket 连接上的控制帧。消息使用版本化 schema；未知必填字段、超出大小限制的 candidate 列表和不匹配的 `connection_id` 都**必须**拒绝。每个响应至少带协议版本、请求 ID 和明确的错误码。所有时钟校验（`nbf`/`exp`、heartbeat 的时间戳窗口）使用统一的服务端可配置容差（如 ±60 秒），客户端**应当**与可信时间源对时，容差需计入 Punch/Track 的 `cid` 去重窗口与序列号乱序窗口的计算。
 
 ### 7.2 接口契约表
 
@@ -816,7 +816,7 @@ sequenceDiagram
     Note over C: seq = 上次 seq + 1
     Note over C: mac = HMAC(binding_key,<br/>binding_id || seq || timestamp || generation)
 
-    C->>P: heartbeat(binding_id, seq, timestamp, mac)<br/>(QUIC 下走 UDP datagram；WSS 回退下走 TLS WebSocket 控制帧)
+    C->>P: heartbeat(binding_id, seq, timestamp, mac)<br/>(QUIC 下走可靠双向 stream；WSS 回退下走 TLS WebSocket 控制帧)
     Note over P: 查 binding_id 有效?
     Note over P: 校验 mac: 重算 HMAC(binding_key, ...), 比对
     Note over P: 校验 timestamp 在 ±60s 窗口内
@@ -827,7 +827,7 @@ sequenceDiagram
 
 **为什么用 HMAC 不用签名**：heartbeat 每隔几秒发一次（保活 + 刷新 NAT），用 Ed25519 每次验签成本高。HMAC 是对称运算，快 10-50 倍。binding_key 在 join 时通过加密信道下发，只有客户端和 Punch 持有。
 
-**为什么 QUIC 下使用 UDP**：UDP datagram 无需额外握手和可靠传输开销，适合频繁刷新 NAT 映射。WSS 回退时 heartbeat 通过已建立的 TLS WebSocket 连接传送；两种方式都由 MAC 防止伪造和重放。
+**为什么 QUIC 下使用可靠 stream**：QUIC stream 会自动重传丢失的数据，避免单个 UDP 包丢失就让长时间运行的发布任务失败；stream 数据仍由 QUIC 的 UDP 连接承载，可刷新 NAT 映射。心跳频率较低，单次 stream 的额外开销有限。WSS 回退时 heartbeat 通过已建立的 TLS WebSocket 连接传送；两种方式都由 MAC 防止伪造和重放。
 
 **为什么有 transport_generation**：ICE restart（网络切换）时 candidate 地址会变，generation 递增。MAC 覆盖 generation，防止旧 generation 的 heartbeat 被用来维持已失效的 NAT 映射。
 
@@ -839,9 +839,11 @@ sequenceDiagram
 | --- | --- | --- |
 | `binding_id` | string | Binding 标识 |
 | `seq` | uint64 | 序列号 |
-| `mac` | string | 同 heartbeat 的 MAC 算法 |
+| `timestamp` | uint64 | Unix 秒时间戳 |
+| `generation` | uint64 | 不低于当前 Binding 的 generation |
+| `mac` | string | `HMAC-SHA-256(binding_key, "punch.exit" \|\| binding_id \|\| seq \|\| timestamp \|\| generation)` 的 hex |
 
-**授权与限制**：有效 binding；校验 MAC 与序列号；成功后 binding 立即失效。
+**授权与限制**：有效 binding；原子校验 MAC、时间窗口（±60 秒）、严格递增的序列号和不回退的 generation；成功后 binding 与 standing 授权立即失效。
 
 **交互流程**：
 
@@ -852,18 +854,18 @@ sequenceDiagram
 
     Note over C: 客户端主动下线
     Note over C: seq = 当前 seq + 1
-    Note over C: mac = HMAC(binding_key,<br/>binding_id || seq || timestamp || generation)
+    Note over C: mac = HMAC(binding_key,<br/>"punch.exit" || binding_id || seq || timestamp || generation)
 
-    C->>P: exit(binding_id, seq, mac)
+    C->>P: exit(binding_id, seq, timestamp, generation, mac)
     Note over P: 查 binding_id 有效?
-    Note over P: 校验 mac + seq
+    Note over P: 校验 mac + 时间窗口 + seq + generation
     Note over P: 删除 binding 记录
     Note over P: binding_key 立即作废
-    P-->>C: 204 No Content
+    P-->>C: RPC result: {ok: true}
     Note over C,P: 此后该 peer 的信令信道关闭<br/>其他 peer 无法再通过 PB 联系到它
 ```
 
-**为什么 exit 复用 heartbeat 的 MAC 机制**：客户端已经持有 binding_key，不需要新凭据。exit 和 heartbeat 用同样的 MAC 算法，Punch 用同样的校验逻辑，代码路径统一。
+**为什么 exit 使用独立 MAC 域**：exit 与 heartbeat 共用 binding_key 和 HMAC 算法，但 exit 在消息前加入固定的 ASCII 操作名 `punch.exit`，避免合法心跳被改写为退出请求。此格式需要配套更新 SDK/CLI 与 Punch 服务端；旧 exit MAC 不再接受。
 
 **为什么不先 announce(del) 再 exit**：客户端下线时**应当**先通过 `announce` 的 `del` 撤下自己的全部文件（让 Track 停止把该 peer 作为查询候选返回），再 `exit` Punch。如果只 exit 不 del，Track 的文件索引要等 TTL 过期才消失，期间其他 peer query 到该 peer 后发起连接会失败。
 

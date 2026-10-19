@@ -217,13 +217,55 @@ pub fn verify_binding_mac(
   q2q_primitives::mac::verify(expected, key, &parts)
 }
 
+/// Exit credentials have a separate domain from heartbeat credentials.
+pub fn exit_mac(
+  key: &[u8; 32],
+  binding_id: &str,
+  seq: u64,
+  timestamp: UnixSeconds,
+  generation: Generation,
+) -> String {
+  let parts = mac_parts(binding_id, seq, timestamp, generation);
+  let parts: Vec<&[u8]> = std::iter::once(b"punch.exit".as_slice())
+    .chain(parts.iter().map(Vec::as_slice))
+    .collect();
+  q2q_primitives::mac::sha256(key, &parts)
+    .iter()
+    .map(|b| format!("{b:02x}"))
+    .collect()
+}
+
+pub fn verify_exit_mac(
+  key: &[u8; 32],
+  binding_id: &str,
+  seq: u64,
+  timestamp: UnixSeconds,
+  generation: Generation,
+  mac: &str,
+) -> bool {
+  let Ok(expected) = hex_decode(mac).and_then(|bytes| bytes.try_into().map_err(|_| ())) else {
+    return false;
+  };
+  let parts = mac_parts(binding_id, seq, timestamp, generation);
+  let parts: Vec<&[u8]> = std::iter::once(b"punch.exit".as_slice())
+    .chain(parts.iter().map(Vec::as_slice))
+    .collect();
+  q2q_primitives::mac::verify(expected, key, &parts)
+}
+
 fn hex_decode(s: &str) -> Result<Vec<u8>, ()> {
-  if !s.len().is_multiple_of(2) {
+  if s.len() != 64 || !s.is_ascii() {
     return Err(());
   }
-  (0..s.len())
-    .step_by(2)
-    .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| ()))
+  s.as_bytes()
+    .as_chunks::<2>()
+    .0
+    .iter()
+    .map(|pair| {
+      let high = (pair[0] as char).to_digit(16).ok_or(())?;
+      let low = (pair[1] as char).to_digit(16).ok_or(())?;
+      Ok(((high << 4) | low) as u8)
+    })
     .collect()
 }
 
@@ -582,5 +624,28 @@ mod tests {
     // parses fine — the method is unknown, but that is the dispatcher's call
     let req = parse_request(raw.as_bytes()).unwrap();
     assert_eq!(Method::parse(&req.method), None);
+  }
+  #[test]
+  fn malformed_mac_strings_are_rejected_without_panicking() {
+    for mac in [
+      "aéa".to_string(),
+      "é".repeat(32),
+      "💥".repeat(16),
+      "z".repeat(64),
+      "0".repeat(63),
+    ] {
+      assert!(!verify_binding_mac(&[1; 32], "binding", 1, 100, 0, &mac));
+      assert!(!verify_exit_mac(&[1; 32], "binding", 1, 100, 0, &mac));
+    }
+  }
+
+  #[test]
+  fn a_heartbeat_mac_cannot_authorize_exit() {
+    let heartbeat = binding_mac(&[1; 32], "binding", 1, 100, 0);
+    let exit = exit_mac(&[1; 32], "binding", 1, 100, 0);
+    assert_ne!(heartbeat, exit);
+    assert!(!verify_exit_mac(&[1; 32], "binding", 1, 100, 0, &heartbeat));
+    assert!(verify_exit_mac(&[1; 32], "binding", 1, 100, 0, &exit));
+    assert!(!verify_binding_mac(&[1; 32], "binding", 1, 100, 0, &exit));
   }
 }

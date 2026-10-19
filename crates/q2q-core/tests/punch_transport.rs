@@ -76,6 +76,53 @@ async fn idle_punch_connection_survives_without_application_heartbeats() {
 }
 
 #[tokio::test]
+async fn quic_heartbeat_uses_a_reliable_bidirectional_stream() {
+  let (server, assignment) = punch_server(None);
+  let (release_server, wait_for_release) = tokio::sync::oneshot::channel();
+  let server_task = tokio::spawn(async move {
+    let connection = server.accept().await.unwrap().await.unwrap();
+    let (mut send, mut recv) = tokio::time::timeout(Duration::from_secs(2), connection.accept_bi())
+      .await
+      .expect("heartbeat should use a QUIC stream")
+      .unwrap();
+    let bytes = recv.read_to_end(MAX_RESPONSE_BYTES).await.unwrap();
+    let request: Request = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(request.method, "punch.heartbeat");
+    send
+      .write_all(
+        &serde_json::to_vec(&Response::ok(
+          &request.id,
+          &HeartbeatResponse { expires_at: 123 },
+        ))
+        .unwrap(),
+      )
+      .await
+      .unwrap();
+    send.finish().unwrap();
+    let _ = wait_for_release.await;
+  });
+
+  let (endpoint, connection) = connect_quic(&assignment).await.unwrap();
+  let transport = QuicPunchTransport {
+    endpoint,
+    signals: SignalReceiver::new(connection.clone()),
+    connection,
+  };
+  let request = Request {
+    v: RPC_VERSION,
+    id: "heartbeat-stream-test".into(),
+    method: "punch.heartbeat".into(),
+    params: serde_json::Value::Null,
+  };
+  let response = transport.heartbeat(request).await.unwrap();
+  assert_eq!(response.id, "heartbeat-stream-test");
+  assert!(response.error.is_none());
+  let _ = release_server.send(());
+  transport.close().await;
+  server_task.await.unwrap();
+}
+
+#[tokio::test]
 async fn cancelling_a_signal_wait_preserves_a_partly_received_quic_push() {
   let (server, assignment) = punch_server(None);
   let expected = SignalRequest {

@@ -25,11 +25,11 @@ the same `bind` address. The SDK derives `wss://host:port/` from Track's
 `quic://host:port` address, tries QUIC first, and falls back to WebSocket over
 TLS when the QUIC link cannot be established. Track needs no separate WSS URL.
 
-Heartbeats ride QUIC datagrams — small, frequent, and a lost one is simply
-followed by another. On WSS, heartbeats are ordinary bounded WebSocket frames.
-Everything else (`join`, `exit`, and all signalling) uses reliable messages on
-both transports. Both endpoints use the same Punch identity key published by
-Track, so the fallback does not weaken server authentication.
+Heartbeats use reliable QUIC streams so a transient lost packet does not end a
+long-running publication. On WSS, heartbeats are ordinary bounded WebSocket
+frames. Everything else (`join`, `exit`, and all signalling) also uses reliable
+messages on both transports. Both endpoints use the same Punch identity key
+published by Track, so the fallback does not weaken server authentication.
 
 This fallback covers Punch's binding and signalling control plane and uses the
 WebSocket root path (`/`). Peer file data still uses WebRTC DataChannels and its
@@ -55,15 +55,19 @@ sequenceDiagram
   P->>PS: exit (seq, MAC)
 ```
 
-Every message after `join` is authenticated with `HMAC(binding_key, binding_id ||
-seq || timestamp || generation)`, plus a sequence number that must move forward
-and a timestamp that must be close to the server's clock. A `generation` counter
-handles network changes: it only ever increases, so a rejoin after switching
-networks cannot be confused with a replay.
+Heartbeats use `HMAC(binding_key, binding_id || seq || timestamp || generation)`.
+Exit uses the same fields prefixed with the ASCII bytes `punch.exit`, so a
+heartbeat MAC cannot authorise an exit. Both operations check the clock window,
+strictly increasing sequence numbers and nondecreasing generation, and update
+the current binding atomically.
 
-The channel itself is the credential. When it drops, the binding is gone — which
-is why the list of "reachable" peers is exactly the set of peers with a live
-channel, not a separate table.
+A peer is reachable only while both its binding and standing channel are live.
+Expiry, exit and transport closure revoke that channel's standing identity.
+Rejoining replaces the old binding; cleanup of the old channel cannot remove
+the replacement.
+
+The exit MAC format requires a matching SDK/CLI and Punch server update; older
+exit MACs are rejected. The heartbeat MAC format remains compatible.
 
 ## Signalling
 
@@ -122,9 +126,23 @@ Two kinds, because they have different lifetimes:
   that arrived while it was away is replayed.
 
 Heartbeats serve a different purpose from checking whether the standing channel
-is alive. They refresh the NAT mapping and TTL: QUIC sends them as datagrams,
-while WSS carries them as frames over the TLS WebSocket connection. Punch treats
-a failed heartbeat and a dropped channel as separate signals.
+is alive. They refresh the NAT mapping and TTL: QUIC carries them in reliable
+streams over UDP, while WSS carries them as frames over the TLS WebSocket
+connection. Punch treats a failed heartbeat and a dropped channel as separate
+signals.
+
+A connect/offer ticket must match the connection ID, target and content hash.
+The initial offer also requires the authenticated initiator channel: a target
+cannot use a forwarded ticket to impersonate its sender.
+Signalling for each connection is serialised through route changes. If delivery
+to a disconnected initiator fails, Punch buffers the message for resume, up to
+64 messages and 16 KiB of serialised signal data per connection. Failed delivery that cannot be buffered returns
+`signal_delivery_failed` instead of success. Resume replays buffered messages;
+there is no application-level acknowledgement for a lost resume response.
+
+QUIC and WSS handshakes run independently with a 10-second deadline, a limit of
+1,024 concurrent connections per transport and 32 per IP. QUIC additionally
+bounds concurrent requests and their read/write deadlines.
 
 ## Running it
 
