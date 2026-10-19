@@ -15,8 +15,8 @@ const CHROME = process.env.CHROME_PATH
 const ROOT = resolve('docs/.vitepress/dist');
 // 独立文档域名部署在站点根路径；保留 SITE_BASE 以便本地验证子路径部署。
 const BASE = process.env.SITE_BASE || '/';
-// 站点现在分语言、分节，所以自检也不再看单页。默认覆盖英文各节、中文占位页
-// 和中文设计文档；也可以显式传页面路径覆盖（npm run e2e -- /guide/）。
+// 站点现在分语言、分节，所以自检也不再看单页。默认覆盖英文首页与指南、
+// 中文首页、关键中文指南和中文设计文档；也可以显式传页面路径覆盖。
 const PAGES = process.argv.slice(2).length
   ? process.argv.slice(2)
   : [
@@ -25,9 +25,12 @@ const PAGES = process.argv.slice(2).length
       BASE + 'guide/deploy.html',
       BASE + 'guide/transport.html',
       BASE + 'zh/',
+      BASE + 'zh/guide/what-is-q2q.html',
+      BASE + 'zh/guide/deploy.html',
+      BASE + 'zh/guide/punch.html',
       BASE + 'zh/spec.html',
     ];
-// 首页是 layout:home，中文指南页目前是占位——两者都没有 h2/h3 锚点
+// 首页是 layout:home，没有 h2/h3 锚点
 const NO_ANCHORS = [BASE, BASE + 'zh/'];
 
 const MIME = {
