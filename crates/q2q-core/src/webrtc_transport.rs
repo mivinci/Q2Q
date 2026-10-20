@@ -62,6 +62,7 @@ pub(crate) enum RtcEvent {
 }
 
 pub(crate) struct PeerChannels {
+  pub early_hello: Option<[u8; 32]>,
   pub control: Arc<dyn DataChannel>,
   pub data: Arc<dyn DataChannel>,
 }
@@ -101,8 +102,9 @@ impl RtcConnection {
       .await
       .map_err(|e| e.to_string())?;
     // Reserve stream 1 for pieces on both peers. Keep the reliable control
-    // channel in-band: its DCEP ACK ensures the remote channel is ready before
-    // the first identity message. rtc 0.21.1 loses retransmission metadata for
+    // channel in-band for DCEP negotiation. TURN event delivery can still put
+    // an identity Hello before OnOpen; peer.rs retains that bounded first frame.
+    // rtc 0.21.1 loses retransmission metadata for
     // remotely announced partial-reliability channels, hence this data channel
     // is configured locally at both ends instead.
     let data = peer
@@ -145,6 +147,7 @@ impl RtcConnection {
     Ok((
       offer,
       PeerChannels {
+        early_hello: None,
         control,
         data: self.local_data.clone(),
       },

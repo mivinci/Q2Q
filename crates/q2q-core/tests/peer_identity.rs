@@ -46,3 +46,32 @@ fn unknown_versions_and_proof_before_challenge_are_rejected() {
   );
   assert!(Frame::Proof { v: 2, signature }.proof_signature().is_err());
 }
+
+#[test]
+fn early_control_frame_accepts_only_a_bounded_text_hello() {
+  use webrtc::data_channel::RTCDataChannelMessage;
+  let nonce = [13; 32];
+  let raw =
+    serde_json::json!({"type": "identity_hello", "v": 1, "nonce": B64.encode(nonce)}).to_string();
+  let message = |text: bool, data: &[u8]| RTCDataChannelMessage {
+    is_string: text,
+    data: bytes::BytesMut::from(data),
+  };
+  assert_eq!(early_hello(&message(true, raw.as_bytes())).unwrap(), nonce);
+  for (text, raw) in [
+    (false, raw.into_bytes()),
+    (true, vec![b' '; MAX_FRAME + 1]),
+    (true, br#"{"type":"request","block_index":0}"#.to_vec()),
+    (
+      true,
+      serde_json::json!({"type":"identity_proof", "v":1, "signature": B64.encode([0; 64])})
+        .to_string()
+        .into_bytes(),
+    ),
+  ] {
+    assert!(matches!(
+      early_hello(&message(text, &raw)),
+      Err(ControlError::Authentication(_))
+    ));
+  }
+}

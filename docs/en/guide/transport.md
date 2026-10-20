@@ -55,7 +55,7 @@ The signed transcript binds the initiator/responder roles, both public keys, `in
 
 Each channel has a 256 KiB send buffer limit with backpressure. Missing pieces are recovered through the file protocol's `piece_nack` messages.
 
-The current dependency has limitations when restoring retransmission settings for remotely announced DCEP channels, so both peers configure the data channel explicitly. The control channel retains its DCEP handshake to ensure the remote endpoint is ready for the first identity frame. Applications do not manage these channels.
+The current dependency has limitations when restoring retransmission settings for remotely announced DCEP channels, so both peers configure the data channel explicitly. The control channel retains its DCEP handshake to ensure the remote endpoint is ready for the first identity frame. Applications do not manage these channels. TURN reads may deliver a local channel’s first identity message before its `OnOpen` notification. The SDK retains at most one validated `identity_hello`, limited to 512 bytes, checks readiness using the actual Open state and channel events, then passes the challenge into the full signature exchange. Early business messages, proof frames or excess initial frames still fail; file data is not admitted before authentication.
 
 ## Content verification boundary
 
@@ -283,3 +283,7 @@ Hits still run a bounded blocking availability/metadata check. Complete sources 
 A pending cache waiter consumes no read permit. Reads and hit checks acquire max_upload_reads before spawn_blocking. Cancelling the initiating request before spawning removes its flight so another waiter can retry. Once started, the blocking closure owns the flight, read permit, originating upload permit and task guard; it can publish the result for remaining waiters even after that connection is cancelled. Errors are not retained; the reading caller retains its typed error, and waiters can retry or observe closure. Closing a publication wakes waiters, clears only its entries and prevents late jobs from repopulating the cache. close still waits for its blocking jobs to release their permits. A failed source cannot keep serving old hits.
 
 `BuildError::InvalidUploadCacheBytes` is returned for a budget above 256 MiB; exhaustive matches must handle the new variant. Performance measurements and reproducible workloads are recorded in the repository's upload-block-cache todo; they measure verified source-read calls, not physical disk I/O or end-to-end network throughput.
+
+## Connection diagnostics
+
+The CLI `--verbose` flag enables SDK stage logs for channel readiness, mutual identity confirmation, initial bitfields, block requests/first pieces/proofs, verification and persistence, missing-piece retries and session completion. Failures include available Peer/connection IDs, stage and block index. Block timeouts also record received/missing piece counts, proof availability and elapsed time since data progress. Logs do not emit one event per piece. Normal CLI progress remains concise, and sent bytes do not imply receiver-verified bytes.

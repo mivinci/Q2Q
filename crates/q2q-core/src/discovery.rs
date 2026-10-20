@@ -122,11 +122,17 @@ impl Peers {
         result = workers.join_next(), if !workers.is_empty() => {
           let (id, result) = result.expect("worker exists")?;
           active.remove(&id);
-          retry.insert(id, Instant::now() + Duration::from_secs(5));
+          retry.insert(id.clone(), Instant::now() + Duration::from_secs(5));
           match result {
             Ok(()) => {},
-            Err(error) if error.peer_retryable() || matches!(error, TransferError::NoPeers) => last = error,
-            Err(error) => return Err(error),
+            Err(error) if error.peer_retryable() || matches!(error, TransferError::NoPeers) => {
+              tracing::debug!(peer_id = %id, %error, "Download peer attempt failed; scheduling retry");
+              last = error;
+            },
+            Err(error) => {
+              tracing::debug!(peer_id = %id, %error, "Download peer attempt failed");
+              return Err(error);
+            },
           }
         }
         _ = tokio::time::sleep_until(wake) => {

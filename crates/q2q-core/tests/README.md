@@ -4,7 +4,7 @@ All SDK test cases and fixtures live in this flat directory.
 
 - `sdk.rs`: Cargo integration target using only the public `q2q` API.
 - `client.rs`, `download_store.rs`, `transfer.rs`, `scheduler.rs`, `cdn.rs`, `reader.rs`, `online.rs`, `peer_identity.rs`, `punch_transport.rs`, `webrtc_transport.rs`, `signal_router.rs`, `upload.rs`, `upload_rate.rs`, `upload_progress.rs`, `upload_session.rs`, `admission.rs`, `source_file.rs`, `upload_source.rs`, `upload_cache.rs`, `query.rs`: unit test modules loaded from their source modules through `#[cfg(test)]` and `#[path]`, preserving access to private implementation details.
-- `peer.rs`: authenticated local WebRTC pair fixture, compiled only for unit tests.
+- `peer.rs`: authenticated local WebRTC pair fixture and early-identity-frame regressions. Each peer authenticates as soon as its own negotiation finishes, with no shared readiness barrier. Controlled early-Hello tests preserve signature and channel validation.
 - `destination.rs`: private storage and fault-injection fixtures.
 - `http.rs`: shared local HTTP fixture for unit and integration tests.
 
@@ -14,7 +14,7 @@ cargo test -p q2q-core --test sdk
 cargo test -p q2q-core --lib
 ```
 
-`autotests = false` prevents helper/unit files from becoming accidental integration targets. `sdk` is explicitly registered in Cargo.toml. Add public API cases to `sdk.rs`, or register another `[[test]]` target when adding a separate integration suite. The peer transfer tests are loaded by `peer_transfer.rs`; paced upload/accounting tests are loaded by `upload_session.rs`; the subprocess recovery test retains its original module path.
+`autotests = false` prevents helper/unit files from becoming accidental integration targets. `sdk` is explicitly registered in Cargo.toml. Add public API cases to `sdk.rs`, or register another `[[test]]` target when adding a separate integration suite. The peer transfer tests include five-second repair delays and a real no-progress deadline under duplicate pieces without a proof. They are loaded by `peer_transfer.rs`; paced upload/accounting tests are loaded by `upload_session.rs`; the subprocess recovery test retains its original module path.
 
 ## Local Track/Punch regression
 

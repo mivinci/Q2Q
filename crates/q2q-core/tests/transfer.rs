@@ -867,3 +867,116 @@ fn have_updates_are_idempotent_and_reject_out_of_range_indexes() {
   }
   assert_eq!(*available.lock().unwrap(), vec![0x80, 0x80]);
 }
+
+#[tokio::test]
+async fn delayed_block_survives_the_old_two_second_retry_limit() {
+  let directory = tempfile::tempdir().unwrap();
+  let bytes = vec![42u8; 3077];
+  let prepared = source(directory.path(), &bytes);
+  let seed = prepared.seed().clone();
+  let proof = prepared.proof(0).unwrap();
+  let (download, upload) = crate::peer::test_pair(seed.info_hash()).await;
+  let serving = async {
+    receive_bitfield(&*upload.control, 1).await.unwrap();
+    send(
+      &*upload.control,
+      Control::Bitfield {
+        bits: B64.encode([0x80]),
+      },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+      receive(&*upload.control).await.unwrap(),
+      Control::Request {
+        block_index: 0,
+        count: 1
+      }
+    ));
+    let delayed = tokio::time::sleep(Duration::from_secs(5));
+    tokio::pin!(delayed);
+    let mut retries = 0;
+    loop {
+      tokio::select! {
+        _ = &mut delayed => break,
+        message = receive(&*upload.control) => match message.unwrap() {
+          Control::RequestProof { .. } => {},
+          Control::PieceNack { .. } => retries += 1,
+          other => panic!("unexpected repair request: {other:?}"),
+        }
+      }
+    }
+    assert!(retries >= 3);
+    send(
+      &*upload.control,
+      Control::Proof {
+        block_index: 0,
+        count: 1,
+        proof,
+      },
+    )
+    .await
+    .unwrap();
+    send_pieces(&*upload.data, 0, &bytes, &[(0, bytes.len() as u32)])
+      .await
+      .unwrap();
+    loop {
+      let message = receive(&*upload.control).await.unwrap();
+      match message {
+        Control::Have { .. }
+        | Control::BlockDone { .. }
+        | Control::PieceNack { .. }
+        | Control::RequestProof { .. } => {}
+        Control::Cancel {
+          block_index: 0,
+          count: 0,
+        } => {
+          send(&*upload.control, message).await.unwrap();
+          break;
+        }
+        other => panic!("unexpected completion message: {other:?}"),
+      }
+    }
+  };
+  let target = directory.path().join("delayed.bin");
+  let (received, ()) = tokio::time::timeout(Duration::from_secs(12), async {
+    tokio::join!(download.download_file(seed, &target), serving)
+  })
+  .await
+  .unwrap();
+  received.unwrap();
+  assert_eq!(std::fs::read(target).unwrap(), bytes);
+}
+
+#[tokio::test]
+async fn duplicate_pieces_without_proof_cannot_extend_the_progress_deadline() {
+  let directory = tempfile::tempdir().unwrap();
+  let bytes = vec![42u8; 1024];
+  let prepared = source(directory.path(), &bytes);
+  let (download, upload) = crate::peer::test_pair(prepared.seed().info_hash()).await;
+  let available = std::sync::Mutex::new(vec![0x80]);
+  let completed = HashSet::new();
+  let receiving = download.receive_block(0, bytes.len(), &completed, &available, 1, None);
+  let duplicating = async {
+    let mut ticker = tokio::time::interval(Duration::from_millis(250));
+    loop {
+      tokio::select! {
+        _ = ticker.tick() => send_pieces(&*upload.data, 0, &bytes, &[(0, bytes.len() as u32)]).await.unwrap(),
+        message = receive(&*upload.control) => {
+          assert!(matches!(message.unwrap(), Control::RequestProof { .. } | Control::PieceNack { .. }));
+        }
+      }
+    }
+  };
+  let started = tokio::time::Instant::now();
+  let result = tokio::time::timeout(Duration::from_secs(25), async {
+    tokio::select! {
+      result = receiving => result,
+      _ = duplicating => unreachable!(),
+    }
+  })
+  .await
+  .expect("duplicates prolonged the block indefinitely");
+  assert!(matches!(result, Err(TransferError::Timeout)));
+  assert!(started.elapsed() >= Duration::from_secs(19));
+}

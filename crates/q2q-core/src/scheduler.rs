@@ -35,6 +35,7 @@ pub(crate) async fn download_peer(
   download_peer_observed(peer, seed, store, queue, observation).await
 }
 
+#[tracing::instrument(skip_all, fields(connection_id = %peer.connection_id(), peer_id = %peer.peer_id().as_str()))]
 pub(crate) async fn download_peer_observed(
   peer: PeerSession,
   seed: &Seed,
@@ -60,10 +61,17 @@ pub(crate) async fn download_peer_observed(
       let length =
         crate::progress::block_len(seed.info.length, seed.info.block_size, index) as usize;
       observation.state(State::Receiving);
-      let (bytes, proof) = guard_peer(&queue, index, connection.fetch(index, length)).await?;
+      let (bytes, proof) = guard_peer(&queue, index, connection.fetch(index, length))
+        .await
+        .inspect_err(|error| {
+          tracing::debug!(block_index = index, %error, stage = "block_fetch", "Block fetch failed");
+        })?;
       observation.state(State::Verifying);
       lease.attribute(&observation);
-      store.commit(lease, bytes, proof).await?;
+      store.commit(lease, bytes, proof).await.inspect_err(|error| {
+        tracing::debug!(block_index = index, %error, stage = "block_commit", "Block verification or persistence failed");
+      })?;
+      tracing::debug!(block_index = index, "Block verified and committed");
       connection.acknowledge(index).await?;
       observation.state(State::Idle);
       idle = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -77,7 +85,10 @@ pub(crate) async fn download_peer_observed(
     }
   }
   observation.state(State::Finishing);
-  connection.finish().await
+  tracing::debug!(stage = "finish_ack", "Finishing download peer session");
+  connection.finish().await.inspect_err(|error| {
+    tracing::debug!(%error, stage = "finish_ack", "Download session completion failed");
+  })
 }
 
 #[cfg(test)]

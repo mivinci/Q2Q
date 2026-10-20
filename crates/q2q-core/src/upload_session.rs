@@ -211,6 +211,7 @@ impl PeerSession {
       .await
   }
 
+  #[tracing::instrument(skip_all, fields(connection_id = %self.connection_id(), peer_id = %self.peer_id().as_str()))]
   pub(crate) async fn serve_file_scoped(
     self,
     source: Arc<dyn UploadSource>,
@@ -245,11 +246,15 @@ impl PeerSession {
         }
       }
     };
-    tokio::select! {
+    let result = tokio::select! {
       result = self.serve_source(source, context, &mut incoming) => result,
       result = control_events => result,
       result = data_events => result,
+    };
+    if let Err(error) = &result {
+      tracing::debug!(%error, stage = "upload_file_protocol", "Upload file protocol failed");
     }
+    result
   }
 
   async fn serve_source(
@@ -270,9 +275,16 @@ impl PeerSession {
     }
     // Metadata precedes bitfields: a magnet receiver does not know their size
     // until info is verified. Seed receivers send Bitfield immediately.
+    tracing::debug!(
+      stage = "upload_initial_control",
+      "Waiting for download metadata request or availability"
+    );
     let first = tokio::time::timeout(IDLE, receive_upload(incoming))
       .await
-      .map_err(|_| TransferError::Timeout)??;
+      .map_err(|_| {
+        tracing::debug!(stage = "upload_initial_control", "Peer transfer timed out");
+        TransferError::Timeout
+      })??;
     let first = if matches!(first, Control::RequestInfo {}) {
       let encoded = seed.info.encode();
       if encoded.len() > q2q_primitives::seed::MAX_INFO_BYTES {
@@ -295,6 +307,10 @@ impl PeerSession {
       first
     };
     decode_bitfield(first, seed.info.leaf_count())?;
+    tracing::debug!(
+      stage = "upload_bitfield_send",
+      "Download availability received; sending upload availability"
+    );
     send(
       &*self.control,
       Control::Bitfield {
@@ -326,6 +342,11 @@ impl PeerSession {
       };
       match control {
         Control::Request { block_index, count } => {
+          tracing::debug!(
+            block_index,
+            stage = "upload_block_request",
+            "Upload block requested"
+          );
           let index =
             usize::try_from(block_index).map_err(|_| protocol("block index overflows platform"))?;
           if count != 1
@@ -438,6 +459,10 @@ impl PeerSession {
         }
         Control::Have { .. } => {}
         Control::Cancel { block_index, count } => {
+          tracing::debug!(
+            stage = "upload_finish_ack",
+            "Acknowledging download session end"
+          );
           // Acknowledge the ordered end marker before either side closes RTC.
           // It also ends sessions that supplied only a subset after failover.
           send(&*self.control, Control::Cancel { block_index, count }).await?;
@@ -498,7 +523,14 @@ pub(crate) async fn send_pieces_limited(
         channel.send(BytesMut::from(encoded.as_slice())),
       )
       .await
-      .map_err(|_| TransferError::Timeout)?
+      .map_err(|_| {
+        tracing::debug!(
+          block_index = index,
+          stage = "upload_piece_send",
+          "Peer transfer timed out"
+        );
+        TransferError::Timeout
+      })?
       .map_err(|e| protocol(e.to_string()))?;
       if let Some((_, context)) = pacing
         && let Some(progress) = &context.progress

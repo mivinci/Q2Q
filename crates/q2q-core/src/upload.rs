@@ -79,8 +79,13 @@ impl UploadPool {
                 progress.finish(Outcome::Failed); return Ok(());
               },
             };
+            tracing::debug!(connection_id = %progress_id, peer_id = %peer.peer_id().as_str(), "Upload peer authenticated; starting file protocol");
             progress.state(UploadConnectionState::Idle);
             let result = peer.serve_file_scoped(source, context).await;
+            match &result {
+              Ok(()) => tracing::debug!(connection_id = %progress_id, "Upload session completed"),
+              Err(error) => tracing::debug!(connection_id = %progress_id, %error, "Upload session failed"),
+            }
             progress.finish(if result.is_ok() { Outcome::Completed } else { Outcome::Failed });
             result
           });

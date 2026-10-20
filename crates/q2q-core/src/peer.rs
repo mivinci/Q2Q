@@ -13,7 +13,7 @@ use q2q_punch::message::{RejectReason, SignalRequest, SignalType};
 use q2q_track::wire::{PeerWire, TurnWire};
 use std::sync::Arc;
 use std::time::Duration;
-use webrtc::data_channel::{DataChannel, DataChannelEvent};
+use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelState};
 use webrtc::peer_connection::{
   RTCIceCandidateInit, RTCPeerConnectionState, RTCSdpType, RTCSessionDescription,
 };
@@ -158,7 +158,9 @@ pub(crate) async fn dial(
       .await
       .map_err(ControlError::Transport)?;
   }
-  let channels = negotiate(&mut rtc, &channel, &connection_id, Some(data_channel)).await?;
+  let channels = negotiate(&mut rtc, &channel, &connection_id, Some(data_channel))
+    .await
+    .inspect_err(|error| tracing::debug!(%error, stage = "webrtc_negotiate", "Outgoing peer negotiation failed"))?;
   PeerIdentity {
     local: identity,
     remote_key: target_key,
@@ -166,8 +168,9 @@ pub(crate) async fn dial(
     info_hash,
     connection_id: &connection_id,
   }
-  .authenticate(&rtc, channels.control.as_ref())
-  .await?;
+  .authenticate(&rtc, channels.control.as_ref(), channels.early_hello)
+  .await
+  .inspect_err(|error| tracing::debug!(%error, stage = "identity_confirmation", "Outgoing peer identity confirmation failed"))?;
   tracing::debug!("WebRTC peer identity authenticated");
   Ok(PeerSession {
     peer_id: target_id,
@@ -332,8 +335,13 @@ impl PendingPeer {
       info_hash: self.info_hash,
       connection_id: &connect.connection_id,
     }
-    .authenticate(&rtc, data_channel.control.as_ref())
+    .authenticate(
+      &rtc,
+      data_channel.control.as_ref(),
+      data_channel.early_hello,
+    )
     .await?;
+    tracing::debug!("WebRTC peer identity authenticated");
     Ok(PeerSession {
       peer_id: self.initiator.clone(),
       info_hash: self.info_hash,
@@ -480,6 +488,58 @@ impl SignalChannel for PunchEphemeral {
   }
 }
 
+#[derive(Default)]
+struct OpeningControl {
+  open: bool,
+  hello: Option<[u8; 32]>,
+}
+
+impl OpeningControl {
+  fn observe(
+    &mut self,
+    event: Option<DataChannelEvent>,
+    state: RTCDataChannelState,
+  ) -> Result<(), ControlError> {
+    match event {
+      Some(DataChannelEvent::OnOpen) => {
+        self.open = true;
+        tracing::debug!("Control data channel opened");
+      }
+      Some(DataChannelEvent::OnMessage(message)) => {
+        // TURN reads can dispatch a locally registered channel's first message
+        // before its OnOpen notification. Retain one bounded, validated Hello,
+        // and use the transport state as readiness evidence, not authentication.
+        if self.hello.is_some() {
+          return Err(ControlError::Authentication(
+            "additional identity frame before channel open".into(),
+          ));
+        }
+        if matches!(
+          state,
+          RTCDataChannelState::Closing | RTCDataChannelState::Closed
+        ) {
+          return Err(ControlError::Transport(
+            "WebRTC control channel closed".into(),
+          ));
+        }
+        self.hello = Some(crate::peer_identity::early_hello(&message)?);
+        self.open = state == RTCDataChannelState::Open;
+        tracing::debug!(
+          ?state,
+          "Retained identity hello before channel open notification"
+        );
+      }
+      Some(DataChannelEvent::OnClose) | None => {
+        return Err(ControlError::Transport(
+          "WebRTC control channel closed".into(),
+        ));
+      }
+      _ => {}
+    }
+    Ok(())
+  }
+}
+
 async fn negotiate(
   rtc: &mut RtcConnection,
   signal: &impl SignalChannel,
@@ -491,7 +551,7 @@ async fn negotiate(
     None => (None, Some(rtc.data_channel())),
   };
   let mut connected = false;
-  let mut control_open = false;
+  let mut opening_control = OpeningControl::default();
   let mut data_open = false;
   tokio::time::timeout(ICE_TIMEOUT, async {
     loop {
@@ -553,11 +613,12 @@ async fn negotiate(
             Some(channel) => channel.poll().await,
             None => std::future::pending().await,
           }
-        }, if !control_open => match event {
-          Some(DataChannelEvent::OnOpen) => { control_open = true; tracing::debug!("Control data channel opened"); },
-          Some(DataChannelEvent::OnMessage(_)) => return Err(ControlError::Authentication("received data before channel open".into())),
-          Some(DataChannelEvent::OnClose) | None => return Err(ControlError::Transport("WebRTC data channel closed".into())),
-          _ => {}
+        }, if !opening_control.open => {
+          let state = match &control {
+            Some(channel) => channel.ready_state().await.map_err(|e| ControlError::Transport(e.to_string()))?,
+            None => RTCDataChannelState::Connecting,
+          };
+          opening_control.observe(event, state)?;
         },
         event = async {
           match &data {
@@ -566,12 +627,12 @@ async fn negotiate(
           }
         }, if !data_open => match event {
           Some(DataChannelEvent::OnOpen) => { data_open = true; tracing::debug!("Piece data channel opened"); },
-          Some(DataChannelEvent::OnMessage(_)) => return Err(ControlError::Authentication("received data before channel open".into())),
+          Some(DataChannelEvent::OnMessage(_)) => return Err(ControlError::Protocol("piece data arrived before identity confirmation".into())),
           Some(DataChannelEvent::OnClose) | None => return Err(ControlError::Transport("WebRTC data channel closed".into())),
           _ => {}
         },
       }
-      if connected && control_open && data_open {
+      if connected && opening_control.open && data_open {
         rtc.log_selected_path().await;
         let data = data.ok_or_else(|| ControlError::Protocol("missing data channel".into()))?;
         if data.ordered().await.map_err(|e| ControlError::Transport(e.to_string()))?
@@ -581,6 +642,7 @@ async fn negotiate(
           return Err(ControlError::Protocol("expected unreliable unordered data channel".into()));
         }
         return Ok(PeerChannels {
+          early_hello: opening_control.hello,
           control: control.ok_or_else(|| ControlError::Protocol("missing control channel".into()))?,
           data,
         });
@@ -589,7 +651,7 @@ async fn negotiate(
   })
   .await
   .map_err(|_| {
-    tracing::debug!(connected, control_open, data_open, timeout_seconds = ICE_TIMEOUT.as_secs(), "WebRTC negotiation timed out");
+    tracing::debug!(connected, control_open = opening_control.open, data_open, timeout_seconds = ICE_TIMEOUT.as_secs(), "WebRTC negotiation timed out");
     ControlError::Transport("WebRTC negotiation timed out".into())
   })?
 }
