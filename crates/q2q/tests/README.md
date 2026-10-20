@@ -16,5 +16,6 @@ Q2Q_TEST_TRACK_URL=http://127.0.0.1:8080 \
 ```
 
 该用例仅在 Unix 编译，启动真正的发布及下载 CLI 进程，验证中断续传、字节一致、
-SIGINT/SIGTERM 退出码、撤销宣告及完整离线恢复。进程由 guard 清理；
+SIGINT/SIGTERM 退出码、撤销宣告及完整离线恢复；种子含 CDN 且首选 Track
+不可达时仍能切换到种子 Track，中断后不加 `--resume` 自动恢复。进程由 guard 清理；
 Track/Punch 由启动它们的操作者负责关闭。临时文件在用例结束时删除。

@@ -73,8 +73,13 @@ pub struct ControlSession {
 }
 
 impl ControlSession {
-  pub(super) async fn connect(identity: &Identity, track_url: &Url) -> Result<Self, ControlError> {
+  pub(super) async fn connect(
+    identity: &Identity,
+    track_url: &Url,
+    accept_invalid_certs: bool,
+  ) -> Result<Self, ControlError> {
     let http = reqwest::Client::builder()
+      .danger_accept_invalid_certs(accept_invalid_certs)
       .timeout(Duration::from_secs(10))
       .build()
       .map_err(ControlError::Http)?;

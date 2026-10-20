@@ -10,15 +10,14 @@ use tempfile::TempDir;
 
 fn cli(dir: &Path) -> Command {
   let mut command = Command::new(env!("CARGO_BIN_EXE_q2q"));
-  for name in ["Q2Q_TRACK_URL", "Q2Q_DATA_DIR", "Q2Q_IDENTITY_FILE"] {
+  for name in ["Q2Q_TRACK_URL", "Q2Q_HOME", "Q2Q_IDENTITY_FILE"] {
     command.env_remove(name);
   }
-  command.arg("--data-dir").arg(dir.join("state"));
+  command.env("Q2Q_HOME", dir.join("state"));
   command
 }
 fn empty_seed(dir: &Path) -> std::path::PathBuf {
-  let mut seed = Seed::new(Info::new(0, EMPTY_ROOT));
-  seed.track_list.push("http://127.0.0.1:1".into());
+  let seed = Seed::new(Info::new(0, EMPTY_ROOT));
   let path = dir.join("empty.q2q");
   std::fs::write(&path, seed.encode()).unwrap();
   path
@@ -38,6 +37,9 @@ fn help_and_version_succeed_without_creating_state() {
     let output = cli(dir.path()).arg(argument).output().unwrap();
     success(&output);
     assert!(String::from_utf8_lossy(&output.stdout).contains("q2q"));
+    if argument == "--help" {
+      assert!(String::from_utf8_lossy(&output.stdout).contains("--insecure"));
+    }
   }
   assert!(!dir.path().join("state").exists());
 }
@@ -46,8 +48,8 @@ fn help_and_version_succeed_without_creating_state() {
 fn invalid_arguments_exit_two_without_creating_state() {
   let dir = TempDir::new().unwrap();
   for args in [
-    vec!["download", "seed"],
-    vec!["publish", "file"],
+    vec!["download"],
+    vec!["publish"],
     vec!["--upload-rate", "0", "publish", "file", "--seed", "seed"],
     vec!["--download-peers", "17", "download", "seed", "-o", "file"],
     vec!["--upload-peers", "0", "publish", "file", "--seed", "seed"],
@@ -121,7 +123,13 @@ fn empty_download_and_offline_resume_preserve_stdout_contract() {
     );
     assert!(output.stderr.is_empty());
     assert_eq!(std::fs::metadata(&destination).unwrap().len(), 0);
-    assert!(dir.path().join("output.q2q.resume").exists());
+    assert!(dir.path().join("state/checkpoints").is_dir());
+    assert_eq!(
+      std::fs::read_dir(dir.path().join("state/checkpoints"))
+        .unwrap()
+        .count(),
+      1
+    );
     let identity = std::fs::read(dir.path().join("state/identity")).unwrap();
     if resume {
       assert_eq!(identity, first_identity);
@@ -164,7 +172,7 @@ fn explicit_flags_override_environment() {
   let seed = empty_seed(dir.path());
   let output = cli(dir.path())
     .env("Q2Q_TRACK_URL", "invalid-url")
-    .env("Q2Q_DATA_DIR", dir.path().join("wrong-state"))
+    .env("Q2Q_HOME", dir.path().join("wrong-state"))
     .env("Q2Q_IDENTITY_FILE", dir.path().join("wrong-identity"))
     .arg("--identity")
     .arg(dir.path().join("chosen-identity"))
@@ -176,7 +184,7 @@ fn explicit_flags_override_environment() {
     .unwrap();
   success(&output);
   assert!(dir.path().join("chosen-identity").exists());
-  assert!(!dir.path().join("wrong-state").exists());
+  assert!(dir.path().join("wrong-state").is_dir());
   assert!(!dir.path().join("wrong-identity").exists());
 }
 

@@ -20,7 +20,17 @@ pub(crate) async fn start(
   resume: bool,
   concurrency: usize,
 ) -> Result<Transfer, TransferError> {
-  start_with_store(client, seed, path, resume, concurrency, None).await
+  start_with_store_inner(client, seed, path, resume, concurrency, None, false).await
+}
+
+pub(crate) async fn start_with_track_discovery(
+  client: &Client,
+  seed: &Seed,
+  path: PathBuf,
+  resume: bool,
+  concurrency: usize,
+) -> Result<Transfer, TransferError> {
+  start_with_store_inner(client, seed, path, resume, concurrency, None, true).await
 }
 
 pub(crate) async fn start_with_store(
@@ -31,119 +41,177 @@ pub(crate) async fn start_with_store(
   concurrency: usize,
   supplied_store: Option<Destination>,
 ) -> Result<Transfer, TransferError> {
-  crate::destination::check_seed(seed)?;
-  let supplied = supplied_store.is_some();
-  let initial_store = if let Some(store) = supplied_store {
-    Some(store)
-  } else if resume {
-    Some(Destination::open(seed, &path, true).await?)
-  } else {
-    None
-  };
-  let bits = match &initial_store {
-    Some(store) => store.bitfield().await?,
-    None => Vec::new(),
-  };
-  let progress = crate::progress::channel(seed, &bits);
-  if let Some(store) = &initial_store
-    && store.complete().await?
-  {
-    let store = initial_store.expect("resumed destination");
-    let mut guard = crate::destination::DownloadGuard::new(store.clone());
-    return Ok(Transfer::start(progress, async move {
-      store.finish().await?;
-      guard.finish();
-      Ok(path)
-    }));
-  }
-  if !supplied && !resume && tokio::fs::try_exists(&path).await? {
-    return Err(
-      std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
-        "download destination already exists",
-      )
-      .into(),
-    );
-  }
-  if seed.info.length == 0 {
+  start_with_store_inner(
+    client,
+    seed,
+    path,
+    resume,
+    concurrency,
+    supplied_store,
+    false,
+  )
+  .await
+}
+
+pub(crate) async fn start_with_store_and_track_discovery(
+  client: &Client,
+  seed: &Seed,
+  path: PathBuf,
+  resume: bool,
+  concurrency: usize,
+  supplied_store: Destination,
+) -> Result<Transfer, TransferError> {
+  start_with_store_inner(
+    client,
+    seed,
+    path,
+    resume,
+    concurrency,
+    Some(supplied_store),
+    true,
+  )
+  .await
+}
+
+fn start_with_store_inner<'a>(
+  client: &'a Client,
+  seed: &'a Seed,
+  path: PathBuf,
+  resume: bool,
+  concurrency: usize,
+  supplied_store: Option<Destination>,
+  require_track_discovery: bool,
+) -> impl Future<Output = Result<Transfer, TransferError>> + Send + 'a {
+  // Keep discovery state on the heap so callers composing multiple download
+  // modes do not multiply its stack footprint (notably on Windows).
+  Box::pin(async move {
+    crate::destination::check_seed(seed)?;
+    let checkpoint_directory = client.storage_dir().join("checkpoints");
+    let supplied = supplied_store.is_some();
+    let initial_store = if let Some(store) = supplied_store {
+      Some(store)
+    } else if resume {
+      Some(Destination::open_in(seed, &path, true, &checkpoint_directory).await?)
+    } else {
+      None
+    };
+    let bits = match &initial_store {
+      Some(store) => store.bitfield().await?,
+      None => Vec::new(),
+    };
+    let progress = crate::progress::channel(seed, &bits);
+    if let Some(store) = &initial_store
+      && store.complete().await?
+    {
+      let store = initial_store.expect("resumed destination");
+      let mut guard = crate::destination::DownloadGuard::new(store.clone());
+      return Ok(Transfer::start(progress, async move {
+        store.finish().await?;
+        guard.finish();
+        Ok(path)
+      }));
+    }
+    if !supplied && !resume && tokio::fs::try_exists(&path).await? {
+      return Err(
+        std::io::Error::new(
+          std::io::ErrorKind::AlreadyExists,
+          "download destination already exists",
+        )
+        .into(),
+      );
+    }
+    if seed.info.length == 0 {
+      let store = match initial_store {
+        Some(store) => store,
+        None => Destination::open_in(seed, &path, false, &checkpoint_directory).await?,
+      };
+      let mut guard = crate::destination::DownloadGuard::new(store.clone());
+      return Ok(Transfer::start(progress, async move {
+        store.finish().await?;
+        guard.finish();
+        Ok(path)
+      }));
+    }
+    // A failed control plane must not prevent CDN-only cold start. Bound the
+    // complete discovery path, including Punch Binding setup, before fallback.
+    let discovery = discover(
+      client.connect_owned(),
+      client.peer_id().to_string(),
+      seed,
+      client.peer_query_limit(),
+    )
+    .await;
+    let discovery = match discovery {
+      Err(error) if require_track_discovery => return Err(error),
+      Err(error) if seed.cdn_list.is_empty() => return Err(error),
+      Ok((_, targets)) if targets.is_empty() && require_track_discovery => {
+        return Err(TransferError::NoPeers);
+      }
+      Ok((_, targets)) if targets.is_empty() && !seed.cdn_list.is_empty() => {
+        Err(TransferError::NoPeers)
+      }
+      result => result,
+    };
+    let query_limit = client.peer_query_limit();
+    let seed = seed.clone();
+    let updates = progress.clone();
     let store = match initial_store {
       Some(store) => store,
-      None => Destination::open(seed, &path, false).await?,
+      None => Destination::open_in(&seed, &path, false, &checkpoint_directory).await?,
     };
     let mut guard = crate::destination::DownloadGuard::new(store.clone());
-    return Ok(Transfer::start(progress, async move {
+    let peers = crate::download_progress::Progress::new();
+    let peer_updates = peers.clone();
+    let accept_invalid_certs = client.accept_invalid_certs();
+    Ok(Transfer::observed(progress, peers, async move {
+      let activity = crate::scheduler::TaskScope::new();
+      let p2p = match discovery {
+        Ok((session, targets)) => {
+          let bits = store.bitfield().await?;
+          let queue = WorkQueue::observed(
+            &seed,
+            &bits,
+            updates.clone(),
+            activity.clone(),
+            peer_updates,
+          );
+          let attempt = crate::discovery::Peers {
+            session: session.clone(),
+            candidates: targets,
+            concurrency,
+            query_limit,
+          }
+          .run(Arc::new(seed.clone()), store.clone(), queue, false);
+          tokio::select! {
+            result = attempt => result,
+            result = session.keep_online() => Err(TransferError::Control(result)),
+          }
+        }
+        Err(error) => Err(error),
+      };
+      if let Err(error) = p2p {
+        if seed.cdn_list.is_empty()
+          || !(error.peer_retryable() || matches!(error, TransferError::NoPeers))
+        {
+          return Err(error);
+        }
+        // Workers can be cancelled while blocking writes remain queued. Wait
+        // for both before snapshotting state for a new source phase.
+        activity.idle().await;
+        cdn_all(
+          seed,
+          store.clone(),
+          concurrency,
+          updates,
+          accept_invalid_certs,
+        )
+        .await?;
+      }
       store.finish().await?;
       guard.finish();
       Ok(path)
-    }));
-  }
-  // A failed control plane must not prevent CDN-only cold start. Bound the
-  // complete discovery path, including Punch Binding setup, before fallback.
-  let discovery = discover(
-    client.connect_owned(),
-    client.peer_id().to_string(),
-    seed,
-    client.peer_query_limit(),
-  )
-  .await;
-  let discovery = match discovery {
-    Err(error) if seed.cdn_list.is_empty() => return Err(error),
-    Ok((_, targets)) if targets.is_empty() && !seed.cdn_list.is_empty() => {
-      Err(TransferError::NoPeers)
-    }
-    result => result,
-  };
-  let query_limit = client.peer_query_limit();
-  let seed = seed.clone();
-  let updates = progress.clone();
-  let store = match initial_store {
-    Some(store) => store,
-    None => Destination::open(&seed, &path, false).await?,
-  };
-  let mut guard = crate::destination::DownloadGuard::new(store.clone());
-  let peers = crate::download_progress::Progress::new();
-  let peer_updates = peers.clone();
-  Ok(Transfer::observed(progress, peers, async move {
-    let activity = crate::scheduler::TaskScope::new();
-    let p2p = match discovery {
-      Ok((session, targets)) => {
-        let bits = store.bitfield().await?;
-        let queue = WorkQueue::observed(
-          &seed,
-          &bits,
-          updates.clone(),
-          activity.clone(),
-          peer_updates,
-        );
-        let attempt = crate::discovery::Peers {
-          session: session.clone(),
-          candidates: targets,
-          concurrency,
-          query_limit,
-        }
-        .run(Arc::new(seed.clone()), store.clone(), queue, false);
-        tokio::select! {
-          result = attempt => result,
-          result = session.keep_online() => Err(TransferError::Control(result)),
-        }
-      }
-      Err(error) => Err(error),
-    };
-    if let Err(error) = p2p {
-      if seed.cdn_list.is_empty()
-        || !(error.peer_retryable() || matches!(error, TransferError::NoPeers))
-      {
-        return Err(error);
-      }
-      // Workers can be cancelled while blocking writes remain queued. Wait
-      // for both before snapshotting state for a new source phase.
-      activity.idle().await;
-      cdn_all(seed, store.clone(), concurrency, updates).await?;
-    }
-    store.finish().await?;
-    guard.finish();
-    Ok(path)
-  }))
+    }))
+  })
 }
 
 pub(crate) struct ReadSession {
@@ -166,7 +234,8 @@ pub(crate) async fn open(
   concurrency: usize,
 ) -> Result<ReadSession, TransferError> {
   let resume = tokio::fs::try_exists(&path).await?;
-  let store = Destination::open(&seed, &path, resume).await?;
+  let checkpoint_directory = client.storage_dir().join("checkpoints");
+  let store = Destination::open_in(&seed, &path, resume, &checkpoint_directory).await?;
   let bits = store.bitfield().await?;
   let progress = progress::channel(&seed, &bits);
   let queue = WorkQueue::demand(&seed, &bits, progress);
@@ -175,6 +244,7 @@ pub(crate) async fn open(
   let peer_id = client.peer_id().to_string();
   let query_limit = client.peer_query_limit();
   let task_queue = queue.clone();
+  let accept_invalid_certs = client.accept_invalid_certs();
   let destination = store.clone();
   let task_seed = seed.clone();
   let finishing = store.clone();
@@ -198,7 +268,7 @@ pub(crate) async fn open(
       });
       let q = task_queue.clone();
       tasks.spawn(async move {
-        cdn_window(task_seed, destination, q, concurrency).await;
+        cdn_window(task_seed, destination, q, concurrency, accept_invalid_certs).await;
       });
       while let Some(result) = tasks.join_next().await {
         if let Err(error) = result {
@@ -294,6 +364,7 @@ pub(crate) async fn cdn_window(
   store: Destination,
   queue: Arc<WorkQueue>,
   concurrency: usize,
+  accept_invalid_certs: bool,
 ) {
   if queue.complete() {
     return;
@@ -308,7 +379,7 @@ pub(crate) async fn cdn_window(
   if queue.complete() {
     return;
   }
-  let source = match crate::cdn::Source::load(&seed, &queue.progress).await {
+  let source = match crate::cdn::Source::load(&seed, &queue.progress, accept_invalid_certs).await {
     Ok(source) => Arc::new(source),
     Err(error) => {
       queue.cdn_status(Err(error));
@@ -359,13 +430,14 @@ pub(crate) async fn cdn_all(
   store: Destination,
   concurrency: usize,
   progress: tokio::sync::watch::Sender<crate::progress::TransferProgress>,
+  accept_invalid_certs: bool,
 ) -> Result<(), TransferError> {
   let bits = store.bitfield().await?;
   let queue = WorkQueue::new(&seed, &bits, progress.clone());
   if queue.complete() {
     return Ok(());
   }
-  let source = crate::cdn::Source::load(&seed, &progress).await?;
+  let source = crate::cdn::Source::load(&seed, &progress, accept_invalid_certs).await?;
   let seed = Arc::new(seed);
   let mut last = TransferError::Cdn("no usable CDN source".into());
   for mirror in source.mirrors() {

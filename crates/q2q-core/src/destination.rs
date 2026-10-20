@@ -17,12 +17,37 @@ pub(crate) struct Destination {
 }
 impl Destination {
   pub(crate) async fn open(seed: &Seed, path: &Path, resume: bool) -> Result<Self, TransferError> {
+    Self::open_with_checkpoint(seed, path, resume, None).await
+  }
+
+  pub(crate) async fn open_in(
+    seed: &Seed,
+    path: &Path,
+    resume: bool,
+    checkpoint_directory: &Path,
+  ) -> Result<Self, TransferError> {
+    Self::open_with_checkpoint(seed, path, resume, Some(checkpoint_directory)).await
+  }
+
+  async fn open_with_checkpoint(
+    seed: &Seed,
+    path: &Path,
+    resume: bool,
+    checkpoint_directory: Option<&Path>,
+  ) -> Result<Self, TransferError> {
     check_seed(seed)?;
     let seed = Arc::new(seed.clone());
     let content = seed.clone();
     let path = path.to_path_buf();
+    let checkpoint_directory = checkpoint_directory.map(Path::to_path_buf);
     let store = tokio::task::spawn_blocking(move || {
-      if resume {
+      if let Some(checkpoint_directory) = checkpoint_directory {
+        if resume {
+          DownloadStore::resume_in(&content, &path, &checkpoint_directory)
+        } else {
+          DownloadStore::create_in(&content, &path, &checkpoint_directory)
+        }
+      } else if resume {
         DownloadStore::resume(&content, &path)
       } else {
         DownloadStore::create(&content, &path)

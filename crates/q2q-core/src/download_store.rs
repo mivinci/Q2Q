@@ -7,6 +7,7 @@ use q2q_primitives::merkle::{Hash, Proof};
 use q2q_primitives::peer_wire::MAX_CONTROL_BYTES;
 use q2q_primitives::seed::Seed;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 #[cfg(test)]
@@ -18,6 +19,8 @@ use std::path::{Path, PathBuf};
 struct Header {
   version: u32,
   info_hash: [u8; 32],
+  #[serde(default)]
+  target_hash: Option<[u8; 32]>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -55,6 +58,71 @@ fn sidecar(path: &Path, suffix: &str) -> PathBuf {
   let mut name = path.as_os_str().to_os_string();
   name.push(suffix);
   name.into()
+}
+
+fn normalized_target_hash(path: &Path) -> Result<[u8; 32], TransferError> {
+  let absolute = if path.is_absolute() {
+    path.to_path_buf()
+  } else {
+    std::env::current_dir()?.join(path)
+  };
+  let file_name = absolute
+    .file_name()
+    .ok_or_else(|| invalid("download destination must name a file"))?;
+  let parent = absolute.parent().unwrap_or(Path::new("."));
+  let canonical_parent = std::fs::canonicalize(parent)?;
+  let joined = canonical_parent.join(file_name);
+  let normalized = match std::fs::canonicalize(&joined) {
+    Ok(path) => path,
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => joined,
+    Err(error) => return Err(error.into()),
+  };
+  Ok(Sha256::digest(normalized.as_os_str().as_encoded_bytes()).into())
+}
+
+fn central_journal_path(directory: &Path, target_hash: &[u8; 32]) -> PathBuf {
+  let name: String = target_hash
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect();
+  directory.join(format!("{name}.q2q.resume"))
+}
+
+pub(crate) fn has_checkpoint(
+  path: &Path,
+  checkpoint_directory: &Path,
+) -> Result<bool, TransferError> {
+  let target_hash = normalized_target_hash(path)?;
+  let journal_path = central_journal_path(checkpoint_directory, &target_hash);
+  let legacy_path = sidecar(path, ".q2q.resume");
+  Ok(journal_path.try_exists()? || legacy_path.try_exists()?)
+}
+
+fn clean_stale_temporary_files(journal_path: &Path) -> Result<(), TransferError> {
+  let Some(directory) = journal_path.parent() else {
+    return Ok(());
+  };
+  let Some(name) = journal_path.file_name() else {
+    return Ok(());
+  };
+  let mut prefix = name.to_os_string();
+  prefix.push(".");
+  for entry in std::fs::read_dir(directory)? {
+    let entry = entry?;
+    let file_name = entry.file_name();
+    if !file_name
+      .as_os_str()
+      .as_encoded_bytes()
+      .starts_with(prefix.as_os_str().as_encoded_bytes())
+      || !file_name.to_string_lossy().ends_with(".tmp")
+    {
+      continue;
+    }
+    if entry.file_type()?.is_file() {
+      std::fs::remove_file(entry.path())?;
+    }
+  }
+  Ok(())
 }
 
 fn invalid(message: impl Into<String>) -> TransferError {
@@ -187,8 +255,44 @@ impl DownloadStore {
   }
 
   pub(crate) fn create(seed: &Seed, path: &Path) -> Result<Self, TransferError> {
-    let journal_path = sidecar(path, ".q2q.resume");
-    if journal_path.try_exists()? {
+    Self::create_with_checkpoint(seed, path, None)
+  }
+
+  pub(crate) fn create_in(
+    seed: &Seed,
+    path: &Path,
+    checkpoint_directory: &Path,
+  ) -> Result<Self, TransferError> {
+    Self::create_with_checkpoint(seed, path, Some(checkpoint_directory))
+  }
+
+  fn create_with_checkpoint(
+    seed: &Seed,
+    path: &Path,
+    checkpoint_directory: Option<&Path>,
+  ) -> Result<Self, TransferError> {
+    let target_hash = checkpoint_directory
+      .map(|_| normalized_target_hash(path))
+      .transpose()?;
+    if let Some(directory) = checkpoint_directory {
+      std::fs::create_dir_all(directory)?;
+    }
+    let journal_path = match (checkpoint_directory, target_hash.as_ref()) {
+      (Some(directory), Some(hash)) => central_journal_path(directory, hash),
+      _ => sidecar(path, ".q2q.resume"),
+    };
+    let legacy_path = sidecar(path, ".q2q.resume");
+    let destination_exists = path.try_exists()?;
+    if checkpoint_directory.is_some() && !destination_exists {
+      // The target was deleted, so its old receipts cannot help recovery.
+      for stale_path in [&journal_path, &legacy_path] {
+        if stale_path.try_exists()? {
+          std::fs::remove_file(stale_path)?;
+          sync_parent(stale_path)?;
+        }
+      }
+    }
+    if journal_path.try_exists()? || (checkpoint_directory.is_some() && legacy_path.try_exists()?) {
       return Err(
         std::io::Error::new(
           std::io::ErrorKind::AlreadyExists,
@@ -205,6 +309,7 @@ impl DownloadStore {
     destination
       .try_lock()
       .map_err(|e| invalid(format!("destination is locked: {e}")))?;
+    clean_stale_temporary_files(&journal_path)?;
     // A stale receipt file must not be silently attached to a new destination.
     let mut journal = OpenOptions::new()
       .read(true)
@@ -216,12 +321,16 @@ impl DownloadStore {
     write_record(
       &mut journal,
       &Header {
-        version: 1,
+        version: if checkpoint_directory.is_some() { 2 } else { 1 },
         info_hash: seed.info_hash(),
+        target_hash,
       },
     )?;
     journal.sync_all()?;
     sync_parent(path)?;
+    if checkpoint_directory.is_some() {
+      sync_parent(&journal_path)?;
+    }
     Ok(Self {
       store: FileStore::open(path, seed.info.length, seed.info.block_size)?,
       destination,
@@ -232,25 +341,72 @@ impl DownloadStore {
   }
 
   pub(crate) fn resume(seed: &Seed, path: &Path) -> Result<Self, TransferError> {
+    Self::resume_with_checkpoint(seed, path, None)
+  }
+
+  pub(crate) fn resume_in(
+    seed: &Seed,
+    path: &Path,
+    checkpoint_directory: &Path,
+  ) -> Result<Self, TransferError> {
+    Self::resume_with_checkpoint(seed, path, Some(checkpoint_directory))
+  }
+
+  fn resume_with_checkpoint(
+    seed: &Seed,
+    path: &Path,
+    checkpoint_directory: Option<&Path>,
+  ) -> Result<Self, TransferError> {
+    let target_hash = checkpoint_directory
+      .map(|_| normalized_target_hash(path))
+      .transpose()?;
+    if let Some(directory) = checkpoint_directory {
+      std::fs::create_dir_all(directory)?;
+    }
+    let journal_path = match (checkpoint_directory, target_hash.as_ref()) {
+      (Some(directory), Some(hash)) => central_journal_path(directory, hash),
+      _ => sidecar(path, ".q2q.resume"),
+    };
+    let legacy_path = sidecar(path, ".q2q.resume");
     let destination = OpenOptions::new().read(true).write(true).open(path)?;
     destination
       .try_lock()
       .map_err(|e| invalid(format!("destination is locked: {e}")))?;
     let mut store = FileStore::open(path, seed.info.length, seed.info.block_size)?;
-    let journal_path = sidecar(path, ".q2q.resume");
-    let mut reader = BufReader::new(File::open(&journal_path)?);
+    let legacy_exists = checkpoint_directory.is_some() && legacy_path.try_exists()?;
+    let central_exists = checkpoint_directory.is_some() && journal_path.try_exists()?;
+    let source_journal_path = if legacy_exists && !central_exists {
+      &legacy_path
+    } else {
+      &journal_path
+    };
+    let is_legacy = checkpoint_directory.is_some() && source_journal_path == &legacy_path;
+    clean_stale_temporary_files(&journal_path)?;
+    if checkpoint_directory.is_some() {
+      clean_stale_temporary_files(&legacy_path)?;
+    }
+    let mut reader = BufReader::new(File::open(source_journal_path)?);
     let header: Header = serde_json::from_slice(
       &read_record(&mut reader)?.ok_or_else(|| invalid("missing checkpoint header"))?,
     )
     .map_err(|e| invalid(e.to_string()))?;
-    if header.version != 1 || header.info_hash != seed.info_hash() {
+    let valid_header = if let Some(hash) = target_hash {
+      if is_legacy {
+        header.version == 1 && header.target_hash.is_none()
+      } else {
+        header.version == 2 && header.target_hash == Some(hash)
+      }
+    } else {
+      header.version == 1 && header.target_hash.is_none()
+    };
+    if !valid_header || header.info_hash != seed.info_hash() {
       return Err(invalid("checkpoint belongs to another seed or version"));
     }
     // A unique temporary file avoids following or truncating an existing path.
     let mut nonce = [0u8; 16];
     getrandom::fill(&mut nonce).map_err(|e| invalid(e.to_string()))?;
     let nonce: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
-    let temporary_path = sidecar(path, &format!(".q2q.resume.{nonce}.tmp"));
+    let temporary_path = sidecar(&journal_path, &format!(".{nonce}.tmp"));
     let file = OpenOptions::new()
       .read(true)
       .write(true)
@@ -258,7 +414,20 @@ impl DownloadStore {
       .open(&temporary_path)?;
     let temporary = Temporary(temporary_path);
     let mut journal = file;
-    write_record(&mut journal, &header)?;
+    let compacted_header = if let Some(hash) = target_hash {
+      Header {
+        version: 2,
+        info_hash: header.info_hash,
+        target_hash: Some(hash),
+      }
+    } else {
+      Header {
+        version: header.version,
+        info_hash: header.info_hash,
+        target_hash: header.target_hash,
+      }
+    };
+    write_record(&mut journal, &compacted_header)?;
     let mut seen = vec![false; store.block_count()];
     let mut receipts = vec![None; store.block_count()];
     while let Some(line) = read_record(&mut reader)? {
@@ -284,7 +453,11 @@ impl DownloadStore {
     journal.sync_all()?;
     drop(journal);
     std::fs::rename(&temporary.0, &journal_path)?;
-    sync_parent(path)?;
+    sync_parent(&journal_path)?;
+    if legacy_exists {
+      std::fs::remove_file(&legacy_path)?;
+      sync_parent(&legacy_path)?;
+    }
     let mut journal = OpenOptions::new()
       .read(true)
       .append(true)

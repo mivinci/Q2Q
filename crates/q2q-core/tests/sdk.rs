@@ -447,3 +447,132 @@ async fn empty_vod_and_invalid_options_need_no_network() {
   assert_eq!(file.read(&mut [1; 1]).await.unwrap(), 0);
   assert_eq!(file.seek(std::io::SeekFrom::End(0)).await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn invalid_https_certificates_require_explicit_debug_option() {
+  use q2q_core::client::ControlError;
+  use std::sync::{Arc, Mutex};
+  use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+  let bytes = vec![42; 128];
+  let proof = q2q_primitives::merkle::leaf_hash(&bytes).to_vec();
+  let served = bytes.clone();
+  let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+  let cert = rcgen::CertificateParams::new(vec!["localhost".into()])
+    .unwrap()
+    .self_signed(&key)
+    .unwrap();
+  let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+    rustls::crypto::aws_lc_rs::default_provider(),
+  ))
+  .with_safe_default_protocol_versions()
+  .unwrap()
+  .with_no_client_auth()
+  .with_single_cert(
+    vec![cert.der().clone()],
+    rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+  )
+  .unwrap();
+  let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+  let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let url = format!("https://{}", listener.local_addr().unwrap());
+  let requests = Arc::new(Mutex::new(Vec::new()));
+  let observed = requests.clone();
+  let server = tokio::spawn(async move {
+    let mut connections = tokio::task::JoinSet::new();
+    loop {
+      tokio::select! {
+        accepted = listener.accept() => {
+          let (stream, _) = accepted.unwrap();
+          let acceptor = acceptor.clone();
+          let served = served.clone();
+          let proof = proof.clone();
+          let observed = observed.clone();
+          connections.spawn(async move {
+            let Ok(mut stream) = acceptor.accept(stream).await else { return; };
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+              let Ok(byte) = stream.read_u8().await else { return; };
+              headers.push(byte);
+              assert!(headers.len() < 8192);
+            }
+            let headers = String::from_utf8(headers).unwrap();
+            let path = headers.lines().next().unwrap().split_whitespace().nth(1).unwrap();
+            observed.lock().unwrap().push(path.to_owned());
+            let length = headers.lines().filter_map(|line| line.split_once(':'))
+              .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+              .map(|(_, value)| value.trim().parse::<usize>().unwrap()).unwrap_or(0);
+            assert!(length < 8192);
+            stream.read_exact(&mut vec![0; length]).await.unwrap();
+            let (status, body) = match path {
+              "/proof" => (200, proof),
+              "/data" => (200, served),
+              "/corrupt" => (200, vec![0; served.len()]),
+              _ => (503, Vec::new()),
+            };
+            let response = format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.write_all(&body).await;
+            let _ = stream.shutdown().await;
+          });
+        }
+        result = connections.join_next(), if !connections.is_empty() => {
+          result.unwrap().unwrap();
+        }
+      }
+    }
+  });
+  let dir = tempfile::tempdir().unwrap();
+  let builder = |name: &str| {
+    client::builder()
+      .track_url(&url)
+      .identity_file(dir.path().join(name).join("identity"))
+      .storage_dir(dir.path().join(name))
+  };
+  let secure = builder("secure").build().await.unwrap();
+  assert!(matches!(secure.connect().await, Err(ControlError::Http(error)) if error.is_connect()));
+  let mut seed = fixture(&bytes);
+  seed.leaf_hashes = None;
+  seed.proof_list = vec![format!("{url}/proof")];
+  seed.cdn_list = vec![format!("{url}/data")];
+  let transfer = secure
+    .download(&seed, dir.path().join("refused"))
+    .await
+    .unwrap();
+  assert!(matches!(transfer.wait().await, Err(TransferError::Cdn(_))));
+  assert!(requests.lock().unwrap().is_empty());
+
+  let insecure = builder("insecure")
+    .danger_accept_invalid_certs(true)
+    .build()
+    .await
+    .unwrap();
+  assert!(matches!(
+    insecure.connect().await,
+    Err(ControlError::Remote { status: 503, .. })
+  ));
+  let path = dir.path().join("download");
+  insecure
+    .download(&seed, &path)
+    .await
+    .unwrap()
+    .wait()
+    .await
+    .unwrap();
+  assert_eq!(std::fs::read(path).unwrap(), bytes);
+  let mut reader = insecure.open(&seed, dir.path().join("vod")).await.unwrap();
+  let mut received = Vec::new();
+  reader.read_to_end(&mut received).await.unwrap();
+  assert_eq!(received, bytes);
+
+  seed.cdn_list = vec![format!("{url}/corrupt")];
+  let transfer = insecure
+    .download(&seed, dir.path().join("corrupt"))
+    .await
+    .unwrap();
+  assert!(
+    transfer.wait().await.is_err(),
+    "insecure TLS must still reject corrupt content"
+  );
+  server.abort();
+}

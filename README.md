@@ -63,7 +63,10 @@ and usage guides.
 
 ### Use the command-line client
 
-Install the CLI from a checkout of this repository:
+Versioned releases will include prebuilt CLI archives for Linux x86_64 (glibc
+2.35+), macOS Intel and Apple silicon, and Windows x86_64 on
+[GitHub Releases](https://github.com/mivinci/Q2Q/releases/latest). Unpack the
+matching archive and place `q2q` (or `q2q.exe`) on your `PATH`. To build from source:
 
 ```sh
 cargo install --path crates/q2q --locked
@@ -72,12 +75,16 @@ cargo install --path crates/q2q --locked
 Publish a file and create its seed, then give the seed to a downloader:
 
 ```sh
-q2q --track https://track.example.net publish ./model.bin --seed ./model.q2q
-q2q --data-dir ./receiver-state download ./model.q2q --output ./received.bin
+q2q publish ./model.bin
+q2q download ./model.bin.q2q
 ```
 
-The publisher must remain online while serving peers. Use separate state
-directories for simultaneous clients. See the [CLI guide](https://docs.q2q.app/guide/cli)
+Publishing writes `./model.bin.q2q` by default; pass `--seed PATH` to choose a custom seed path.
+Downloading uses the seed's safe `info.name` by default; pass `--output PATH` to choose another destination.
+If a download is interrupted, keep the destination and `Q2Q_HOME` directory and run the same command again; a valid checkpoint is detected and resumed automatically.
+
+The publisher must remain online while serving peers. Use a separate
+`Q2Q_HOME` for each simultaneous client. See the [CLI guide](https://docs.q2q.app/guide/cli)
 for configuration, transfer progress and resume behavior.
 
 ## Develop

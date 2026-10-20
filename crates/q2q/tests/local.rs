@@ -72,23 +72,32 @@ fn publish_download_interrupt_resume_and_withdraw() {
     .arg(&seed_path);
   let mut publisher = logged(&mut publish, dir.path(), "publisher");
   wait_for(|| seed_path.exists());
-  let seed = Seed::parse(&std::fs::read(&seed_path).unwrap()).unwrap();
+  let mut seed = Seed::parse(&std::fs::read(&seed_path).unwrap()).unwrap();
+  // A CDN entry must not hide initial Track failure and prevent trying the
+  // reachable Track from the seed. Content identity is unchanged by sources.
+  seed.cdn_list = vec!["http://127.0.0.1:1/unavailable-cdn".into()];
+  std::fs::write(&seed_path, seed.encode()).unwrap();
   let destination = dir.path().join("received");
   let mut receive = cli(&dir.path().join("receiver"));
   receive
-    .arg("download")
+    .args(["--track", "http://127.0.0.1:1", "download"])
     .arg(&seed_path)
     .arg("-o")
     .arg(&destination);
   let mut receiver = logged(&mut receive, dir.path(), "receiver");
-  let receipt = dir.path().join("received.q2q.resume");
+  let checkpoints = dir.path().join("receiver/state/checkpoints");
   wait_for(|| {
-    std::fs::read(&receipt).is_ok_and(|data| data.iter().filter(|b| **b == b'\n').count() >= 2)
+    std::fs::read_dir(&checkpoints).is_ok_and(|entries| {
+      entries.flatten().any(|entry| {
+        std::fs::read(entry.path())
+          .is_ok_and(|data| data.iter().filter(|byte| **byte == b'\n').count() >= 2)
+      })
+    })
   });
   receiver.signal("-INT");
   assert_eq!(receiver.wait().code(), Some(130));
-  // The same process command and identity resume independently of publication.
-  receive.arg("--resume");
+  // Reusing the same command must detect and resume the partial checkpoint
+  // automatically, including retrying the unavailable preferred Track.
   let mut resumed = logged(&mut receive, dir.path(), "resumed");
   assert!(
     resumed.wait().success(),
@@ -101,6 +110,10 @@ fn publish_download_interrupt_resume_and_withdraw() {
     format!("{}\n", destination.display())
   );
   let received_log = std::fs::read_to_string(dir.path().join("resumed.err")).unwrap();
+  assert!(
+    received_log.contains("trying candidate 2"),
+    "missing Track failover: {received_log}"
+  );
   assert!(
     received_log.contains("  peer "),
     "missing download Peer detail: {received_log}"

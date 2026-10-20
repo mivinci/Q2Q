@@ -69,7 +69,7 @@ VerifiedFile reads completed blocks and checks disk bytes against authenticated 
 
 Publication manages announcements, holding renewal, uploads and withdrawal. Active publications and downloads share one heartbeat task per control session. The last user releasing its lease stops that task. Callers using the lower-level `Client::connect()` alone must still maintain heartbeats themselves.
 
-Dropping a transfer or reader cancels network tasks. Blocking disk jobs already started can finish and retain the destination lock until they do. Block proofs are stored in `.q2q.resume`; resume reads and verifies the disk bytes again. A complete file can resume offline.
+Dropping a transfer or reader cancels network tasks. Blocking disk jobs already started can finish and retain the destination lock until they do. Client downloads store block proofs under `storage_dir/checkpoints`, keyed by the normalized destination path; resume reads and verifies the disk bytes again. A complete file can resume offline.
 
 The SDK supports fixed files and VOD with a single read cursor. Each Client supports up to 32 distinct active content hashes, serving multiple downloading peers concurrently (`max_upload_peers` defaults to 4, range 1–16). Discovery refreshes the current Track page, without pagination. Files are limited to 65,536 blocks, or 16 GiB with the default block size. Partial-file sharing is opt-in. Live indexes and browser adaptation are not implemented yet.
 

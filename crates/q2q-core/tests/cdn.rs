@@ -22,7 +22,7 @@ async fn grant_redirect_preserves_range_without_leaking_referer() {
   .await;
   seed.cdn_list = vec![format!("{}/content?secret=fixture-only", entry.url)];
   let progress = crate::progress::channel(&seed, &[]);
-  let source = Source::load(&seed, &progress).await.unwrap();
+  let source = Source::load(&seed, &progress, false).await.unwrap();
   for index in 0..2 {
     let (received, _) = source.fetch(&seed, index, &progress).await.unwrap();
     let start = index * 262144;
@@ -72,7 +72,7 @@ async fn expired_signed_target_is_replaced_via_stable_entry_for_the_next_block()
   .await;
   seed.cdn_list = vec![format!("{}/content?secret=fixture-only", entry.url)];
   let progress = crate::progress::channel(&seed, &[]);
-  let source = Source::load(&seed, &progress).await.unwrap();
+  let source = Source::load(&seed, &progress, false).await.unwrap();
   source.fetch(&seed, 0, &progress).await.unwrap();
   generation.store(1, Ordering::SeqCst);
   let expired = Client::new()
@@ -215,7 +215,7 @@ async fn cdn_fills_only_missing_blocks_after_a_real_peer_fails() {
     ))
   ));
   assert_eq!(progress.borrow().verified_bytes, 262144);
-  download(seed, restored.clone(), 2, progress.clone())
+  download(seed, restored.clone(), 2, progress.clone(), false)
     .await
     .unwrap();
   assert_eq!(progress.borrow().verified_bytes, bytes.len() as u64);
@@ -272,7 +272,7 @@ async fn fallback_waits_for_cancelled_workers_queued_disk_jobs() {
     let next_progress = progress.clone();
     let future = async move {
       scope.idle().await;
-      download(next_seed, next_store, 2, next_progress).await
+      download(next_seed, next_store, 2, next_progress, false).await
     };
     tokio::pin!(future);
     assert!(
