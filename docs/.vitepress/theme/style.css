@@ -1,21 +1,13 @@
-/* A quiet surface frames diagrams without competing with the prose. The source
-   stays in <pre> to preserve newlines until client-side rendering completes. */
+/* Keep diagrams on the page surface. Preserve source newlines until rendering. */
 .mermaid {
-  background: linear-gradient(145deg, #f8fafc, #ffffff);
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
-  box-shadow: 0 2px 8px rgb(15 23 42 / 3%);
-  padding: 24px 20px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
   margin: 28px 0;
-  overflow-x: auto;
   text-align: center;
   line-height: normal;
-}
-
-.dark .mermaid {
-  background: linear-gradient(145deg, #111c30, #0f172a);
-  border-color: #334155;
-  box-shadow: 0 2px 8px rgb(0 0 0 / 12%);
 }
 
 .mermaid svg {
@@ -28,13 +20,6 @@
 /* Hide the source while retaining the previous SVG during a theme re-render. */
 .mermaid:not([data-processed]) {
   color: transparent;
-}
-
-@media (max-width: 640px) {
-  .mermaid {
-    padding: 18px 12px;
-    border-radius: 12px;
-  }
 }
 
 /* VitePress 默认 navbar logo 高 24px，六边形在那个尺寸下细节全糊在一起，放大一点 */

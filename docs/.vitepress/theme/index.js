@@ -36,12 +36,6 @@ function renderDiagrams(dark) {
       if (requested !== revision) return;
       if (!node.isConnected) continue;
       node.innerHTML = svg;
-      // Preserve the layout's font size on narrow screens and large architecture
-      // diagrams; the surrounding frame scrolls instead of shrinking labels.
-      const diagram = node.querySelector('svg');
-      const width = diagram?.viewBox.baseVal.width;
-      if (width) diagram.style.minWidth = `${Math.ceil(width)}px`;
-      if (node.scrollWidth > node.clientWidth) node.tabIndex = 0;
       node.dataset.processed = 'true';
       node.dataset.theme = theme;
       bindFunctions?.(node);
