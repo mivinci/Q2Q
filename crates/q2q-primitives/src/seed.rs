@@ -8,32 +8,40 @@ use crate::bencode::{self, BValue, Dict};
 use crate::merkle::{self, Hash};
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 pub const INFO_VERSION: u32 = 2;
 pub const MIN_BLOCK_SIZE: u32 = 256 * 1024;
 pub const MAX_BLOCK_SIZE: u32 = 4 * 1024 * 1024;
 pub const DEFAULT_BLOCK_SIZE: u32 = MIN_BLOCK_SIZE;
+pub const MAX_INFO_BYTES: usize = 8 * 1024;
+pub const MAX_MAGNET_BYTES: usize = 16 * 1024;
 
 /// The info dict. `info_hash` is taken over its canonical encoding, so which
 /// fields are present is part of the content's identity.
 ///
-/// Deriving `Serialize` is safe here: the bencode serialiser sorts keys by byte
-/// before emitting, so the output does not depend on the field order below.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Construct with `Info::new`; parsed unknown fields are retained privately so
+/// canonical encoding and serialization preserve the complete content identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Info {
   /// Must be `INFO_VERSION`. Anything else is rejected outright.
   pub v: u32,
   /// Dropped from the encoding when absent, which changes `info_hash`.
-  #[serde(skip_serializing_if = "Option::is_none")]
   pub name: Option<String>,
   pub length: u64,
   /// Power of two within `[MIN_BLOCK_SIZE, MAX_BLOCK_SIZE]`.
   pub block_size: u32,
-  #[serde(skip_serializing_if = "Option::is_none")]
   pub mime: Option<String>,
   /// Merkle root, 32 raw bytes — not hex.
-  #[serde(with = "serde_bytes")]
   pub root: Hash,
+  // Unknown fields participate in identity and must survive parse/encode.
+  extra: Dict,
+}
+
+impl Serialize for Info {
+  fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    self.to_value().serialize(serializer)
+  }
 }
 
 impl Info {
@@ -45,6 +53,7 @@ impl Info {
       block_size: DEFAULT_BLOCK_SIZE,
       mime: None,
       root,
+      extra: Dict::new(),
     }
   }
 
@@ -56,7 +65,40 @@ impl Info {
   /// Canonical bencode of the info dict: keys sorted by byte, optional fields
   /// omitted when absent.
   pub fn to_value(&self) -> BValue {
-    crate::bencode_serde::to_value(self).expect("info is always serialisable")
+    let mut fields = self.extra.clone();
+    fields.insert(b"v".to_vec(), BValue::Int(self.v.into()));
+    fields.insert(b"length".to_vec(), BValue::Int(self.length as i64));
+    fields.insert(b"block_size".to_vec(), BValue::Int(self.block_size.into()));
+    fields.insert(b"root".to_vec(), BValue::bytes(self.root));
+    if let Some(name) = &self.name {
+      fields.insert(b"name".to_vec(), BValue::bytes(name.as_bytes()));
+    }
+    if let Some(mime) = &self.mime {
+      fields.insert(b"mime".to_vec(), BValue::bytes(mime.as_bytes()));
+    }
+    BValue::Dict(fields)
+  }
+
+  pub fn encode(&self) -> Vec<u8> {
+    self.to_value().encode()
+  }
+
+  /// Parse bounded canonical metadata and bind all fields to the requested identity.
+  pub fn parse_verified(bytes: &[u8], expected: &Hash) -> Result<Self, SeedError> {
+    if bytes.len() > MAX_INFO_BYTES {
+      return Err(SeedError::InfoTooLarge);
+    }
+    let value = bencode::decode(bytes).map_err(SeedError::Malformed)?;
+    let digest: Hash = Sha256::digest(bytes).into();
+    if &digest != expected {
+      return Err(SeedError::InfoHashMismatch);
+    }
+    let info = Self::from_value(&value)?;
+    info.validate()?;
+    if &info.info_hash() != expected {
+      return Err(SeedError::InfoHashMismatch);
+    }
+    Ok(info)
   }
 
   pub fn info_hash(&self) -> Hash {
@@ -65,6 +107,9 @@ impl Info {
 
   /// Checks the rules in spec 5.2 that concern info alone.
   pub fn validate(&self) -> Result<(), SeedError> {
+    if self.length > i64::MAX as u64 {
+      return Err(SeedError::FieldWrongType("length"));
+    }
     if self.v != INFO_VERSION {
       return Err(SeedError::UnsupportedVersion(self.v));
     }
@@ -131,6 +176,16 @@ impl Info {
       block_size,
       mime,
       root,
+      extra: d
+        .iter()
+        .filter(|(key, _)| {
+          !matches!(
+            key.as_slice(),
+            b"v" | b"name" | b"length" | b"block_size" | b"mime" | b"root"
+          )
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect(),
     })
   }
 }
@@ -303,6 +358,8 @@ pub enum SeedError {
   RootWrongLength,
   LeafHashesWrongLength(usize),
   LeafHashesMismatch,
+  InfoTooLarge,
+  InfoHashMismatch,
 }
 
 impl std::fmt::Display for SeedError {
@@ -321,6 +378,8 @@ impl std::fmt::Display for SeedError {
         "leaf_hashes covers {n} leaves, expected a count matching length/block_size"
       ),
       SeedError::LeafHashesMismatch => f.write_str("leaf_hashes does not rebuild info.root"),
+      SeedError::InfoTooLarge => f.write_str("info exceeds the 8 KiB metadata limit"),
+      SeedError::InfoHashMismatch => f.write_str("info hash does not match the requested content"),
     }
   }
 }
@@ -361,9 +420,33 @@ pub enum MagnetError {
   MissingXt,
   WrongNamespace,
   BadHash,
+  TooLong,
+  ConflictingXt,
+  BadEncoding,
 }
 
+impl std::fmt::Display for MagnetError {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(match self {
+      Self::NotAMagnet => "expected a magnet:? URL",
+      Self::MissingXt => "magnet URL is missing xt",
+      Self::WrongNamespace => "magnet xt must use urn:sha256 (BitTorrent links are unsupported)",
+      Self::BadHash => "magnet info hash must contain 64 hexadecimal ASCII characters",
+      Self::TooLong => "magnet URL exceeds the 16 KiB limit",
+      Self::ConflictingXt => "magnet URL contains conflicting xt identities",
+      Self::BadEncoding => "magnet URL has invalid percent encoding or UTF-8",
+    })
+  }
+}
+impl std::error::Error for MagnetError {}
+
 pub fn parse_magnet(s: &str) -> Result<Magnet, MagnetError> {
+  if s.len() > MAX_MAGNET_BYTES {
+    return Err(MagnetError::TooLong);
+  }
+  if s.contains('#') {
+    return Err(MagnetError::BadEncoding);
+  }
   let rest = s.strip_prefix("magnet:?").ok_or(MagnetError::NotAMagnet)?;
   let mut info_hash = None;
   let mut display_name = None;
@@ -375,14 +458,26 @@ pub fn parse_magnet(s: &str) -> Result<Magnet, MagnetError> {
       None => continue,
     };
     if k == "xt" {
+      let decoded = percent_decode(v)?;
+      let v = decoded.as_str();
       let hex_part = v
         .strip_prefix("urn:sha256:")
         .ok_or(MagnetError::WrongNamespace)?;
-      info_hash = Some(decode_hex(hex_part).ok_or(MagnetError::BadHash)?);
+      let hash = decode_hex(hex_part).ok_or(MagnetError::BadHash)?;
+      if info_hash.is_some_and(|previous| previous != hash) {
+        return Err(MagnetError::ConflictingXt);
+      }
+      info_hash = Some(hash);
     } else if k == "dn" {
-      display_name = Some(percent_decode(v));
+      if let Ok(name) = percent_decode(v) {
+        display_name = Some(name);
+      }
     } else if k == "tr" {
-      trackers.push(percent_decode(v));
+      if let Ok(track) = percent_decode(v) {
+        if !trackers.contains(&track) {
+          trackers.push(track);
+        }
+      }
     }
   }
 
@@ -398,7 +493,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(s: &str) -> Option<Hash> {
-  if s.len() != 64 {
+  if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
     return None;
   }
   let mut h = [0u8; 32];
@@ -408,9 +503,22 @@ fn decode_hex(s: &str) -> Option<Hash> {
   Some(h)
 }
 
-fn percent_decode(s: &str) -> String {
-  let bytes = percent_encoding::percent_decode_str(s).collect::<Vec<u8>>();
-  String::from_utf8_lossy(&bytes).into_owned()
+fn percent_decode(s: &str) -> Result<String, MagnetError> {
+  let bytes = s.as_bytes();
+  for (index, byte) in bytes.iter().enumerate() {
+    if *byte == b'%'
+      && (index + 2 >= bytes.len()
+        || !bytes[index + 1..index + 3]
+          .iter()
+          .all(u8::is_ascii_hexdigit))
+    {
+      return Err(MagnetError::BadEncoding);
+    }
+  }
+  percent_encoding::percent_decode_str(s)
+    .decode_utf8()
+    .map(|v| v.into_owned())
+    .map_err(|_| MagnetError::BadEncoding)
 }
 
 #[cfg(test)]
@@ -426,6 +534,7 @@ mod tests {
       block_size: DEFAULT_BLOCK_SIZE,
       mime: None,
       root: [0x11u8; 32],
+      extra: Dict::new(),
     }
   }
 
@@ -616,5 +725,67 @@ mod proof_list_tests {
     };
     value.insert(b"proof_list".to_vec(), BValue::Int(42));
     assert!(Seed::parse(&BValue::Dict(value).encode()).is_err());
+  }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+  use super::*;
+
+  #[test]
+  fn unknown_info_fields_survive_seed_metadata_and_serde_roundtrips() {
+    assert_eq!(
+      serde_json::to_value(Info::new(0, merkle::EMPTY_ROOT)).unwrap()["v"],
+      INFO_VERSION
+    );
+    let mut value = Info::new(0, merkle::EMPTY_ROOT).to_value();
+    let BValue::Dict(fields) = &mut value else {
+      panic!()
+    };
+    fields.insert(
+      b"future".to_vec(),
+      BValue::List(vec![BValue::Bytes(vec![0xff, 0]), BValue::Int(3)]),
+    );
+    let hash = bencode::digest(&value);
+    let info = Info::parse_verified(&value.encode(), &hash).unwrap();
+    assert_eq!(info.info_hash(), hash);
+    assert_eq!(crate::bencode_serde::to_value(&info).unwrap(), value);
+    let seed = Seed::new(info);
+    assert_eq!(Seed::parse(&seed.encode()).unwrap().info_hash(), hash);
+    assert!(matches!(
+      Info::parse_verified(&value.encode(), &[0; 32]),
+      Err(SeedError::InfoHashMismatch)
+    ));
+  }
+
+  #[test]
+  fn malicious_metadata_and_magnets_are_bounded_and_never_panic() {
+    assert!(bencode::decode(b"i+2e").is_err());
+    let deep = [vec![b'l'; 1000], vec![b'e'; 1000]].concat();
+    assert!(Info::parse_verified(&deep, &[0; 32]).is_err());
+    assert!(matches!(
+      Info::parse_verified(&vec![0; MAX_INFO_BYTES + 1], &[0; 32]),
+      Err(SeedError::InfoTooLarge)
+    ));
+    let prefix = "magnet:?xt=urn:sha256:";
+    for hash in ["aé".repeat(21) + "a", "z".repeat(64), "0".repeat(63)] {
+      assert!(parse_magnet(&format!("{prefix}{hash}")).is_err());
+    }
+    let hash = "a".repeat(64);
+    assert!(parse_magnet(&format!("{prefix}{hash}&xt=urn%3Asha256%3A{hash}")).is_ok());
+    assert_eq!(
+      parse_magnet(&format!("{prefix}{hash}&xt=urn:sha256:{}", "b".repeat(64))),
+      Err(MagnetError::ConflictingXt)
+    );
+    assert_eq!(
+      parse_magnet(&format!("{prefix}%zz")),
+      Err(MagnetError::BadEncoding)
+    );
+    let hints = parse_magnet(&format!("{prefix}{hash}&dn=%zz&tr=%ff")).unwrap();
+    assert!(hints.display_name.is_none() && hints.trackers.is_empty());
+    assert_eq!(
+      parse_magnet(&"m".repeat(MAX_MAGNET_BYTES + 1)),
+      Err(MagnetError::TooLong)
+    );
   }
 }

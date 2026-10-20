@@ -36,6 +36,8 @@ pub(crate) struct Args {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
+  /// Print a Q2Q magnet URL from a local seed without contacting the network.
+  Magnet { seed: PathBuf },
   /// Publish a file and keep serving until interrupted.
   Publish {
     file: PathBuf,
@@ -43,8 +45,9 @@ pub(crate) enum Command {
     #[arg(long)]
     seed: Option<PathBuf>,
   },
-  /// Download using a seed; existing checkpoints are resumed automatically.
+  /// Download a seed file or Q2Q magnet URL; checkpoints resume automatically.
   Download {
+    #[arg(value_name = "INPUT")]
     seed: PathBuf,
     /// Destination filename; defaults to a safe name from the seed.
     #[arg(short, long)]

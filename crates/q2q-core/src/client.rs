@@ -3,6 +3,7 @@
 pub use crate::reader::{OpenOptions, VerifiedFile};
 
 pub use crate::control::{ControlError, ControlSession, QueryOptions};
+pub use crate::metadata::{MetadataError, cached_magnet};
 pub use crate::peer::PeerSession;
 pub use crate::publication::{
   Publication, PublicationState, UploadConnectionProgress, UploadConnectionState, UploadProgress,
@@ -355,6 +356,21 @@ impl Client {
     path: impl Into<PathBuf>,
   ) -> Result<Transfer, TransferError> {
     self.start_download(seed, path.into(), false, false).await
+  }
+
+  /// Resolve and cache verified info using this client's Track. Track hints in
+  /// the magnet are left to the caller's Track failover policy.
+  pub async fn resolve_magnet(
+    &self,
+    magnet: &q2q_primitives::seed::Magnet,
+  ) -> Result<q2q_primitives::seed::Seed, MetadataError> {
+    crate::metadata::resolve(
+      self,
+      magnet,
+      self.max_download_peers.min(2),
+      self.peer_query_limit,
+    )
+    .await
   }
 
   /// Download after requiring the initial Track session and peer query to

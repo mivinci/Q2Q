@@ -44,6 +44,39 @@ initialization and cleanup.
 A failed withdrawal is reported; a remote holding may remain until its TTL expires.
 A crash or forced kill cannot guarantee withdrawal.
 
+## Magnet links
+
+Create a Q2Q magnet URL locally from an existing seed:
+
+```sh
+q2q magnet ./model.bin.q2q
+q2q download 'magnet:?xt=urn:sha256:<64-hex-info-hash>&tr=<percent-encoded-Track-URL>'
+```
+
+Quote links in the shell because `&` separates commands. The format uses Q2Q info
+hashes, not BitTorrent `btih`/`btmh`. `magnet` prints one URL to stdout without
+creating an identity or connecting to a service; `publish` still prints the seed path.
+
+Downloads try the explicit `--track` / `Q2Q_TRACK_URL`, valid `tr` hints, then the
+official Track, deduplicating URLs. With no `tr`, the default official Track still
+works when it knows an online metadata source. Metadata discovery has a 60-second
+budget across CLI Track attempts. The CLI authenticates a Peer, verifies its info
+against `xt`, and only then opens the output. `dn` is a display hint and never
+chooses the output path. A safe verified `info.name` is used in the current directory;
+otherwise the full info hash becomes the filename. `--output` overrides it.
+
+Verified metadata is cached under `<Q2Q_HOME>/metadata/<info-hash>.q2q` and checked
+again when read. Keep this cache with the destination and checkpoints for automatic
+resume. A complete download can finish revalidation offline without opening an
+identity or Track session. Metadata discovery can be interrupted immediately;
+`--quiet` suppresses its spinner and progress messages.
+
+The initial implementation fetches info from online complete or partial Peers.
+Track stores no metadata. CDN URLs and leaf/proof lists are seed-envelope fields,
+so magnets do not recover CDN fallback: a CDN-only file with no online Peer still
+requires its `.q2q` seed. Raw info is limited to 8 KiB, links to 16 KiB; noncanonical,
+wrong-hash and unsupported metadata are rejected before any destination is created.
+
 ## Download and resume
 
 The CLI stores identity and checkpoints in the platform user state directory by
@@ -142,4 +175,4 @@ SIGTERM). Help and version exit successfully. If cleanup fails after an interrup
 the command reports the error and exits with 1.
 
 This first version has no daemon mode, GUI, browser receiver, account service,
-magnet metadata fetching, or automatic background seeding.
+or automatic background seeding.

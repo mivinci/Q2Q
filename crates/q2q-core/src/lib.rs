@@ -15,6 +15,7 @@ mod download_progress;
 mod download_store;
 mod error;
 mod identity;
+mod metadata;
 mod online;
 mod peer;
 mod peer_identity;

@@ -191,3 +191,98 @@ fn explicit_flags_override_environment() {
 #[cfg(unix)]
 #[path = "local.rs"]
 mod local;
+
+#[test]
+fn magnet_export_is_local_and_has_a_single_line_stdout() {
+  let dir = TempDir::new().unwrap();
+  let path = empty_seed(dir.path());
+  let output = cli(dir.path()).arg("magnet").arg(&path).output().unwrap();
+  success(&output);
+  let expected =
+    q2q_primitives::seed::to_magnet(&Seed::parse(&std::fs::read(path).unwrap()).unwrap());
+  assert_eq!(
+    String::from_utf8(output.stdout).unwrap(),
+    format!("{expected}\n")
+  );
+  assert!(output.stderr.is_empty());
+  assert!(!dir.path().join("state").exists());
+}
+
+#[test]
+fn bad_magnet_never_creates_state_or_destination() {
+  let dir = TempDir::new().unwrap();
+  let output_path = dir.path().join("must-not-exist");
+  for input in [
+    "magnet:bad".into(),
+    "magnet:?xt=urn:btih:abcd".into(),
+    format!("magnet:?xt=urn:sha256:{}", "aé".repeat(21) + "a"),
+  ] {
+    let output = cli(dir.path())
+      .arg("download")
+      .arg(input)
+      .arg("-o")
+      .arg(&output_path)
+      .output()
+      .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(!output_path.exists());
+    assert!(!dir.path().join("state").exists());
+  }
+}
+
+#[test]
+fn cached_magnet_uses_verified_name_or_hash_and_resumes_without_identity() {
+  for name in [None, Some("../../unsafe"), Some("safe-photo.jpeg")] {
+    let dir = TempDir::new().unwrap();
+    let mut info = Info::new(0, EMPTY_ROOT);
+    info.name = name.map(String::from);
+    let seed = Seed::new(info);
+    let hash: String = seed
+      .info_hash()
+      .iter()
+      .map(|b| format!("{b:02x}"))
+      .collect();
+    let link = format!(
+      "{}&dn=untrusted-name",
+      q2q_primitives::seed::to_magnet(&seed)
+    );
+    let metadata = dir.path().join("state/metadata");
+    std::fs::create_dir_all(&metadata).unwrap();
+    std::fs::write(metadata.join(format!("{hash}.q2q")), seed.encode()).unwrap();
+    let output = cli(dir.path())
+      .current_dir(dir.path())
+      .args(["--quiet", "download", &link])
+      .output()
+      .unwrap();
+    assert!(
+      output.status.success(),
+      "name={name:?}, output={output:?}, files={:?}",
+      std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect::<Vec<_>>()
+    );
+    let expected_name = name.filter(|n| !n.contains('/')).unwrap_or(&hash);
+    assert_eq!(
+      String::from_utf8_lossy(&output.stdout).trim(),
+      expected_name
+    );
+    assert!(dir.path().join(expected_name).is_file());
+    assert!(output.stderr.is_empty());
+    // Offline completion must not reopen a corrupt identity or contact Track.
+    std::fs::write(dir.path().join("state/identity"), b"corrupt identity").unwrap();
+    let output = cli(dir.path())
+      .current_dir(dir.path())
+      .args([
+        "--track",
+        "http://127.0.0.1:1",
+        "--quiet",
+        "download",
+        &link,
+      ])
+      .output()
+      .unwrap();
+    success(&output);
+  }
+}

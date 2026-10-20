@@ -148,3 +148,126 @@ fn publish_download_interrupt_resume_and_withdraw() {
   let mut offline = logged(&mut receive, dir.path(), "offline");
   assert!(offline.wait().success());
 }
+
+#[test]
+#[ignore = "requires Q2Q_TEST_TRACK_URL pointing to a fresh local Track/Punch pair"]
+fn magnet_publish_download_interrupt_and_offline_resume() {
+  let track = std::env::var("Q2Q_TEST_TRACK_URL").expect("Q2Q_TEST_TRACK_URL");
+  let dir = TempDir::new().unwrap();
+  let source = dir.path().join("magnet-photo.bin");
+  let bytes: Vec<_> = (0..2 * 1024 * 1024 + 17).map(|i| (i % 251) as u8).collect();
+  std::fs::write(&source, &bytes).unwrap();
+  let seed_path = dir.path().join("photo.q2q");
+  let mut command = cli(dir.path());
+  command
+    .args(["--track", &track, "--upload-rate", "262144", "publish"])
+    .arg(&source)
+    .arg("--seed")
+    .arg(&seed_path);
+  let mut publisher = logged(&mut command, dir.path(), "magnet-publisher");
+  wait_for(|| seed_path.exists());
+  let exported = cli(dir.path())
+    .arg("magnet")
+    .arg(&seed_path)
+    .output()
+    .unwrap();
+  success(&exported);
+  let link = String::from_utf8(exported.stdout)
+    .unwrap()
+    .trim()
+    .to_owned();
+  let receiver_dir = dir.path().join("receiver");
+  std::fs::create_dir_all(&receiver_dir).unwrap();
+  let output_path = receiver_dir.join("download.bin");
+  let mut command = cli(&receiver_dir);
+  command
+    .args([
+      "--quiet",
+      "--track",
+      "http://127.0.0.1:1",
+      "download",
+      &link,
+    ])
+    .arg("-o")
+    .arg(&output_path);
+  let mut receiver = logged(&mut command, dir.path(), "magnet-receiver");
+  wait_for(|| {
+    std::fs::read_dir(receiver_dir.join("state/checkpoints")).is_ok_and(|entries| {
+      entries.filter_map(Result::ok).any(|entry| {
+        std::fs::read_to_string(entry.path()).is_ok_and(|text| text.lines().count() >= 2)
+      })
+    })
+  });
+  receiver.signal("-INT");
+  assert_eq!(receiver.wait().code(), Some(130));
+  assert_eq!(
+    std::fs::read_dir(receiver_dir.join("state/metadata"))
+      .unwrap()
+      .count(),
+    1
+  );
+  let without_track = link.split("&tr=").next().unwrap();
+  let result = cli(&receiver_dir)
+    .args(["--quiet", "--track", &track, "download", without_track])
+    .arg("-o")
+    .arg(&output_path)
+    .output()
+    .unwrap();
+  success(&result);
+  assert_eq!(std::fs::read(&output_path).unwrap(), bytes);
+  publisher.signal("-TERM");
+  assert_eq!(publisher.wait().code(), Some(130));
+  std::fs::write(receiver_dir.join("state/identity"), b"invalid identity").unwrap();
+  let result = cli(&receiver_dir)
+    .args([
+      "--quiet",
+      "--track",
+      "http://127.0.0.1:1",
+      "download",
+      without_track,
+    ])
+    .arg("-o")
+    .arg(&output_path)
+    .output()
+    .unwrap();
+  success(&result);
+  assert_eq!(
+    String::from_utf8_lossy(&result.stdout).trim(),
+    output_path.display().to_string()
+  );
+}
+
+#[test]
+fn interrupt_during_magnet_discovery_creates_no_destination_or_checkpoint() {
+  use std::io::Read;
+  let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+  let track = format!("http://{}", listener.local_addr().unwrap());
+  let (ready, connected) = std::sync::mpsc::channel();
+  let server = std::thread::spawn(move || {
+    let (mut stream, _) = listener.accept().unwrap();
+    stream
+      .set_read_timeout(Some(Duration::from_secs(5)))
+      .unwrap();
+    ready.send(()).unwrap();
+    let mut buffer = [0; 4096];
+    while matches!(stream.read(&mut buffer), Ok(n) if n != 0) {}
+  });
+  let dir = TempDir::new().unwrap();
+  let destination = dir.path().join("not-created.bin");
+  let link = format!("magnet:?xt=urn:sha256:{}", "a".repeat(64));
+  let mut command = cli(dir.path());
+  command
+    .args(["--quiet", "--track", &track, "download", &link])
+    .arg("--output")
+    .arg(&destination);
+  let mut receiver = logged(&mut command, dir.path(), "metadata-cancel");
+  connected.recv_timeout(Duration::from_secs(5)).unwrap();
+  let interrupted = Instant::now();
+  receiver.signal("-INT");
+  assert_eq!(receiver.wait().code(), Some(130));
+  assert!(interrupted.elapsed() < Duration::from_secs(3));
+  assert!(!destination.exists());
+  assert!(!dir.path().join("state/checkpoints").exists());
+  assert!(!dir.path().join("state/metadata").exists());
+  server.join().unwrap();
+}

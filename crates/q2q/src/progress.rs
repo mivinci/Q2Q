@@ -14,6 +14,32 @@ struct Rate {
   last: Instant,
   bytes: u64,
 }
+
+pub(crate) struct MetadataDisplay(Option<ProgressBar>);
+impl MetadataDisplay {
+  pub(crate) fn new(quiet: bool) -> Self {
+    if quiet {
+      return Self(None);
+    }
+    if io::stderr().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb") {
+      let bar = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr());
+      bar.set_style(ProgressStyle::with_template("{spinner} {msg}").expect("metadata template"));
+      bar.set_message("Finding peers and fetching metadata...");
+      bar.enable_steady_tick(Duration::from_millis(100));
+      Self(Some(bar))
+    } else {
+      eprintln!("Finding peers and fetching metadata...");
+      Self(None)
+    }
+  }
+}
+impl Drop for MetadataDisplay {
+  fn drop(&mut self) {
+    if let Some(bar) = &self.0 {
+      bar.finish_and_clear();
+    }
+  }
+}
 impl Rate {
   fn new(bytes: u64) -> Self {
     Self {

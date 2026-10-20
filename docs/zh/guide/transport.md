@@ -65,6 +65,29 @@ flowchart TB
 
 `VerifiedFile` 只读取已完成的块，读取时还会核对磁盘字节与已认证叶子哈希。目标文件可能已预分配长度，应用应使用 SDK 读取接口，不能把稀疏文件中的零字节当成已下载内容。
 
+## SDK 磁力链解析
+
+```rust
+let magnet = q2q_primitives::seed::parse_magnet(link)?;
+let seed = client.resolve_magnet(&magnet).await?;
+client.download(&seed, "download.bin").await?.wait().await?;
+```
+
+`Client::resolve_magnet` 使用 Client 配置的 Track，磁力链提示、默认地址和跨 Track
+故障切换由调用方决定，SDK 不写死官方服务。它受限并发连接经过认证的 Peer、获取并验证
+info，关闭元数据连接，再返回最小 `Seed`，供已有下载、恢复、读取和共享 API 使用。
+`MetadataError` 区分发现失败、无候选、超时、非法 metadata、候选耗尽和缓存错误；
+解析阶段不打开下载目标。
+
+最小 seed 通过原子写入缓存到 `storage_dir/metadata`，不持久化远程 URL 提示。
+`q2q_core::client::cached_magnet(&magnet, storage_dir).await?` 可在不构建 Client 的情况下
+读取并重验缓存；损坏条目按未命中处理，I/O 错误会报告。缓存命中不需要 Track 会话。
+info 不包含 CDN/证明 URL 或叶子列表，因此首次使用仍需在线 Peer。
+部分持有者宣告至少一个已提交且通过校验的块后，也能提供 info。消息顺序及限制见[消息编码](./wire)。
+
+解析后的 `Info` 保留未知字段，避免往返编码改变 hash。新值使用 `Info::new` 构造后修改公开
+已知字段；由于保留字段为私有，原有结构体字面量调用需迁移到构造函数。
+
 ## 生命周期与当前范围
 
 `Publication` 负责宣告、文件持有续租、上传和撤销；活跃发布及下载共用控制会话的一个心跳任务。最后一个使用者释放后，心跳任务停止；低层 `Client::connect()` 的调用者仍需自行维护心跳。

@@ -29,6 +29,34 @@ pub enum BValue {
   Dict(Dict),
 }
 
+impl serde::Serialize for BValue {
+  fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::{SerializeMap, SerializeSeq};
+    match self {
+      Self::Int(n) => serializer.serialize_i64(*n),
+      Self::Bytes(bytes) => serializer.serialize_bytes(bytes),
+      Self::List(values) => {
+        let mut seq = serializer.serialize_seq(Some(values.len()))?;
+        for value in values {
+          seq.serialize_element(value)?;
+        }
+        seq.end()
+      }
+      Self::Dict(values) => {
+        let mut map = serializer.serialize_map(Some(values.len()))?;
+        for (key, value) in values {
+          if let Ok(key) = std::str::from_utf8(key) {
+            map.serialize_entry(key, value)?;
+          } else {
+            map.serialize_entry(serde_bytes::Bytes::new(key), value)?;
+          }
+        }
+        map.end()
+      }
+    }
+  }
+}
+
 impl BValue {
   pub fn int(v: i64) -> Self {
     BValue::Int(v)
@@ -96,6 +124,7 @@ pub enum DecodeError {
   NegativeZero,
   KeyNotString,
   KeysNotSorted,
+  NestingTooDeep,
 }
 
 impl std::fmt::Display for DecodeError {
@@ -109,6 +138,7 @@ impl std::fmt::Display for DecodeError {
       DecodeError::LeadingZero => "number has a leading zero",
       DecodeError::NegativeZero => "integer is negative zero",
       DecodeError::KeyNotString => "dict key is not a byte string",
+      DecodeError::NestingTooDeep => "bencode nesting exceeds 32 levels",
       DecodeError::KeysNotSorted => "dict keys are not in ascending byte order",
     };
     f.write_str(s)
@@ -119,14 +149,18 @@ impl std::error::Error for DecodeError {}
 
 /// Decode bencode, rejecting anything that parses but is not canonical.
 pub fn decode(input: &[u8]) -> Result<BValue, DecodeError> {
-  let (v, n) = decode_at(input, 0)?;
+  let (v, n) = decode_at(input, 0, 0)?;
   if n != input.len() {
     return Err(DecodeError::TrailingData);
   }
   Ok(v)
 }
 
-fn decode_at(input: &[u8], mut pos: usize) -> Result<(BValue, usize), DecodeError> {
+fn decode_at(input: &[u8], mut pos: usize, depth: usize) -> Result<(BValue, usize), DecodeError> {
+  // Bound recursive parsing before accepting untrusted Peer metadata.
+  if depth > 32 {
+    return Err(DecodeError::NestingTooDeep);
+  }
   if pos >= input.len() {
     return Err(DecodeError::UnexpectedEnd);
   }
@@ -143,7 +177,7 @@ fn decode_at(input: &[u8], mut pos: usize) -> Result<(BValue, usize), DecodeErro
       let text =
         std::str::from_utf8(&input[start..pos]).map_err(|_| DecodeError::InvalidInteger)?;
       let body = text.strip_prefix('-').unwrap_or(text);
-      if body.is_empty() {
+      if body.is_empty() || !body.bytes().all(|b| b.is_ascii_digit()) {
         return Err(DecodeError::InvalidInteger);
       }
       if body.len() > 1 && body.starts_with('0') {
@@ -192,7 +226,7 @@ fn decode_at(input: &[u8], mut pos: usize) -> Result<(BValue, usize), DecodeErro
           pos += 1;
           break;
         }
-        let (v, next) = decode_at(input, pos)?;
+        let (v, next) = decode_at(input, pos, depth + 1)?;
         items.push(v);
         pos = next;
       }
@@ -211,7 +245,7 @@ fn decode_at(input: &[u8], mut pos: usize) -> Result<(BValue, usize), DecodeErro
           pos += 1;
           break;
         }
-        let (k, next) = decode_at(input, pos)?;
+        let (k, next) = decode_at(input, pos, depth + 1)?;
         let key = match k {
           BValue::Bytes(b) => b,
           _ => return Err(DecodeError::KeyNotString),
@@ -222,7 +256,7 @@ fn decode_at(input: &[u8], mut pos: usize) -> Result<(BValue, usize), DecodeErro
           }
         }
         last = Some(key.clone());
-        let (v, next2) = decode_at(input, next)?;
+        let (v, next2) = decode_at(input, next, depth + 1)?;
         map.insert(key, v);
         pos = next2;
       }

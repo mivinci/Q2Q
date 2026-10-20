@@ -1,9 +1,9 @@
 use crate::args::{Args, Command};
-use crate::progress::{PreparationDisplay, Progress};
+use crate::progress::{MetadataDisplay, PreparationDisplay, Progress};
 use crate::shutdown::{Stop, initialize, initialize_with_progress};
 use crate::{Outcome, Result};
 use q2q_core::client::{Client, Publication};
-use q2q_primitives::seed::Seed;
+use q2q_primitives::seed::{Magnet, Seed, parse_magnet, to_magnet};
 use std::{
   env,
   fs::{self, File, OpenOptions},
@@ -17,29 +17,69 @@ use url::Url;
 const DEFAULT_TRACK_URL: &str = "https://track.q2q.app";
 
 pub(crate) async fn run(args: Args, mut stop: Stop) -> Result<Outcome> {
-  let seed = match &args.command {
-    Command::Download { seed, .. } => Some(read_seed(seed).await?),
-    Command::Publish { .. } => None,
+  if let Command::Magnet { seed } = &args.command {
+    let seed = read_seed(seed).await?;
+    if seed.info.encode().len() > q2q_primitives::seed::MAX_INFO_BYTES {
+      return Err(q2q_primitives::seed::SeedError::InfoTooLarge.into());
+    }
+    let link = to_magnet(&seed);
+    // Never print a link our own downloader cannot parse (e.g. oversized hints).
+    parse_magnet(&link)?;
+    writeln!(io::stdout().lock(), "{link}")?;
+    return Ok(Outcome::Complete);
+  }
+  let magnet = match &args.command {
+    Command::Download { seed, .. } if seed.to_str().is_some_and(|s| s.starts_with("magnet:")) => {
+      Some(parse_magnet(seed.to_str().expect("magnet is UTF-8"))?)
+    }
+    _ => None,
   };
+  let home = resolve_home()?;
+  let identity_path = args
+    .identity
+    .clone()
+    .unwrap_or_else(|| home.join("identity"));
+  let mut identity_lock = None;
+  let mut seed = match &args.command {
+    Command::Download { .. } if magnet.is_some() => {
+      q2q_core::client::cached_magnet(magnet.as_ref().expect("magnet"), &home).await?
+    }
+    Command::Download { seed, .. } => Some(read_seed(seed).await?),
+    _ => None,
+  };
+  if let Some(magnet) = &magnet {
+    if seed.is_none() {
+      identity_lock = Some(lock_identity(&identity_path)?);
+      seed =
+        resolve_magnet_with_track_failover(magnet, &args, &identity_path, &home, &mut stop).await?;
+      if seed.is_none() {
+        return Ok(Outcome::Interrupted);
+      }
+    }
+    // Track hints remain local request policy, never cached metadata authority.
+    seed.as_mut().expect("resolved metadata").track_list = magnet.trackers.clone();
+  }
   let publish_seed_path = match &args.command {
     Command::Publish { file, seed } => Some(match seed {
       Some(path) => path.clone(),
       None => default_seed_path(file)?,
     }),
-    Command::Download { .. } => None,
+    _ => None,
   };
   let download_output = match &args.command {
     Command::Download {
       seed: path, output, ..
     } => Some(match output {
       Some(output) => output.clone(),
+      None if magnet.is_some() => {
+        default_magnet_download_path(seed.as_ref().expect("resolved metadata"))
+      }
       None => default_download_path(path, seed.as_ref().expect("download seed loaded"))?,
     }),
-    Command::Publish { .. } => None,
+    _ => None,
   };
   let mut resume_from_checkpoint = false;
   let mut offline_resume = None;
-  let home = resolve_home()?;
   if matches!(&args.command, Command::Download { .. }) {
     let (transfer, interrupted) = initialize(
       async {
@@ -75,11 +115,10 @@ pub(crate) async fn run(args: Args, mut stop: Stop) -> Result<Outcome> {
     }
   }
   fs::create_dir_all(&home)?;
-  let identity_path = args
-    .identity
-    .clone()
-    .unwrap_or_else(|| home.join("identity"));
-  let _identity_lock = lock_identity(&identity_path)?;
+  let _identity_lock = match identity_lock {
+    Some(lock) => lock,
+    None => lock_identity(&identity_path)?,
+  };
   match &args.command {
     Command::Publish { file, .. } => {
       let track = args.track.as_deref().unwrap_or(DEFAULT_TRACK_URL);
@@ -106,7 +145,7 @@ pub(crate) async fn run(args: Args, mut stop: Stop) -> Result<Outcome> {
     Command::Download { resume, .. } => {
       let candidates = download_track_candidates(
         args.track.as_deref(),
-        seed.as_ref().expect("download seed loaded"),
+        &seed.as_ref().expect("download seed loaded").track_list,
       );
       download_with_track_failover(
         &candidates,
@@ -125,7 +164,72 @@ pub(crate) async fn run(args: Args, mut stop: Stop) -> Result<Outcome> {
       )
       .await
     }
+    Command::Magnet { .. } => unreachable!("handled before initialization"),
   }
+}
+
+async fn resolve_magnet_with_track_failover(
+  magnet: &Magnet,
+  args: &Args,
+  identity_path: &Path,
+  home: &Path,
+  stop: &mut Stop,
+) -> Result<Option<Seed>> {
+  let candidates = download_track_candidates(args.track.as_deref(), &magnet.trackers);
+  let _display = MetadataDisplay::new(args.quiet);
+  let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+  let mut last = None;
+  for (index, track) in candidates.iter().enumerate() {
+    let (client, interrupted) = build_client(track, args, identity_path, home, stop).await?;
+    if interrupted {
+      return Ok(None);
+    }
+    let attempt = tokio::select! {
+      signal = &mut *stop => { signal?; return Ok(None); }
+      result = tokio::time::timeout_at(deadline, client.resolve_magnet(magnet)) =>
+        result.map_err(|_| q2q_core::client::MetadataError::Timeout)?,
+    };
+    match attempt {
+      Ok(seed) => return Ok(Some(seed)),
+      Err(
+        error @ (q2q_core::client::MetadataError::Cache(_)
+        | q2q_core::client::MetadataError::Task(_)),
+      ) => return Err(error.into()),
+      Err(error) => {
+        if index + 1 < candidates.len() && !args.quiet {
+          eprintln!(
+            "Metadata Track candidate {} failed ({error}); trying candidate {}.",
+            index + 1,
+            index + 2
+          );
+        }
+        last = Some(error);
+      }
+    }
+  }
+  Err(
+    last
+      .unwrap_or(q2q_core::client::MetadataError::NoPeers)
+      .into(),
+  )
+}
+
+fn default_magnet_download_path(seed: &Seed) -> PathBuf {
+  if let Some(name) = seed
+    .info
+    .name
+    .as_deref()
+    .filter(|name| is_safe_filename(name))
+  {
+    return PathBuf::from(name);
+  }
+  PathBuf::from(
+    seed
+      .info_hash()
+      .iter()
+      .map(|byte| format!("{byte:02x}"))
+      .collect::<String>(),
+  )
 }
 
 async fn build_client(
@@ -148,12 +252,12 @@ async fn build_client(
   initialize(async { Ok(builder.build().await?) }, stop).await
 }
 
-fn download_track_candidates(preferred: Option<&str>, seed: &Seed) -> Vec<String> {
+fn download_track_candidates(preferred: Option<&str>, tracks: &[String]) -> Vec<String> {
   let mut candidates = Vec::new();
   if let Some(preferred) = preferred {
     push_track_candidate(&mut candidates, preferred);
   }
-  for track in &seed.track_list {
+  for track in tracks {
     if is_http_track_url(track) {
       push_track_candidate(&mut candidates, track);
     }

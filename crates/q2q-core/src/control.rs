@@ -82,7 +82,7 @@ impl ControlSession {
       .danger_accept_invalid_certs(accept_invalid_certs)
       .timeout(Duration::from_secs(10))
       .build()
-      .map_err(ControlError::Http)?;
+      .map_err(|error| ControlError::Http(error.without_url()))?;
     let peer_id = identity.peer_id().clone();
     let url = endpoint(track_url, &["peers", peer_id.as_str(), "files"])?;
     let now = q2q_track::state::now();
@@ -98,9 +98,12 @@ impl ControlSession {
       .json(&request)
       .send()
       .await
-      .map_err(ControlError::Http)?;
+      .map_err(|error| ControlError::Http(error.without_url()))?;
     let response = expect_success(response, "Track").await?;
-    let announced: AnnounceResponse = response.json().await.map_err(ControlError::Http)?;
+    let announced: AnnounceResponse = response
+      .json()
+      .await
+      .map_err(|error| ControlError::Http(error.without_url()))?;
     let session_key = decode_key(&announced.session_key, "Track session_key")?;
     let punch = PunchBinding::connect(identity, &announced.punch).await?;
     Ok(Self {
@@ -243,9 +246,12 @@ impl ControlSession {
       .json(&request)
       .send()
       .await
-      .map_err(ControlError::Http)?;
+      .map_err(|error| ControlError::Http(error.without_url()))?;
     let response = expect_success(response, "Track").await?;
-    let heartbeat: HeartbeatResponse = response.json().await.map_err(ControlError::Http)?;
+    let heartbeat: HeartbeatResponse = response
+      .json()
+      .await
+      .map_err(|error| ControlError::Http(error.without_url()))?;
     self
       .track_expires_at
       .store(heartbeat.expires_at, Ordering::Release);
@@ -289,9 +295,12 @@ impl ControlSession {
       .get(url)
       .send()
       .await
-      .map_err(ControlError::Http)?;
+      .map_err(|error| ControlError::Http(error.without_url()))?;
     let response = expect_success(response, "Track").await?;
-    response.json().await.map_err(ControlError::Http)
+    response
+      .json()
+      .await
+      .map_err(|error| ControlError::Http(error.without_url()))
   }
 
   /// Leave the Punch Binding and close the authenticated QUIC channel.
@@ -357,12 +366,12 @@ impl ControlSession {
       .json(&request)
       .send()
       .await
-      .map_err(ControlError::Http)?;
+      .map_err(|error| ControlError::Http(error.without_url()))?;
     let announced: AnnounceResponse = expect_success(response, "Track")
       .await?
       .json()
       .await
-      .map_err(ControlError::Http)?;
+      .map_err(|error| ControlError::Http(error.without_url()))?;
     auth.key = decode_key(&announced.session_key, "Track session_key")?;
     auth.seq = 0;
     self
