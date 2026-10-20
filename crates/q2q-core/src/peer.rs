@@ -51,6 +51,7 @@ impl PeerSession {
   }
 }
 
+#[tracing::instrument(skip_all, fields(connection_role = "initiator", connection_id = tracing::field::Empty, local_peer = %identity.peer_id().as_str(), remote_peer = %target.peer_id))]
 pub(crate) async fn dial(
   identity: &Identity,
   target: &PeerWire,
@@ -71,6 +72,8 @@ pub(crate) async fn dial(
   }
   let channel = PunchEphemeral::connect(&target.punch).await?;
   let connection_id = random_id()?;
+  tracing::Span::current().record("connection_id", connection_id.as_str());
+  tracing::debug!(%connection_id, "Punch connected; requesting peer acceptance");
   let now = q2q_punch::binding::now();
   let token = identity.connection_ticket(
     &target.punch.punch_id,
@@ -114,7 +117,8 @@ pub(crate) async fn dial(
     _ => return Err(ControlError::Protocol("expected peer acceptance".into())),
   }
 
-  let mut rtc = rtc_connection(turn).await?;
+  tracing::debug!(%connection_id, "Peer accepted; creating WebRTC offer");
+  let mut rtc = rtc_connection(turn, &connection_id).await?;
   let (offer, data_channel) = rtc.offer().await.map_err(ControlError::Transport)?;
   let mut offer_message = message(SignalType::Offer, &connection_id);
   offer_message.connect_token = Some(token);
@@ -142,11 +146,13 @@ pub(crate) async fn dial(
   })
   .await
   .map_err(|_| ControlError::Transport("peer answer timed out".into()))??;
+  tracing::debug!(%connection_id, "Received WebRTC answer");
   rtc
     .apply_answer(answer)
     .await
     .map_err(ControlError::Transport)?;
   for candidate in pending_candidates {
+    log_candidate("received before answer", &candidate);
     rtc
       .add_candidate(candidate)
       .await
@@ -162,6 +168,7 @@ pub(crate) async fn dial(
   }
   .authenticate(&rtc, channels.control.as_ref())
   .await?;
+  tracing::debug!("WebRTC peer identity authenticated");
   Ok(PeerSession {
     peer_id: target_id,
     info_hash,
@@ -263,7 +270,9 @@ impl PendingPeer {
     reject.reason = Some(reason);
     self.channel.signal(&reject).await.map(|_| ())
   }
+  #[tracing::instrument(skip_all, fields(connection_role = "responder", connection_id = %self.connect.connection_id, local_peer = %self.identity.peer_id().as_str(), remote_peer = %self.initiator.as_str()))]
   pub(crate) async fn accept(self) -> Result<PeerSession, ControlError> {
+    tracing::debug!("Accepting incoming peer");
     let connect = &self.connect;
     let info_hash = self.info_hash;
     let now = q2q_punch::binding::now();
@@ -305,8 +314,9 @@ impl PendingPeer {
     if offered.connect_token != connect.connect_token {
       return Err(ControlError::Protocol("offer ticket changed".into()));
     }
+    tracing::debug!("Received WebRTC offer; creating answer");
     let offer = description(&offered, RTCSdpType::Offer)?;
-    let mut rtc = rtc_connection(&self.turn).await?;
+    let mut rtc = rtc_connection(&self.turn, &connect.connection_id).await?;
     let answer = rtc.answer(offer).await.map_err(ControlError::Transport)?;
     let mut answer_message = message(SignalType::Answer, &connect.connection_id);
     answer_message.sdp = Some(
@@ -371,12 +381,28 @@ fn verify_accept(
   Ok(())
 }
 
-async fn rtc_connection(turn: &TurnWire) -> Result<RtcConnection, ControlError> {
+#[tracing::instrument(skip_all, fields(connection_id = %connection_id))]
+async fn rtc_connection(
+  turn: &TurnWire,
+  connection_id: &str,
+) -> Result<RtcConnection, ControlError> {
   let creds = (turn.expires_at > q2q_punch::binding::now()).then_some((
     turn.url.as_str(),
     turn.username.as_str(),
     turn.credential.as_str(),
   ));
+  // Never log TURN usernames/passwords or raw URLs containing credentials.
+  let endpoint = turn.url.split_once(':').and_then(|(scheme, rest)| {
+    url::Url::parse(&format!("{scheme}://{}", rest.trim_start_matches('/'))).ok()
+  });
+  tracing::debug!(
+    turn_enabled = creds.is_some() && !turn.url.is_empty(),
+    turn_credentials_valid = turn.expires_at > q2q_punch::binding::now(),
+    turn_scheme = endpoint.as_ref().map(|u| u.scheme()),
+    turn_host = endpoint.as_ref().and_then(|u| u.host_str()),
+    turn_port = endpoint.as_ref().and_then(|u| u.port()),
+    "WebRTC ICE configuration"
+  );
   RtcConnection::new(creds)
     .await
     .map_err(ControlError::Transport)
@@ -458,6 +484,7 @@ impl SignalChannel for PunchEphemeral {
   }
 }
 
+#[tracing::instrument(skip_all, fields(connection_id = %connection_id))]
 async fn negotiate(
   rtc: &mut RtcConnection,
   signal: &impl SignalChannel,
@@ -485,13 +512,18 @@ async fn negotiate(
             continue;
           }
           match inbound.kind {
-            SignalType::Candidate => rtc.add_candidate(candidate(&inbound)?).await.map_err(ControlError::Transport)?,
+            SignalType::Candidate => {
+              let candidate = candidate(&inbound)?;
+              log_candidate("received", &candidate);
+              rtc.add_candidate(candidate).await.map_err(ControlError::Transport)?;
+            },
             SignalType::Cancel | SignalType::Reject => return Err(ControlError::Protocol("peer cancelled connection".into())),
             _ => {}
           }
         }
         event = rtc.next_event() => match event {
           Some(RtcEvent::Candidate(candidate)) => {
+            log_candidate("sending", &candidate);
             let mut outbound = message(SignalType::Candidate, connection_id);
             outbound.candidate = Some(serde_json::to_string(&candidate)
               .map_err(|e| ControlError::Protocol(format!("ICE candidate: {e}")))?);
@@ -509,12 +541,17 @@ async fn negotiate(
             }
             *slot = Some(inbound);
           }
-          Some(RtcEvent::State(RTCPeerConnectionState::Connected)) => connected = true,
-          Some(RtcEvent::State(RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed)) => {
-            return Err(ControlError::Transport("WebRTC connection failed".into()));
-          }
+          Some(RtcEvent::State(state)) => {
+            tracing::debug!(?state, "WebRTC connection state");
+            match state {
+              RTCPeerConnectionState::Connected => connected = true,
+              RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => {
+                return Err(ControlError::Transport("WebRTC connection failed".into()));
+              }
+              _ => {}
+            }
+          },
           None => return Err(ControlError::Transport("WebRTC event channel closed".into())),
-          _ => {}
         },
         event = async {
           match &control {
@@ -522,7 +559,7 @@ async fn negotiate(
             None => std::future::pending().await,
           }
         }, if !control_open => match event {
-          Some(DataChannelEvent::OnOpen) => control_open = true,
+          Some(DataChannelEvent::OnOpen) => { control_open = true; tracing::debug!("Control data channel opened"); },
           Some(DataChannelEvent::OnMessage(_)) => return Err(ControlError::Authentication("received data before channel open".into())),
           Some(DataChannelEvent::OnClose) | None => return Err(ControlError::Transport("WebRTC data channel closed".into())),
           _ => {}
@@ -533,7 +570,7 @@ async fn negotiate(
             None => std::future::pending().await,
           }
         }, if !data_open => match event {
-          Some(DataChannelEvent::OnOpen) => data_open = true,
+          Some(DataChannelEvent::OnOpen) => { data_open = true; tracing::debug!("Piece data channel opened"); },
           Some(DataChannelEvent::OnMessage(_)) => return Err(ControlError::Authentication("received data before channel open".into())),
           Some(DataChannelEvent::OnClose) | None => return Err(ControlError::Transport("WebRTC data channel closed".into())),
           _ => {}
@@ -555,7 +592,10 @@ async fn negotiate(
     }
   })
   .await
-  .map_err(|_| ControlError::Transport("WebRTC negotiation timed out".into()))?
+  .map_err(|_| {
+    tracing::debug!(connected, control_open, data_open, timeout_seconds = ICE_TIMEOUT.as_secs(), "WebRTC negotiation timed out");
+    ControlError::Transport("WebRTC negotiation timed out".into())
+  })?
 }
 
 #[cfg(test)]
@@ -563,3 +603,17 @@ async fn negotiate(
 mod test_support;
 #[cfg(test)]
 pub(crate) use test_support::test_pair;
+
+// Log only routing fields: the raw candidate can also contain ICE credentials.
+pub(crate) fn log_candidate(direction: &str, candidate: &RTCIceCandidateInit) {
+  let fields: Vec<_> = candidate.candidate.split_whitespace().collect();
+  let kind = fields.windows(2).find(|p| p[0] == "typ").map(|p| p[1]);
+  tracing::debug!(
+    direction,
+    candidate_type = kind,
+    protocol = fields.get(2),
+    address = fields.get(4),
+    port = fields.get(5),
+    "ICE candidate"
+  );
+}

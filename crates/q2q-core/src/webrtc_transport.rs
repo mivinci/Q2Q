@@ -11,6 +11,7 @@ use webrtc::peer_connection::{
 
 #[derive(Clone)]
 struct Events {
+  span: tracing::Span,
   candidates: mpsc::UnboundedSender<RTCIceCandidateInit>,
   channels: mpsc::UnboundedSender<Arc<dyn DataChannel>>,
   states: mpsc::UnboundedSender<RTCPeerConnectionState>,
@@ -20,6 +21,9 @@ struct Events {
 impl PeerConnectionEventHandler for Events {
   async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
     if let Ok(candidate) = event.candidate.to_json() {
+      self
+        .span
+        .in_scope(|| crate::peer::log_candidate("gathered", &candidate));
       let _ = self.candidates.send(candidate);
     }
   }
@@ -69,6 +73,7 @@ impl RtcConnection {
       .with_data_channel_send_buffer_limit(256 * 1024)
       .with_configuration(config.build())
       .with_handler(Arc::new(Events {
+        span: tracing::Span::current(),
         candidates: candidate_tx,
         channels: channel_tx,
         states: state_tx,

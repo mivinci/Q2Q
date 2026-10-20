@@ -1837,6 +1837,7 @@ dependencies = [
  "q2q-primitives",
  "tempfile",
  "tokio",
+ "tracing-subscriber",
  "url",
 ]
 

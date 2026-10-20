@@ -16,6 +16,14 @@ enum Outcome {
 #[tokio::main]
 async fn main() -> ExitCode {
   let args = args::Args::parse();
+  if args.verbose {
+    tracing_subscriber::fmt()
+      .with_env_filter("off,q2q_core=debug")
+      .with_writer(std::io::stderr)
+      .with_ansi(false)
+      .with_target(false)
+      .init();
+  }
   let result = match shutdown::listen() {
     Ok(stop) => app::run(args, stop).await,
     Err(error) => Err(error.into()),

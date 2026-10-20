@@ -17,6 +17,21 @@ cargo install --path crates/q2q --locked
 q2q --help
 ```
 
+## 连接诊断
+
+```sh
+q2q --verbose publish ./file.bin.q2q
+q2q --verbose download ./file.bin.q2q
+```
+
+`--verbose` 是全局参数，向 stderr 输出 TURN 是否启用、服务地址和凭据是否仍有效、
+ICE 候选收集与发送/接收（host/srflx/relay、协议和地址）、WebRTC 连接状态、
+数据通道打开及握手失败原因。协商超时会显示连接与两个数据通道的就绪状态。
+通过 peer ID 和 connection ID 关联两端日志；日志包含公网/私网地址，分享前注意隐私。
+不输出 TURN 密码、用户名、信令票据或完整 SDP。候选为 relay 只表示存在中继候选，
+不代表最终选中了中继路径；当前日志不提供选中候选对或 TURN 流量统计。
+默认不启用详细日志；`--quiet --verbose` 抑制进度但保留诊断，stdout 结果格式不变。
+
 ## 离线生成种子
 
 ```sh

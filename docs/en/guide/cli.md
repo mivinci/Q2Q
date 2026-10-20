@@ -18,6 +18,24 @@ cargo install --path crates/q2q --locked
 q2q --help
 ```
 
+## Connection diagnostics
+
+```sh
+q2q --verbose publish ./file.bin.q2q
+q2q --verbose download ./file.bin.q2q
+```
+
+The global `--verbose` flag writes diagnostics to stderr: TURN enablement, server
+endpoint and credential validity, ICE candidate gathering and exchange
+(host/srflx/relay, protocol and address), WebRTC connection states, channel opening,
+and handshake failures. Negotiation timeouts include connection and channel readiness.
+Correlate logs using peer and connection IDs. Logs contain public/private network
+addresses; review them before sharing. TURN passwords/usernames, signalling tickets
+and full SDP are excluded. A relay candidate does not prove the selected path uses
+TURN; selected-pair and TURN traffic statistics are not currently reported.
+Diagnostics are off by default. `--quiet --verbose` hides progress while retaining
+diagnostics; stdout result formatting is unchanged.
+
 ## Build a seed offline
 
 ```sh

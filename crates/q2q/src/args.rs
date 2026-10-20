@@ -27,6 +27,9 @@ pub(crate) struct Args {
   /// Total encoded upload piece bytes/second, including retransmits; unset is unlimited.
   #[arg(long, global = true, value_parser = clap::value_parser!(u64).range(1..))]
   pub upload_rate: Option<u64>,
+  /// Print connection and ICE diagnostics to stderr (includes network addresses).
+  #[arg(long, global = true)]
+  pub verbose: bool,
   /// Suppress periodic progress; errors and success results are still emitted.
   #[arg(long, global = true)]
   pub quiet: bool,
