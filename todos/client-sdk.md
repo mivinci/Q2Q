@@ -64,7 +64,7 @@ SDK 的高层 API 不要求应用直接发送 `announce`、`join` 或 `piece` �
 
 控制消息为 JSON 文本 `{"v":1,"message":{"type":"request","block_index":0,"count":1}}`，上限 16 KiB；当前支持 bitfield、have、request、request_proof、proof、piece_nack、block_done、cancel、reject。bitfield 使用 base64，block 0 对应首字节最高位，未用低位为零。证明使用 `merkle::Proof` 字段，走可靠通道。
 
-每条数据消息是二进制：`Q2QP` 四字节魔数、版本 1（u8）、block_index（u64 大端）、piece_offset（u32 大端，block 内字节偏移、1024 对齐），随后为 1–1024 字节数据。无额外长度前缀。下载缺片超时后发送 piece_nack 的 offset/length 区间，最多三轮；整个 block 有固定截止时间，数据或证明不匹配时淘汰当前 Peer，未完成块可交给其他节点重试。只在校验通过后发送 have / block_done，上传端保留至多一个 block 供重传。
+每条数据消息是二进制：`Q2QP` 四字节魔数、版本 1（u8）、block_index（u64 大端）、piece_offset（u32 大端，block 内字节偏移、1024 对齐），随后为 1–1024 字节数据。无额外长度前缀。下载缺片时发送 piece_nack 的 offset/length 区间，首次等待 500 毫秒，之后间隔退避为 1、2、4 秒（上限）；新有效 piece 重置退避，重试次数不提前耗尽连接，20 秒无进展截止时间也约束重试发送；数据或证明不匹配时淘汰当前 Peer，未完成块可交给其他节点重试。只在校验通过后发送 have / block_done，上传端保留至多一个 block 供重传。
 
 ### 已实现的身份确认
 

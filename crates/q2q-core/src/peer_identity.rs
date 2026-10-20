@@ -9,7 +9,7 @@ use q2q_primitives::identity::verify_signature;
 use q2q_primitives::peer_auth::{Role, Transcript};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use webrtc::data_channel::{DataChannel, DataChannelEvent};
+use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelMessage};
 
 const VERSION: u32 = 1;
 const MAX_FRAME: usize = 512;
@@ -56,8 +56,9 @@ impl PeerIdentity<'_> {
     &self,
     rtc: &RtcConnection,
     channel: &dyn DataChannel,
+    early_hello: Option<[u8; 32]>,
   ) -> Result<(), ControlError> {
-    let result = tokio::time::timeout(TIMEOUT, self.exchange(rtc, channel))
+    let result = tokio::time::timeout(TIMEOUT, self.exchange(rtc, channel, early_hello))
       .await
       .map_err(|_| ControlError::Authentication("identity confirmation timed out".into()))
       .and_then(|result| result);
@@ -71,6 +72,7 @@ impl PeerIdentity<'_> {
     &self,
     rtc: &RtcConnection,
     channel: &dyn DataChannel,
+    early_hello: Option<[u8; 32]>,
   ) -> Result<(), ControlError> {
     if channel
       .label()
@@ -110,7 +112,10 @@ impl PeerIdentity<'_> {
       },
     )
     .await?;
-    let remote_nonce = receive(channel).await?.hello_nonce()?;
+    let remote_nonce = match early_hello {
+      Some(nonce) => nonce,
+      None => receive(channel).await?.hello_nonce()?,
+    };
     let (
       initiator_key,
       responder_key,
@@ -171,6 +176,15 @@ impl PeerIdentity<'_> {
     }
     Ok(())
   }
+}
+
+/// Validate and retain only the first challenge, never business data or a proof.
+/// This does not authenticate the peer: the signature exchange still follows.
+pub(crate) fn early_hello(message: &RTCDataChannelMessage) -> Result<[u8; 32], ControlError> {
+  if !message.is_string {
+    return Err(auth_error("identity frames must be text messages"));
+  }
+  parse(&message.data)?.hello_nonce()
 }
 
 async fn send(channel: &dyn DataChannel, frame: &Frame) -> Result<(), ControlError> {

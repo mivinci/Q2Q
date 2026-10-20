@@ -1,40 +1,59 @@
 import DefaultTheme from 'vitepress/theme';
 import './style.css';
 import { onMounted, watch, nextTick } from 'vue';
-import { useRoute } from 'vitepress';
+import { useRoute, useData } from 'vitepress';
+import { diagramConfig } from './mermaid-theme.js';
 
-// mermaid 只有在页面上真有图时才加载，避免给没有图的页面塞进一个大包
+// Load Mermaid only on pages with diagrams. Keep the source outside the DOM so
+// theme changes never try to parse a previously rendered SVG as Mermaid syntax.
 let mermaidPromise = null;
+const sources = new WeakMap();
+let queue = Promise.resolve();
+let revision = 0;
+let diagramId = 0;
 
-async function renderDiagrams() {
-  await nextTick();
+function renderDiagrams(dark) {
+  const requested = ++revision;
+  const theme = dark ? 'dark' : 'light';
+  // Mermaid's configuration is global. Serialize renders and skip obsolete work
+  // when a route or appearance change happens during its asynchronous import/render.
+  queue = queue.then(async () => {
+    await nextTick();
+    if (requested !== revision) return;
+    const nodes = [...document.querySelectorAll('.mermaid')]
+      .filter(el => el.dataset.theme !== theme);
+    if (!nodes.length) return;
 
-  // 只挑还没渲染过的。路由切换会再调一次本函数，
-  // 把已经变成 SVG 的元素再丢给 mermaid 会报 Parse error
-  const nodes = [...document.querySelectorAll('.mermaid')].filter(el => !el.dataset.processed);
-  if (!nodes.length) return;
+    const mermaid = await (mermaidPromise ??= import('mermaid').then(m => m.default));
+    if (requested !== revision) return;
+    mermaid.initialize(diagramConfig(dark));
 
-  const mermaid = await (mermaidPromise ??= import('mermaid').then(m => m.default));
-
-  mermaid.initialize({
-    startOnLoad: false,
-    securityLevel: 'loose',
-    theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default',
-  });
-
-  await mermaid.run({ nodes });
+    for (const node of nodes) {
+      if (requested !== revision) return;
+      if (!node.isConnected) continue;
+      if (!sources.has(node)) sources.set(node, node.textContent);
+      const { svg, bindFunctions } = await mermaid.render(`q2q-diagram-${++diagramId}`, sources.get(node));
+      if (requested !== revision) return;
+      if (!node.isConnected) continue;
+      node.innerHTML = svg;
+      node.dataset.processed = 'true';
+      node.dataset.theme = theme;
+      bindFunctions?.(node);
+    }
+  }).catch(error => console.error('Mermaid rendering failed:', error));
+  return queue;
 }
 
 export default {
   extends: DefaultTheme,
   setup() {
     const route = useRoute();
+    const { isDark } = useData();
 
-    onMounted(renderDiagrams);
-    watch(() => route.path, renderDiagrams);
+    onMounted(() => renderDiagrams(isDark.value));
+    watch([() => route.path, isDark], () => renderDiagrams(isDark.value));
 
-    // navbar 首帧拿不到 home / top，背景会先不透明再淡出（见 style.css）。
-    // DOM 更新完之后打个标记，让过渡从这一刻起恢复正常。
+    // Wait for initial navbar classes before restoring its transitions.
     onMounted(() => nextTick(() => document.documentElement.classList.add('ready')));
   },
 };

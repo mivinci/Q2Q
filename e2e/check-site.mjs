@@ -2,10 +2,11 @@
 // 构建产物自检：起一个静态服务器（VitePress 的 dist 用绝对路径引用资源，
 // 直接 file:// 打开会挂），然后用 playwright 打开文档页检查。
 //
-// 检查项：页面能开、侧边栏/目录齐全、mermaid 图真的渲染成了 SVG、控制台无报错。
+// 检查页面、侧边栏/目录、Mermaid 渲染与明暗切换、多行标签和窄屏缩放；
+// 最后覆盖客户端页面导航及连续主题切换，确认异步重绘不会覆盖新页面。
 
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { resolve, join, normalize, extname } from 'node:path';
 import { chromium } from 'playwright-core';
@@ -75,7 +76,7 @@ const noise = /favicon|apple-touch-icon/i;
 let failed = 0;
 
 for (const PAGE of PAGES) {
-  const page = await browser.newPage();
+  const page = await browser.newPage({ colorScheme: 'light' });
   const errors = [];
   const notFound = [];
 
@@ -98,7 +99,7 @@ for (const PAGE of PAGES) {
     .waitForFunction(
       () => {
         const blocks = document.querySelectorAll('.mermaid');
-        return blocks.length > 0 && [...blocks].every(el => el.querySelector('svg'));
+        return [...blocks].every(el => el.querySelector('svg'));
       },
       { timeout: 20000 },
     )
@@ -112,6 +113,68 @@ for (const PAGE of PAGES) {
     svgs: document.querySelectorAll('.mermaid svg').length,
   }));
 
+  const appearances = [];
+  if (got.blocks && got.svgs === got.blocks) {
+    let previousFill;
+    const labelsFit = await page.evaluate(() =>
+      [...document.querySelectorAll('.mermaid foreignObject')].every(el => {
+        const p = el.querySelector('p');
+        return !p || p.getBoundingClientRect().height <= el.getBoundingClientRect().height + 1;
+      }),
+    );
+    appearances.push(['多行标签完整显示', labelsFit, labelsFit]);
+    let previousSvg = await page.locator('.mermaid svg').first().getAttribute('id');
+    for (const theme of ['dark', 'light']) {
+      await page.emulateMedia({ colorScheme: theme });
+      let changed = true;
+      await page.waitForFunction(
+        ({ theme, previousSvg, count }) => {
+          const blocks = [...document.querySelectorAll('.mermaid')];
+          return blocks.length === count
+            && blocks.every(el => el.dataset.theme === theme && el.querySelector('svg'))
+            && blocks[0].querySelector('svg').id !== previousSvg;
+        },
+        { theme, previousSvg, count: got.blocks },
+        { timeout: 20000 },
+      ).catch(() => { changed = false; });
+      const svg = page.locator('.mermaid svg').first();
+      const currentSvg = await svg.getAttribute('id');
+      const fill = await page.evaluate(() => {
+        const shape = document.querySelector('.mermaid .node rect, .mermaid rect.actor');
+        return shape ? getComputedStyle(shape).fill : null;
+      });
+      appearances.push([`${theme} 主题重绘`, fill || '(无矩形节点)', changed]);
+      if (theme === 'light' && previousFill && fill) {
+        appearances.push(['节点配色随主题切换', `${previousFill} → ${fill}`, previousFill !== fill]);
+      }
+      previousFill = fill;
+      previousSvg = currentSvg;
+      if (process.env.MERMAID_SCREENSHOTS) {
+        await mkdir(process.env.MERMAID_SCREENSHOTS, { recursive: true });
+        const name = PAGE.replace(/[^a-zA-Z0-9-]/g, '-');
+        await page.locator('.mermaid').first().screenshot({
+          path: join(process.env.MERMAID_SCREENSHOTS, `${name}-${theme}.png`),
+        });
+      }
+    }
+  }
+
+  if (got.blocks && got.svgs === got.blocks) {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const contained = await page.evaluate(() =>
+      [...document.querySelectorAll('.mermaid')].every(el => {
+        const bounds = el.getBoundingClientRect();
+        const svg = el.querySelector('svg');
+        const graphic = svg.getBoundingClientRect();
+        return bounds.left >= 0 && bounds.right <= innerWidth + 1
+          && graphic.width > 0 && graphic.height > 0
+          && graphic.left >= bounds.left - 1 && graphic.right <= bounds.right + 1
+          && el.scrollWidth <= el.clientWidth + 1;
+      }),
+    );
+    appearances.push(['窄屏图形缩放且无横向溢出', contained, contained]);
+  }
+
   // 首页没有侧边栏，设计文档暂时没有入口也没有——只有指南各节要求它
   const wantsSidebar = /guide/.test(PAGE);
   const wantsAnchors = !NO_ANCHORS.includes(PAGE);
@@ -120,6 +183,7 @@ for (const PAGE of PAGES) {
     ...(wantsAnchors ? [['标题锚点', got.headings, got.headings > 0]] : []),
     ...(wantsSidebar ? [['侧边栏链接', got.sideLinks, got.sideLinks > 0]] : []),
     ['mermaid 渲染', `${got.svgs}/${got.blocks}`, got.svgs === got.blocks],
+    ...appearances,
     ['404 资源', notFound.length, notFound.length === 0],
     ['控制台错误', errors.length, errors.length === 0],
   ];
@@ -142,6 +206,40 @@ for (const PAGE of PAGES) {
 
   failed += bad;
   await page.close();
+}
+
+// Exercise in-app navigation while renders/theme changes can still be queued.
+const navigation = await browser.newPage({ colorScheme: 'light' });
+const navigationErrors = [];
+navigation.on('pageerror', error => navigationErrors.push(error.message));
+navigation.on('console', message => {
+  if (message.type() === 'error') navigationErrors.push(message.text());
+});
+try {
+  await navigation.goto(base + BASE + 'guide/deploy.html');
+  await navigation.waitForFunction(() => document.querySelector('.mermaid[data-theme="light"] svg'));
+  await navigation.emulateMedia({ colorScheme: 'dark' });
+  await navigation.locator(`.VPSidebar a[href="${BASE}guide/transport"]`).first().click();
+  await navigation.emulateMedia({ colorScheme: 'light' });
+  await navigation.emulateMedia({ colorScheme: 'dark' });
+  await navigation.waitForFunction(() => {
+    const blocks = [...document.querySelectorAll('.mermaid')];
+    return location.pathname.endsWith('/guide/transport') && blocks.length === 1
+      && blocks.every(el => el.dataset.theme === 'dark' && el.querySelector('svg .node'));
+  }, null, { timeout: 20000 });
+  await navigation.locator(`.VPSidebar a[href="${BASE}guide/deploy"]`).first().click();
+  await navigation.emulateMedia({ colorScheme: 'light' });
+  await navigation.waitForFunction(() => {
+    const blocks = [...document.querySelectorAll('.mermaid')];
+    return blocks.length === 2 && blocks.every(el => el.dataset.theme === 'light' && el.querySelector('svg'));
+  }, null, { timeout: 20000 });
+  if (navigationErrors.length) throw new Error(navigationErrors.join('\n'));
+  console.log('✓ 页面切换及连续主题切换后图形正确，无控制台错误');
+} catch (error) {
+  failed++;
+  console.log(`✗ 页面/主题切换回归: ${error.message}`);
+} finally {
+  await navigation.close();
 }
 
 await browser.close();

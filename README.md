@@ -63,35 +63,46 @@ and usage guides.
 
 ### Use the command-line client
 
-Versioned releases will include prebuilt CLI archives for Linux x86_64 (glibc
-2.35+), macOS Intel and Apple silicon, and Windows x86_64 on
-[GitHub Releases](https://github.com/mivinci/Q2Q/releases/latest). Unpack the
-matching archive and place `q2q` (or `q2q.exe`) on your `PATH`. To build from source:
+Download a prebuilt archive for Linux x86_64 (glibc 2.35+), macOS Intel / Apple
+silicon, or Windows x86_64 from
+[GitHub Releases](https://github.com/mivinci/Q2Q/releases/latest), then put `q2q`
+on your `PATH`. To install from source, run this from the repository root:
 
 ```sh
 cargo install --path crates/q2q --locked
 ```
 
-Publish a file and create its seed, then give the seed to a downloader:
+On the publisher's device, publish the file and keep the process running:
 
 ```sh
-q2q publish ./model.bin
-q2q download ./model.bin.q2q
-# Or generate a Q2Q magnet URL for recipients:
-q2q magnet ./model.bin.q2q
+q2q publish ./video.mp4
 ```
 
-To build a seed without publishing, run `q2q seed ./model.bin`. Later, use
-`q2q publish ./model.bin.q2q` to serve the matching file beside that seed, or pass
-`--file PATH` to select its local source. Existing seed inputs are never rewritten.
+Send the generated `video.mp4.q2q` seed to the recipient, who downloads it with:
 
-Publishing writes `./model.bin.q2q` by default; pass `--seed PATH` to choose a custom seed path.
-Downloading uses the seed's safe `info.name` by default; pass `--output PATH` to choose another destination.
-If a download is interrupted, keep the destination and `Q2Q_HOME` directory and run the same command again; a valid checkpoint is detected and resumed automatically.
+```sh
+q2q download ./video.mp4.q2q
+```
 
-The publisher must remain online while serving peers. Use a separate
-`Q2Q_HOME` for each simultaneous client. See the [CLI guide](https://docs.q2q.app/guide/cli)
-for configuration, transfer progress and resume behavior.
+To share a magnet link, run `q2q magnet ./video.mp4.q2q` in another terminal.
+With the official Track, a link needs only its content hash, for example:
+
+```sh
+q2q download 'magnet:?xt=urn:sha256:5caa06b9354427d3c06b3223cd17e2b2da205d12ee0865e78874e37f4d869074'
+```
+
+To prepare a seed offline and publish it later:
+
+```sh
+q2q seed ./video.mp4
+q2q publish ./video.mp4.q2q
+```
+
+Downloads default to the current directory; use `--output PATH` to choose a
+destination. Keep the partial file and Q2Q state directory after an interruption,
+then run the same download command to resume. The official Track is the default.
+See the [CLI guide](https://docs.q2q.app/guide/cli) for seed-only usage, existing
+seeds, `Q2Q_HOME`, custom Tracks, and diagnostics.
 
 ## Develop
 

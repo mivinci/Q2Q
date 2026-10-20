@@ -1,250 +1,221 @@
 # Command-line client
 
-`q2q` builds the `q2q` executable. It uses the Rust SDK to publish, download,
-and resume files; Track and Punch are operated separately. See [Deploy](./deploy.md)
-for network setup.
+Use `q2q` to publish local files or download them through magnet links and `.q2q` seeds. The default discovery service is `https://track.q2q.app`, so everyday use needs no server configuration.
 
 ## Install
 
-Versioned releases will include prebuilt archives for Linux x86_64 (glibc 2.35+),
-macOS Intel and Apple silicon, and Windows x86_64 on
-[GitHub Releases](https://github.com/mivinci/Q2Q/releases/latest). Download the
-matching archive, unpack it, and place `q2q` (or `q2q.exe`) on your `PATH`.
+Download the archive for your system from [GitHub Releases](https://github.com/mivinci/Q2Q/releases/latest), unpack it, and place `q2q` (`q2q.exe` on Windows) on your `PATH`. Builds are available for Linux x86_64 (glibc 2.35+), macOS Intel / Apple silicon, and Windows x86_64.
 
-To build from source, run this from the repository root:
+To install from source, run this from the repository root:
 
 ```sh
 cargo install --path crates/q2q --locked
 q2q --help
 ```
 
-## Connection diagnostics
+## Command reference
+
+| Task | Command | What happens |
+| --- | --- | --- |
+| Download a file | `q2q download <magnet-or-seed>` | Downloads and verifies the file, then exits |
+| Publish and serve a file | `q2q publish <file-or-seed>` | Keeps running to serve recipients |
+| Build a seed only | `q2q seed <file>` | Writes a local `.q2q` seed, then exits |
+| Get a magnet link | `q2q magnet <seed>` | Prints one link locally, then exits |
+
+Add `--help` to any command for its options, for example `q2q seed --help`.
+
+## Download a file
+
+Download a magnet link directly. The shortest format needs only the content hash; use the actual link supplied by the publisher:
 
 ```sh
-q2q --verbose publish ./file.bin.q2q
-q2q --verbose download ./file.bin.q2q
+q2q download 'magnet:?xt=urn:sha256:5caa06b9354427d3c06b3223cd17e2b2da205d12ee0865e78874e37f4d869074'
 ```
 
-The global `--verbose` flag writes diagnostics to stderr: TURN enablement, server
-endpoint and credential validity, ICE candidate gathering and exchange
-(host/srflx/relay, protocol and address), WebRTC connection states, channel opening,
-and handshake failures. Negotiation timeouts include connection and channel readiness.
-Correlate logs using peer and connection IDs. Logs contain public/private network
-addresses; review them before sharing. TURN passwords/usernames, signalling tickets
-and full SDP are excluded. A relay candidate does not prove the selected path uses
-TURN. Once channels open, `Selected ICE path at channel establishment` reports
-`path="turn"` if either selected candidate is relay, otherwise `path="direct"`,
-with both candidate types, protocols, addresses and ports. This is an establishment
-snapshot, not continuous path monitoring. Unavailable/failed lookups are reported
-without interrupting the transfer or guessing a direct path. TURN traffic statistics
-are not reported. Diagnostics suspend the shared progress renderer while writing,
-so live progress does not overwrite log lines.
-Diagnostics are off by default. `--quiet --verbose` hides progress while retaining
-diagnostics; stdout result formatting is unchanged.
-
-## Build a seed offline
+For a `.q2q` seed, pass the file as input:
 
 ```sh
-q2q seed ./file.bin
-q2q seed ./file.bin --output ./share.q2q
+q2q download ./video.mp4.q2q
 ```
 
-This hashes the local file and writes a binary `.q2q` seed, then exits. It creates
-no identity/state directory and contacts no Track or Punch. The default output is
-`<FILE>.q2q`; existing outputs are never overwritten. `--track` / `Q2Q_TRACK_URL`
-sets a discovery hint in the seed; otherwise the official default is written.
-Writing that hint does not publish the file. Progress goes to stderr and the
-successful seed path to stdout; `--quiet` suppresses progress.
-
-## Publish
+Downloads go to the **current directory**, preferring the filename from the seed or verified metadata. Use `--output` (or `-o`) to select an exact destination path. Its parent directory must already exist:
 
 ```sh
-q2q publish ./model.bin
-# Defaults to ./model.bin.q2q; pass --seed for a custom path:
-q2q publish ./model.bin --seed ./model.q2q
+q2q download ./video.mp4.q2q --output ./downloads/video.mp4
 ```
 
-Without `--seed`, the seed path is the source filename with `.q2q` appended, such as
-`./model.bin.q2q`. Use `--seed` to choose a custom path. The source is prepared and
-announced before the seed is exported. The seed output must not already exist;
-publication stops and withdraws if export fails. Its parent
-directory must exist. Send the `.q2q` seed to recipients and keep the publisher
-running. The seed is a binary Q2Q document, not JSON or a magnet URL.
-The seed publicly exposes the Track URL used by the publisher, which is also
-the downloader's default. To avoid distributing credentials, publishing refuses
-Track URLs that contain a username, password, query parameters or a fragment.
+### Continue an interrupted download
 
-Ctrl-C stops serving and waits for cleanup and withdrawal. Unix SIGTERM follows
-the same path. If a signal arrives during initialization (such as hashing or
-connecting), the CLI reports source hashing progress, finishes initialization,
-then closes the acquired handle. Further signals are ignored while it finishes
-initialization and cleanup.
-A failed withdrawal is reported; a remote holding may remain until its TTL expires.
-A crash or forced kill cannot guarantee withdrawal.
+Keep the partial file and Q2Q state directory, then run the same command again. The CLI detects the checkpoint, revalidates existing blocks, and resumes automatically:
+
+```sh
+q2q download ./video.mp4.q2q --output ./downloads/video.mp4
+```
+
+Magnet downloads also resume automatically. Use `--resume` when you explicitly require an existing checkpoint.
+
+If a destination exists without a valid checkpoint, the CLI reports an error and preserves the file; choose another output path. Success means all content has been verified and synchronized to disk. Downloads exit on completion; run `publish` to keep sharing the file.
+
+## Publish a file
+
+On the device that holds the original file, run:
+
+```sh
+q2q publish ./video.mp4
+```
+
+This creates `./video.mp4.q2q` by default and keeps running after publication succeeds. Send the seed to recipients and **keep the publisher process running**. Press Ctrl-C to stop sharing. Unix SIGTERM also triggers cleanup and withdrawal.
+
+Use `--seed` to choose a different seed path. The output must not already exist:
+
+```sh
+q2q publish ./video.mp4 --seed ./share.q2q
+```
+
+### Share a magnet link
+
+Once published, generate a magnet link from the seed in another terminal:
+
+```sh
+q2q magnet ./video.mp4.q2q
+```
+
+Send the complete output line to recipients. With the official Track, the link can use the minimal `xt`-only format shown above. Generated links may also contain a filename hint (`dn`) and Track hints (`tr`). A magnet carries a content reference; recipients still need to discover an online source.
+
+`magnet` reads the local seed and prints a link. The running `publish` process serves the file bytes.
+
+## Build a seed only
+
+Use `seed` to prepare a seed now and publish it later:
+
+```sh
+q2q seed ./video.mp4
+```
+
+This reads and hashes the local file, writes `./video.mp4.q2q`, then exits. It works offline, makes no announcement, and creates no identity or state directory. Choose a different seed path with `--output`:
+
+```sh
+q2q seed ./video.mp4 --output ./share.q2q
+```
+
+The output must not already exist. Both `seed` and `publish` produce binary `.q2q` seeds. After a seed-only operation, recipients need a publisher to come online before they can fetch its file.
 
 ### Publish an existing seed
 
-```sh
-q2q publish ./file.bin.q2q
-q2q publish ./share.q2q --file ./renamed-file.bin
-q2q publish ./share.q2q --file ./renamed-file.bin --seed ./export.q2q
-```
-
-A `.q2q` input (case-insensitive extension), or an input accompanied by `--file`,
-is an existing seed. By default the source is the safe `info.name` beside the seed;
-`--file` selects a source relative to the current working directory. Missing/unsafe
-names require `--file`. The entire local file is checked against its length, block
-size and Merkle root before announcing. Renamed files, custom block sizes and
-unknown info fields preserve the original content identity.
-
-The input seed is never rewritten. Without `--seed`, stdout prints its path; an
-explicit `--seed` exports a new file and refuses existing destinations. Track
-selection is explicit parameter/environment, the first usable seed Track, then
-the official default. The in-memory/exported seed includes the selected Track;
-share that new export when recipients need an overridden Track hint. For raw content
-named `*.q2q`, first run `q2q seed`, then publish the resulting seed. Keep the
-publisher running to serve file bytes.
-
-## Magnet links
-
-Create a Q2Q magnet URL locally from an existing seed:
+If the original file is still beside the seed under its original name:
 
 ```sh
-q2q magnet ./model.bin.q2q
-q2q download 'magnet:?xt=urn:sha256:<64-hex-info-hash>&tr=<percent-encoded-Track-URL>'
+q2q publish ./video.mp4.q2q
 ```
 
-A magnet `tr` may be a bare host such as `track.q2q.app`; omitted schemes default
-to HTTPS. Explicit `https://` and `http://` remain supported. Generated links omit
-the HTTPS scheme but retain HTTP. Values are percent-encoded once and decoded once;
-invalid or non-HTTP(S) hints are ignored. Examples: `tr=track.q2q.app` and
-`tr=http%3A%2F%2Flocalhost%3A8080`.
-
-
-Quote links in the shell because `&` separates commands. The format uses Q2Q info
-hashes, not BitTorrent `btih`/`btmh`. `magnet` prints one URL to stdout without
-creating an identity or connecting to a service; `publish` still prints the seed path.
-
-Downloads try the explicit `--track` / `Q2Q_TRACK_URL`, valid `tr` hints, then the
-official Track, deduplicating URLs. With no `tr`, the default official Track still
-works when it knows an online metadata source. Metadata discovery has a 60-second
-budget across CLI Track attempts. The CLI authenticates a Peer, verifies its info
-against `xt`, and only then opens the output. `dn` is a display hint and never
-chooses the output path. A safe verified `info.name` is used in the current directory;
-otherwise the full info hash becomes the filename. `--output` overrides it.
-
-Verified metadata is cached under `<Q2Q_HOME>/metadata/<info-hash>.q2q` and checked
-again when read. Keep this cache with the destination and checkpoints for automatic
-resume. A complete download can finish revalidation offline without opening an
-identity or Track session. Metadata discovery can be interrupted immediately;
-`--quiet` suppresses its spinner and progress messages.
-
-The initial implementation fetches info from online complete or partial Peers.
-Track stores no metadata. CDN URLs and leaf/proof lists are seed-envelope fields,
-so magnets do not recover CDN fallback: a CDN-only file with no online Peer still
-requires its `.q2q` seed. Raw info is limited to 8 KiB, links to 16 KiB; noncanonical,
-wrong-hash and unsupported metadata are rejected before any destination is created.
-
-## Download and resume
-
-The CLI stores identity and checkpoints in the platform user state directory by
-default. Set `Q2Q_HOME` to choose another root:
+If it has moved or been renamed, select it with `--file`:
 
 ```sh
-Q2Q_HOME=./receiver-state q2q download ./model.q2q
-
-# After an interruption, retain the destination and receiver-state directory,
-# then run the same command again to resume automatically.
-Q2Q_HOME=./receiver-state q2q download ./model.q2q
+q2q publish ./share.q2q --file ./archive/renamed.mp4
 ```
 
-The CLI prefers the seed's `info.name` as a filename in the current directory. If it
-is missing or unsafe, the CLI derives a name from the seed filename without its
-extension. Safe names must be a single filename, without path separators, control
-characters or platform-reserved characters. Pass `--output` to choose an exact
-destination path; its parent directory must exist. When the destination and a
-valid checkpoint both exist, the CLI revalidates and resumes automatically. An
-existing destination without a valid checkpoint is still an error and is never
-overwritten. `--resume` explicitly requires checkpoint-based recovery. Checkpoints are stored under
-`Q2Q_HOME/checkpoints`, keyed by the normalized destination path. A legacy adjacent
-`.q2q.resume` file is migrated on the first resume. Success means every block has
-been verified and the destination synchronized. Downloading does not automatically
-share blocks or continue seeding after completion.
+The CLI checks that the local file matches the seed and preserves its content identity. The input seed is reused without being rewritten. To export a copy carrying a new Track hint, add `--seed ./export.q2q`.
 
-The preferred Track URL comes from `--track`, then `Q2Q_TRACK_URL`, then the
-seed's first Track, and finally `https://track.q2q.app`. For a download, the CLI
-tries that preferred URL first, then each valid Track URL from the seed in order,
-and the official URL as a final fallback; duplicate URLs are skipped. It moves
-to the next candidate when session setup fails or the initial peer query fails
-or returns no peers. Once a Track returns peers, the transfer stays with that Track;
-subsequent peer retries and CDN fallback remain within the SDK. A complete
-checkpoint resume is verified locally before Track configuration or identity
-initialization; Track is selected only if data still needs downloading.
-CDN fallback follows the SDK's seed metadata and verification rules.
+A seed with no usable filename also requires `--file`. For raw content whose filename ends in `.q2q`, first create a seed with `seed`, then publish that generated seed.
 
-## Configuration and output
+## Configuration
 
-| Option | Environment / default |
+### State directory and output location
+
+`Q2Q_HOME` holds the identity, checkpoints, and magnet metadata cache. Downloaded files still default to the current directory. The installation method does not change these locations.
+
+| System | Default `Q2Q_HOME` |
 | --- | --- |
-| `--track` | `Q2Q_TRACK_URL`; downloading may use the seed's first Track; defaults to `https://track.q2q.app` |
-| `--insecure` | Off by default; skip Track/CDN HTTPS certificate and hostname verification for debugging only |
-| `Q2Q_HOME` | Platform user state directory; root for Q2Q identity and local state |
-| `--identity` | `Q2Q_IDENTITY_FILE`; `<Q2Q_HOME>/identity` |
-| `--download-peers` | 4; accepts 1–16 |
-| `--upload-peers` | 4; accepts 1–16 |
-| `--upload-rate` | Unset means unlimited; positive encoded piece bytes/second |
-| `--quiet` | Suppress periodic progress and informational messages |
+| Linux / other Unix | `$XDG_STATE_HOME/q2q`, or `~/.local/state/q2q` when unset |
+| macOS | `~/Library/Application Support/Q2Q` |
+| Windows | `%LOCALAPPDATA%\Q2Q` |
 
-For temporary debugging with self-signed HTTPS or proxy certificates, use
-`q2q --insecure publish ./model.bin` or `q2q --insecure download ./model.bin.q2q`.
-It applies to this invocation's Track, CDN content and proof metadata HTTPS
-requests, which no longer authenticate the server through its certificate.
-Punch key pinning, Peer authentication and Seed/Merkle content verification
-still apply. Omit the flag during normal use.
+On Linux / macOS, choose a state directory for one invocation:
 
-Options may appear before or after the subcommand. Explicit options override
-environment variables. The state directory and persistent private identity are
-created as needed. Defaults are `$XDG_STATE_HOME/q2q` (or `~/.local/state/q2q`)
-on Linux/other Unix, `~/Library/Application Support/Q2Q` on macOS, and
-`%LOCALAPPDATA%\Q2Q` on Windows. The CLI locks its identity while running. Give
-simultaneous clients separate `Q2Q_HOME` or `Q2Q_IDENTITY_FILE` values. Existing
-development data in `./.q2q` is not moved automatically; set `Q2Q_HOME=./.q2q`
-to keep using that identity.
+```sh
+Q2Q_HOME=./receiver-state q2q download ./video.mp4.q2q --output ./video.mp4
+```
 
-Successful seed or downloaded-file paths go to stdout, one line per command.
-Progress and errors go to stderr, including in redirected/noninteractive sessions.
-Publishing prints the seed path once export succeeds and continues running;
-it does not mean a recipient has completed a download.
+In Windows PowerShell, set `$env:Q2Q_HOME = '.\receiver-state'` before running the command.
 
-Interactive terminals display a download progress bar with percentage, verified
-bytes, speed, ETA, active Peer count and HTTP request count. Publication displays
-a live summary and one row per upload connection: shortened Peer ID, connection
-state, sent bytes, rate and retransmitted bytes. Ended connection rows are removed.
-The local Peer ID is printed at startup. Download connections also have live
-rows: shortened Peer ID, state, received payload, per-attempt receive rate and
-verified/persisted bytes. Reconnections receive new attempt IDs and rate baselines.
-A Connecting row identifies a candidate; its identity is confirmed when the
-connection authenticates. Ended attempts disappear rather than forming a history.
-Receive rate includes accepted matching duplicate pieces, excludes piece headers,
-control traffic and discarded old blocks, and can exceed verified-byte rate.
-CDN and resumed data are not attributed to a Peer. See [download observation](./transport#download-peer-observation).
+Identity and state directories are created as needed. For simultaneous clients on one device, use separate `Q2Q_HOME` values or select separate identity files with `--identity`. Resume using the original state directory and destination path.
 
-Redirected stderr and `TERM=dumb` use plain line logs without terminal control
-codes. `--quiet` disables both the live display and progress logs.
+<details>
+<summary>State files and default download names</summary>
 
-Progress is sampled once per second. Download speed counts newly verified,
-persisted bytes, excluding resumed bytes. Upload speed counts encoded piece bytes
-accepted by the SDK, including retransmits. Neither is a network-interface byte
-counter. The CLI seed input is limited to 8 MiB.
+- The default identity is `<Q2Q_HOME>/identity`; checkpoints live in `<Q2Q_HOME>/checkpoints`, and magnet metadata in `<Q2Q_HOME>/metadata`. Keep the whole directory to retain resume state.
+- A seed with a missing or unsafe content name falls back to the seed filename. A magnet with a missing or unsafe verified name uses the full content hash. `--output` overrides either default.
+- A complete checkpoint can be revalidated offline. Magnets also need their verified metadata cache. Legacy adjacent `.q2q.resume` checkpoints are migrated on resume.
+- Existing development data in `./.q2q` is not moved automatically; set `Q2Q_HOME=./.q2q` to reuse it.
 
-Exit codes: **0** successful completion, **1** runtime/configuration/cleanup error,
-**2** command-line parsing error, **130** a handled interrupt (including Unix
-SIGTERM). Help and version exit successfully. If cleanup fails after an interrupt,
-the command reports the error and exits with 1.
+</details>
 
-This first version has no daemon mode, GUI, browser receiver, account service,
-or automatic background seeding.
+### Common options
 
-## Maintainer releases
+Global options may appear before or after the subcommand. Explicit options override their environment variables.
 
-See [version preparation, approval, publishing and CI impact gating](./cli-release.md).
+| Option | Purpose and default |
+| --- | --- |
+| `--track URL` | Preferred Track; also accepts `Q2Q_TRACK_URL`, defaults to the official service |
+| `--identity PATH` | Identity file; also accepts `Q2Q_IDENTITY_FILE` |
+| `--download-peers N` | Maximum concurrent download peers or CDN requests; default 4, range 1–16 |
+| `--upload-peers N` | Maximum admitted upload connections; default 4, range 1–16 |
+| `--upload-rate N` | Total upload limit in bytes/second; a positive integer, unlimited by default |
+| `--quiet` | Hide progress and informational messages, retaining results and errors |
+| `--verbose` | Show connection and transfer-stage diagnostics |
+| `--insecure` | Skip Track/CDN HTTPS certificate and hostname checks for debugging; off by default |
+
+For `seed`, `--output` selects the seed path; for `download`, it selects the downloaded file. `publish` uses `--seed` for seed export.
+
+### Custom Tracks and magnet hints
+
+```sh
+q2q --track https://track.example.com publish ./video.mp4
+```
+
+`seed` can also use `--track` to write a discovery hint for later publication and downloading. The publisher's Track address is included in the shared seed, so it must not contain a username, password, query parameters, or a fragment.
+
+A magnet's `tr` can supply a custom discovery address. Omitted schemes default to HTTPS; explicit HTTP and HTTPS are supported. Values are percent-encoded once using URL query rules. For example, use `tr=track.example.com` for HTTPS, or `tr=http%3A%2F%2Flocalhost%3A8080` for local HTTP. Generated links omit the HTTPS scheme.
+
+An `xt`-only link uses the official Track to find sources. On a custom network, keep its `tr` hint or have the recipient pass `--track`. `dn` is an optional name hint; output filenames come from verified content information. Always quote the complete link so the shell does not interpret `&` as a command separator.
+
+<details>
+<summary>Track selection and magnet support</summary>
+
+Downloads first try explicit `--track` / `Q2Q_TRACK_URL`, then valid seed Tracks or magnet `tr` hints, then the official URL, skipping duplicates. They move on when session setup or the initial query fails, or no usable peers are found. Once a Track yields peers, subsequent retries are handled by the SDK.
+
+Publishing an existing seed chooses explicit configuration, the first usable seed Track, then the official URL. After overriding the address, use `--seed` to export a copy if recipients need the new hint.
+
+Q2Q magnets use `urn:sha256` content identities, do not accept BitTorrent `btih` / `btmh`, and fetch verified metadata from online complete or partial peers. A CDN-only source with no online peer requires a `.q2q` seed because magnets do not carry the seed envelope's CDN and proof URLs. CLI magnet metadata discovery has a 60-second budget. Seed input is limited to 8 MiB, links to 16 KiB, and raw info to 8 KiB. See [Wire encoding](./wire.md) for protocol details.
+
+</details>
+
+## Progress and output
+
+Successful results go to stdout: `seed`, `publish`, and `download` print one file path; `magnet` prints one link. Progress, informational messages, and errors go to stderr, so scripts can capture results independently.
+
+Interactive terminals show transfer progress, rates, and per-peer state. Redirected stderr or `TERM=dumb` uses plain text. Download summary speed counts newly verified and persisted bytes; per-peer receive rates include valid duplicate pieces. Upload speed counts encoded piece bytes handed to WebRTC, including retransmissions. These figures differ from network-interface traffic. A publisher printing its seed path means it has started serving the file.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | Successful completion |
+| 1 | Runtime, configuration, or cleanup error |
+| 2 | Command-line argument error |
+| 130 | Handled interruption, including Unix SIGTERM |
+
+## Troubleshoot a connection
+
+Enable `--verbose` on both devices and keep the full logs from the same test:
+
+```sh
+q2q --verbose publish ./video.mp4.q2q
+q2q --verbose download ./video.mp4.q2q
+```
+
+Correlate records using Peer and connection IDs. Logs cover negotiation, identity verification, bitfields, block requests, retries, and failure stages. See [Connection diagnostics](./transport#connection-diagnostics) for the fields.
+
+At connection establishment, `Selected ICE path at channel establishment` reports the selected route: `path="turn"` uses a TURN relay, and `path="direct"` uses a direct path. This is a snapshot; a relay candidate alone does not confirm the selected route. Logs omit TURN credentials but include network addresses.
+
+Use `--quiet --verbose` to retain diagnostics and errors while hiding progress. For temporary debugging with self-signed HTTPS or proxy certificates, add `--insecure`. It applies only to that invocation; Peer authentication and content verification still run.
+
+See [Deploy](./deploy.md) for service setup and [CLI releases](./cli-release.md) for the maintainer's release process.

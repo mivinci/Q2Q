@@ -82,7 +82,7 @@ piece_offset is a byte offset within the block, aligned to 1024, not a piece ord
 
 ## Retries and session completion
 
-Block reception has a 20-second progress deadline, reset only by a new valid piece or an `upload_wait` hint for the current block. After 500 milliseconds without a new valid piece, the receiver checks for missing data, up to three retry rounds between pieces. A valid new piece resets the retry count. It sends request_proof for a missing proof and piece_nack for missing data. Each nack has at most 64 paired ranges with equal array lengths; ranges must be ordered, non-overlapping, aligned and within the block. Reliable proofs and unreliable pieces may arrive in either order.
+Block reception has a 20-second progress deadline, reset only by a new valid piece or an `upload_wait` hint for the current block. After 500 milliseconds without a new valid piece, the receiver checks for missing data. Subsequent checks back off to intervals of 1, 2 and then at most 4 seconds; a new valid piece resets the backoff. Retry counts do not end the wait early. The progress deadline bounds both the wait and sends of repair control messages. It sends request_proof for a missing proof and piece_nack for missing data. Each nack has at most 64 paired ranges with equal array lengths; ranges must be ordered, non-overlapping, aligned and within the block. Reliable proofs and unreliable pieces may arrive in either order.
 
 The uploader buffers one block until BlockDone. After completing all required blocks, the receiver sends `cancel { block_index: 0, count: 0 }`. The uploader echoes it, the receiver waits for the echo before closing, and the uploader waits for closure. This also ends sessions serving only a subset of missing blocks.
 

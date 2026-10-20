@@ -19,3 +19,5 @@ Q2Q_TEST_TRACK_URL=http://127.0.0.1:8080 \
 SIGINT/SIGTERM 退出码、撤销宣告及完整离线恢复；种子含 CDN 且首选 Track
 不可达时仍能切换到种子 Track，中断后不加 `--resume` 自动恢复。进程由 guard 清理；
 Track/Punch 由启动它们的操作者负责关闭。临时文件在用例结束时删除。
+
+`local::verbose_transfer_reports_stages_without_polluting_stdout` 检查真实发布/下载两端的连接、身份、位图、块和结束日志，并确认 stdout 只保留路径。普通输出及 quiet 的联机用例另行断言诊断不会泄漏到默认输出。

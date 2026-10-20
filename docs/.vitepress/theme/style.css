@@ -1,20 +1,23 @@
-/* 图用 <pre> 承载（为了保住换行，见 mermaid.mjs），
-   所以要清掉 VitePress 给代码块加的背景、边框和内边距。 */
+/* Keep diagrams on the page surface. Preserve source newlines until rendering. */
 .mermaid {
   background: transparent;
   border: 0;
+  border-radius: 0;
+  box-shadow: none;
   padding: 0;
-  margin: 24px 0;
-  overflow-x: auto;
+  margin: 28px 0;
   text-align: center;
+  line-height: normal;
 }
 
 .mermaid svg {
+  display: block;
+  margin-inline: auto;
   max-width: 100%;
   height: auto;
 }
 
-/* 渲染完成前的那一瞬不显示源码文本 */
+/* Hide the source while retaining the previous SVG during a theme re-render. */
 .mermaid:not([data-processed]) {
   color: transparent;
 }

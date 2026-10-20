@@ -68,7 +68,8 @@ impl PeerSession {
   ) -> Result<(Vec<u8>, Proof), TransferError> {
     let mut assembly = Assembly::new(length);
     let mut proof = None;
-    let mut retries = 0;
+    let mut retries = 0u32;
+    let mut last_progress = tokio::time::Instant::now();
     let mut pacing_until = tokio::time::Instant::now();
     let idle = tokio::time::sleep(RETRY_DELAY);
     tokio::pin!(idle);
@@ -76,14 +77,21 @@ impl PeerSession {
     tokio::pin!(deadline);
     loop {
       tokio::select! {
-        _ = &mut deadline => return Err(TransferError::Timeout),
+        _ = &mut deadline => {
+          tracing::debug!(block_index = index, received_pieces = assembly.received, missing_pieces = assembly.present.len() - assembly.received, proof_received = proof.is_some(), retries, idle_ms = last_progress.elapsed().as_millis() as u64, stage = "block_receive", "Peer transfer timed out");
+          return Err(TransferError::Timeout);
+        },
         control = receive(&*self.control) => match control? {
-          Control::Proof { block_index, count: 1, proof: received } if block_index == index as u64 => proof = Some(received),
+          Control::Proof { block_index, count: 1, proof: received } if block_index == index as u64 => {
+            if proof.is_none() { tracing::debug!(block_index = index, "Block proof received"); }
+            proof = Some(received);
+          },
           Control::Proof { block_index, .. } if completed.contains(&block_index) => {},
           Control::Reject { retry_after, .. } => return Err(TransferError::Rejected(retry_after)),
           Control::UploadWait { block_index, retry_after } if block_index == index as u64 => {
             let now = tokio::time::Instant::now();
             let waiting = Duration::from_millis(u64::from(retry_after));
+            tracing::debug!(block_index = index, retry_after_ms = retry_after, "Uploader deferred block retries");
             pacing_until = now + waiting;
             idle.as_mut().reset(pacing_until.max(now + RETRY_DELAY));
             deadline.as_mut().reset(now + waiting.max(BLOCK_DEADLINE));
@@ -101,8 +109,10 @@ impl PeerSession {
             let fresh = assembly.insert(piece.piece_offset, piece.data)?;
             if let Some(observation) = observation { observation.received(piece.data.len()); }
             if fresh {
+              if assembly.received == 1 { tracing::debug!(block_index = index, "First block piece received"); }
               retries = 0;
               let now = tokio::time::Instant::now();
+              last_progress = now;
               idle.as_mut().reset(pacing_until.max(now + RETRY_DELAY));
               deadline.as_mut().reset(now + BLOCK_DEADLINE);
             }
@@ -111,22 +121,36 @@ impl PeerSession {
           _ => {},
         },
         _ = &mut idle => {
-          if retries == 3 { return Err(TransferError::Timeout); }
-          retries += 1;
-          if proof.is_none() { send(&*self.control, Control::RequestProof { block_index: index as u64, count: 1 }).await?; }
-          for ranges in assembly.missing().chunks(64) {
-            send(&*self.control, Control::PieceNack {
-              block_index: index as u64,
-              piece_offset: ranges.iter().map(|(offset, _)| *offset).collect(),
-              length: ranges.iter().map(|(_, length)| *length).collect(),
-            }).await?;
-          }
-          idle.as_mut().reset(tokio::time::Instant::now() + RETRY_DELAY);
+          retries = retries.saturating_add(1);
+          tracing::debug!(block_index = index, retries, missing_pieces = assembly.present.len() - assembly.received, proof_received = proof.is_some(), "Requesting missing block data");
+          // Retries pace repair traffic; only the no-progress deadline ends the
+          // block. Three fixed 500 ms retries prematurely killed slow TURN paths.
+          tokio::time::timeout_at(deadline.deadline(), async {
+            if proof.is_none() { send(&*self.control, Control::RequestProof { block_index: index as u64, count: 1 }).await?; }
+            for ranges in assembly.missing().chunks(64) {
+              send(&*self.control, Control::PieceNack {
+                block_index: index as u64,
+                piece_offset: ranges.iter().map(|(offset, _)| *offset).collect(),
+                length: ranges.iter().map(|(_, length)| *length).collect(),
+              }).await?;
+            }
+            Ok::<(), TransferError>(())
+          }).await.map_err(|_| {
+            tracing::debug!(block_index = index, stage = "block_retry_send", "Peer transfer timed out");
+            TransferError::Timeout
+          })??;
+          let backoff = RETRY_DELAY * (1 << retries.min(3));
+          idle.as_mut().reset(tokio::time::Instant::now() + backoff);
         },
       }
       if assembly.complete()
         && let Some(proof) = proof.take()
       {
+        tracing::debug!(
+          block_index = index,
+          bytes = assembly.bytes.len(),
+          "Block received; awaiting verification"
+        );
         return Ok((assembly.bytes, proof));
       }
     }
@@ -262,6 +286,7 @@ pub(crate) struct PeerDownload {
   observation: Option<Arc<crate::download_progress::Connection>>,
 }
 impl PeerSession {
+  #[tracing::instrument(skip_all, fields(connection_id = %self.connection_id(), peer_id = %self.peer_id().as_str()))]
   pub(crate) async fn begin_download(
     self,
     seed: &Seed,
@@ -271,6 +296,7 @@ impl PeerSession {
       return Err(protocol("seed belongs to another session"));
     }
     let count = seed.info.leaf_count();
+    tracing::debug!(stage = "bitfield_send", "Sending download availability");
     send(
       &*self.control,
       Control::Bitfield {
@@ -278,7 +304,14 @@ impl PeerSession {
       },
     )
     .await?;
-    let available = receive_bitfield(&*self.control, count).await?;
+    tracing::debug!(
+      stage = "bitfield_receive",
+      "Waiting for upload availability"
+    );
+    let available = receive_bitfield(&*self.control, count).await.inspect_err(|error| {
+      tracing::debug!(%error, stage = "bitfield_receive", "Download protocol initialization failed");
+    })?;
+    tracing::debug!("Upload availability received");
     Ok(PeerDownload {
       session: self,
       completed: HashSet::new(),
@@ -329,6 +362,12 @@ impl PeerDownload {
     index: usize,
     length: usize,
   ) -> Result<(Vec<u8>, Proof), TransferError> {
+    tracing::debug!(
+      block_index = index,
+      bytes = length,
+      stage = "block_request",
+      "Requesting block"
+    );
     send(
       &*self.session.control,
       Control::Request {

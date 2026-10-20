@@ -27,6 +27,9 @@ flowchart TB
     Commit --> Disk["验证 → 写入 → 磁盘复核<br/>→ 数据同步 → 检查点同步"]
     Disk -->|"成功后完成租约"| Done
     Done --> N["更新进度、唤醒读取"]
+
+    class D,Policy,Commit,Done core
+    class C,N support
 ```
 
 - **策略**不执行网络 I/O，负责窗口、来源可用性、紧急期限和来源错误。

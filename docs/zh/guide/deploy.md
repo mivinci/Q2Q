@@ -14,6 +14,9 @@ flowchart LR
   P -->|QUIC over UDP| PS[Punch]
   P -.->|可选 WSS over TCP/TLS| PS
   P -->|relay| CT[coturn]
+
+    class P core
+    class CT support
 ```
 
 ### 容器镜像
@@ -60,6 +63,9 @@ flowchart TB
   T2 --> S
   P -->|直连| PS1[Punch 1]
   P -->|直连| PS2[Punch 2]
+
+    class P,LB,T1,T2 core
+    class S,PS1,PS2 support
 ```
 
 **Track 是无状态服务。** 任意实例都可以处理任意请求，因此可以放在常规负载均衡器后面横向扩展。前提是在线记录、`session_key` 和文件索引存放在共享状态中。若 `session_key` 只保存在某个实例的内存里，下一次心跳被转发到另一个实例时就会失败。

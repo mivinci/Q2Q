@@ -111,6 +111,10 @@ fn publish_download_interrupt_resume_and_withdraw() {
   );
   let received_log = std::fs::read_to_string(dir.path().join("resumed.err")).unwrap();
   assert!(
+    !received_log.contains("DEBUG"),
+    "normal output leaked verbose diagnostics"
+  );
+  assert!(
     received_log.contains("trying candidate 2"),
     "missing Track failover: {received_log}"
   );
@@ -328,12 +332,89 @@ fn seed_only_then_publish_seed_with_default_and_explicit_sources() {
       .output()
       .unwrap();
     success(&result);
+    assert!(
+      result.stderr.is_empty(),
+      "quiet download emitted diagnostics"
+    );
     assert_eq!(std::fs::read(destination).unwrap(), bytes);
     assert_eq!(std::fs::read(&seed_path).unwrap(), original);
     publisher.signal("-TERM");
     assert_eq!(publisher.wait().code(), Some(130));
+    assert!(
+      std::fs::read(dir.path().join(format!("{name}.err")))
+        .unwrap()
+        .is_empty(),
+      "quiet publication emitted diagnostics"
+    );
     if !explicit {
       std::fs::rename(&source, &renamed).unwrap();
     }
   }
+}
+
+#[test]
+#[ignore = "requires Q2Q_TEST_TRACK_URL pointing to a fresh local Track/Punch pair"]
+fn verbose_transfer_reports_stages_without_polluting_stdout() {
+  let track = std::env::var("Q2Q_TEST_TRACK_URL").expect("Q2Q_TEST_TRACK_URL");
+  let dir = TempDir::new().unwrap();
+  let source = dir.path().join("source.bin");
+  let bytes = vec![37; 800_001];
+  std::fs::write(&source, &bytes).unwrap();
+  let seed = dir.path().join("content.q2q");
+  let mut publish = cli(dir.path());
+  publish
+    .args(["--verbose", "--track", &track, "publish"])
+    .arg(&source)
+    .arg("--seed")
+    .arg(&seed);
+  let mut publisher = logged(&mut publish, dir.path(), "verbose-publisher");
+  wait_for(|| seed.exists());
+  let target = dir.path().join("download.bin");
+  let result = cli(&dir.path().join("receiver"))
+    .args(["--verbose", "download"])
+    .arg(&seed)
+    .arg("-o")
+    .arg(&target)
+    .output()
+    .unwrap();
+  success(&result);
+  assert_eq!(std::fs::read(&target).unwrap(), bytes);
+  assert_eq!(
+    String::from_utf8_lossy(&result.stdout),
+    format!("{}\n", target.display())
+  );
+  let log = String::from_utf8_lossy(&result.stderr);
+  for expected in [
+    "connection_id=",
+    "Selected ICE path",
+    "WebRTC peer identity authenticated",
+    "bitfield_receive",
+    "block_request",
+    "Block verified and committed",
+    "finish_ack",
+  ] {
+    assert!(
+      log.contains(expected),
+      "missing diagnostic {expected}: {log}"
+    );
+  }
+  let published_log = || std::fs::read_to_string(dir.path().join("verbose-publisher.err")).unwrap();
+  wait_for(|| published_log().contains("Upload session completed"));
+  for expected in [
+    "Upload peer authenticated",
+    "upload_initial_control",
+    "upload_block_request",
+    "upload_finish_ack",
+  ] {
+    assert!(
+      published_log().contains(expected),
+      "missing upload diagnostic {expected}"
+    );
+  }
+  publisher.signal("-TERM");
+  assert_eq!(publisher.wait().code(), Some(130));
+  assert_eq!(
+    std::fs::read_to_string(dir.path().join("verbose-publisher.out")).unwrap(),
+    format!("{}\n", seed.display())
+  );
 }
