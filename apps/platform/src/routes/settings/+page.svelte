@@ -18,14 +18,14 @@
     <div class="divide-y rounded-xl border bg-card">
       <div class="flex flex-col gap-5 p-5 lg:flex-row lg:items-center lg:justify-between">
         <div class="flex items-start gap-3">
-          <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-blue-500/10 text-primary"><Paintbrush class="size-4" aria-hidden="true" /></span>
+          <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Paintbrush class="size-4" aria-hidden="true" /></span>
           <div><h3 class="text-sm font-medium">{text.appearance}</h3><p class="mt-1 text-[13px] leading-relaxed text-muted-foreground">{text.appearanceDescription}</p></div>
         </div>
         <div class="w-full shrink-0 lg:w-64"><ThemeToggle showLabels /></div>
       </div>
       <div class="flex flex-col gap-5 p-5 lg:flex-row lg:items-center lg:justify-between">
         <div class="flex items-start gap-3">
-          <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-violet-500/10 text-violet-500 dark:text-violet-400"><Languages class="size-4" aria-hidden="true" /></span>
+          <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Languages class="size-4" aria-hidden="true" /></span>
           <div><h3 class="text-sm font-medium">{text.language}</h3><p class="mt-1 text-[13px] leading-relaxed text-muted-foreground">{text.languageDescription}</p></div>
         </div>
         <div class="w-full shrink-0 lg:w-64"><LanguageSelect /></div>

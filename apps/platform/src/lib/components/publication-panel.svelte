@@ -5,12 +5,14 @@
   import { uploadRequest } from '#lib/upload-client.js';
   import type { PublicationSummary } from '#lib/publication.js';
   import { Button } from '#lib/components/ui/button/index.js';
+  import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
   import DownloadGrantPanel from './download-grant-panel.svelte';
   let { fileId, publications, ready, canManage }: { fileId: string; publications: PublicationSummary[]; ready: boolean; canManage: boolean } = $props();
   const text = $derived(messages[page.data.locale]);
   let busy = $state(false);
   let issue = $state('');
   let requestId = $state<string | null>(null);
+  let confirmWithdrawId = $state<string | null>(null);
   const activePublication = $derived(publications.find((version) => version.status === 'creating' || version.status === 'published'));
   const active = $derived(!!activePublication);
   $effect(() => {
@@ -29,7 +31,13 @@
     finally { busy = false; }
   }
   async function withdraw(id: string) {
-    if (publications.find((version) => version.id === id)?.status !== 'withdrawn' && !window.confirm(text.publicationWithdrawConfirm)) return;
+    if (publications.find((version) => version.id === id)?.status !== 'withdrawn') {
+      confirmWithdrawId = id;
+      return;
+    }
+    await withdrawConfirmed(id);
+  }
+  async function withdrawConfirmed(id: string) {
     busy = true; issue = '';
     try { await uploadRequest(`/api/publications/${id}`, undefined, 'DELETE'); await refreshAll(); }
     catch { issue = text.projectActionFailed; }
@@ -61,3 +69,13 @@
   {/each}
   {#if issue}<p role="alert" class="mt-3 text-sm text-destructive">{issue}</p>{/if}
 </section>
+
+<ConfirmDialog
+  open={confirmWithdrawId !== null}
+  title={text.withdrawVersion}
+  description={text.publicationWithdrawConfirm}
+  confirmLabel={text.withdrawVersion}
+  cancelLabel={text.cancel}
+  onOpenChange={(open) => { if (!open) confirmWithdrawId = null; }}
+  onConfirm={() => { const id = confirmWithdrawId; confirmWithdrawId = null; if (id) void withdrawConfirmed(id); }}
+/>

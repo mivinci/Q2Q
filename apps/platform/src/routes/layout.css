@@ -135,3 +135,15 @@
     transition: none !important;
   }
 }
+
+@media (pointer: coarse) {
+	[data-slot="button"][data-size="sm"],
+	[data-slot="button"][data-size="default"],
+	[data-slot="button"][data-size="lg"],
+	[data-slot="button"][data-size="icon"],
+	[data-slot="button"][data-size="icon-sm"],
+	[data-slot="button"][data-size="icon-lg"] {
+		min-width: 44px;
+		min-height: 44px;
+	}
+}

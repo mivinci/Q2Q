@@ -3,6 +3,7 @@
   import { page } from '$app/state';
   import { messages } from '#lib/i18n.js';
   import { Button } from '#lib/components/ui/button/index.js';
+  import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
 
   const text = $derived(messages[page.data.locale]);
   function actionError(value: unknown): string {
@@ -23,6 +24,7 @@
   let copied = $state(false);
   let copyFailed = $state(false);
   let name = $state('');
+  let confirmation = $state<{ title: string; description: string; confirmLabel: string; action: () => void } | null>(null);
 
   $effect(() => { name = project.name; });
 
@@ -37,6 +39,16 @@
     });
   }
 
+  function askConfirmation(title: string, description: string, confirmLabel: string, action: () => void) {
+    confirmation = { title, description, confirmLabel, action };
+  }
+
+  function confirmPendingAction() {
+    const action = confirmation?.action;
+    confirmation = null;
+    action?.();
+  }
+
   const formatDate = (value: number) => new Intl.DateTimeFormat(page.data.locale, {
     dateStyle: 'medium', timeStyle: 'short'
   }).format(value);
@@ -46,12 +58,12 @@
 
 <div class="mx-auto w-full max-w-4xl space-y-6 px-4 py-8 sm:px-7">
   <div>
-    <h1 class="text-2xl font-semibold tracking-tight">{text.projectSettings}</h1>
+    <h1 class="text-2xl font-medium tracking-tight">{text.projectSettings}</h1>
     {#if !project.personalUserId}<p class="mt-2 text-sm text-muted-foreground">{text.projectSettingsDescription}</p>{/if}
   </div>
 
   <section class="rounded-xl border bg-card p-5">
-    <h2 class="text-base font-semibold">{text.projectInformation}</h2>
+    <h2 class="text-base font-medium">{text.projectInformation}</h2>
     <form method="POST" action="?/rename" class="mt-5 flex flex-col gap-3 sm:flex-row sm:items-end" use:enhance>
       <div class="min-w-0 flex-1 space-y-2">
         <label for="project-name" class="text-sm font-medium">{text.projectName}</label>
@@ -70,7 +82,7 @@
   <section class="rounded-xl border bg-card p-5">
     <div class="flex flex-wrap items-start justify-between gap-4">
       <div>
-        <h2 class="text-base font-semibold">{text.projectMembers}</h2>
+        <h2 class="text-base font-medium">{text.projectMembers}</h2>
         {#if !project.personalUserId}<p class="mt-1 text-sm text-muted-foreground">{text.projectMembersDescription}</p>{/if}
       </div>
       {#if project.role === 'owner' && page.data.canInvite}
@@ -117,9 +129,9 @@
             <p class="text-[13px] text-muted-foreground">{member.role === 'owner' ? text.projectOwner : text.projectMember}</p>
           </div>
           {#if project.role === 'owner' && member.role === 'member'}
-            <form method="POST" action="?/removeMember" onsubmit={(event) => { if (!confirm(text.confirmRemoveMember)) event.preventDefault(); }} use:enhance>
+            <form method="POST" action="?/removeMember" use:enhance>
               <input type="hidden" name="userId" value={member.userId} />
-              <Button type="submit" variant="ghost" size="sm" class="text-destructive hover:text-destructive">{text.removeMember}</Button>
+              <Button type="button" variant="ghost" size="sm" class="text-destructive hover:text-destructive" onclick={(event) => { const form = event.currentTarget.closest('form'); askConfirmation(text.removeMember, text.confirmRemoveMember, text.removeMember, () => form?.requestSubmit()); }}>{text.removeMember}</Button>
             </form>
           {/if}
         </li>
@@ -131,7 +143,7 @@
 
   {#if project.role === 'owner' && !project.personalUserId}
     <section class="rounded-xl border bg-card p-5">
-      <h2 class="text-base font-semibold">{text.activeInvitations}</h2>
+      <h2 class="text-base font-medium">{text.activeInvitations}</h2>
       {#if invitations.length === 0}
         <p class="mt-3 text-sm text-muted-foreground">{text.noInvitations}</p>
       {:else}
@@ -143,9 +155,9 @@
                 <p class="mt-1 text-[13px] text-muted-foreground">{text.inviteExpires}: {formatDate(invitation.expiresAt)}</p>
               </div>
               {#if invitation.status === 'pending'}
-                <form method="POST" action="?/revokeInvite" onsubmit={(event) => { if (!confirm(text.confirmRevokeInvite)) event.preventDefault(); }} use:enhance>
+                <form method="POST" action="?/revokeInvite" use:enhance>
                   <input type="hidden" name="invitationId" value={invitation.id} />
-                  <Button type="submit" variant="outline" size="sm">{text.revokeInvite}</Button>
+                  <Button type="button" variant="outline" size="sm" onclick={(event) => { const form = event.currentTarget.closest('form'); askConfirmation(text.revokeInvite, text.confirmRevokeInvite, text.revokeInvite, () => form?.requestSubmit()); }}>{text.revokeInvite}</Button>
                 </form>
               {/if}
             </li>
@@ -155,3 +167,13 @@
     </section>
   {/if}
 </div>
+
+<ConfirmDialog
+  open={confirmation !== null}
+  title={confirmation?.title ?? ''}
+  description={confirmation?.description ?? ''}
+  confirmLabel={confirmation?.confirmLabel ?? text.cancel}
+  cancelLabel={text.cancel}
+  onOpenChange={(open) => { if (!open) confirmation = null; }}
+  onConfirm={confirmPendingAction}
+/>

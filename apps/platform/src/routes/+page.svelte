@@ -82,7 +82,7 @@
       <ul class="overflow-hidden rounded-xl border bg-card">
         {#each data.recentFiles as file (file.id)}
           <li class="border-b last:border-b-0">
-            <a href={`/library/${file.id}`} class="grid min-h-16 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-4 py-3 transition-colors hover:bg-muted/40 focus-visible:outline-ring sm:grid-cols-[minmax(0,2fr)_minmax(8rem,1fr)_minmax(5rem,auto)_minmax(7rem,auto)]">
+            <a href={`/library/${file.id}`} class="grid min-h-[4.5rem] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-4 py-3 transition-colors hover:bg-muted/40 focus-visible:outline-ring sm:grid-cols-[minmax(0,2fr)_minmax(8rem,1fr)_minmax(5rem,auto)_minmax(7rem,auto)]">
               <span class="flex min-w-0 items-center gap-3">
                 <File class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                 <span class="truncate text-sm">{file.name}</span>

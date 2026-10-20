@@ -23,13 +23,13 @@
     {/key}
   {/if}
   <section aria-label={text.contentList}>
-    <div class="grid grid-cols-[1fr_auto] border-b pb-3 text-[13px] text-muted-foreground sm:grid-cols-[2fr_1fr_1fr_1fr]">
-      <span>{text.name}</span><span>{text.fileStatus}</span><span class="hidden sm:block">{text.size}</span><span class="hidden sm:block">{text.updated}</span>
+    <div class="grid grid-cols-[1fr_auto] border-b px-2 pb-3 text-[13px] text-muted-foreground sm:grid-cols-[2fr_1fr_1fr_1fr]">
+      <span class="flex items-center gap-3"><span class="size-5 shrink-0" aria-hidden="true"></span><span>{text.name}</span></span><span>{text.fileStatus}</span><span class="hidden sm:block">{text.size}</span><span class="hidden sm:block">{text.updated}</span>
     </div>
     {#if data.files.length}
       <ul class="divide-y border-b">
         {#each data.files as file (file.id)}
-          <li><a href={`/library/${file.id}`} class="grid min-h-20 grid-cols-[1fr_auto] items-center gap-3 rounded-lg px-2 py-4 transition-colors hover:bg-muted/50 focus-visible:outline-ring sm:grid-cols-[2fr_1fr_1fr_1fr]">
+          <li><a href={`/library/${file.id}`} class="grid min-h-[4.5rem] grid-cols-[1fr_auto] items-center gap-3 rounded-lg px-2 py-3 transition-colors hover:bg-muted/50 focus-visible:outline-ring sm:grid-cols-[2fr_1fr_1fr_1fr]">
             <span class="flex min-w-0 items-center gap-3"><File class="size-5 shrink-0 text-muted-foreground" /><span class="truncate text-sm">{file.name}</span></span>
             <span class="text-[13px] text-muted-foreground">{text[fileStatusLabel(file.status, file.uploadStatus, file.processingStatus)]}</span>
             <span class="hidden text-xs tabular-nums text-muted-foreground sm:block">{formatBytes(file.size, page.data.locale)}</span>
