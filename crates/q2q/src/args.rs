@@ -36,15 +36,29 @@ pub(crate) struct Args {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
-  /// Publish a file and keep serving until interrupted.
-  Publish {
+  /// Build a seed locally without announcing or serving the file.
+  Seed {
     file: PathBuf,
-    /// Export the seed here; defaults to <FILE>.q2q and never overwrites an existing file.
+    /// Seed output path; defaults to <FILE>.q2q and never overwrites a file.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+  },
+  /// Print a Q2Q magnet URL from a local seed without contacting the network.
+  Magnet { seed: PathBuf },
+  /// Publish a file or existing .q2q seed and keep serving until interrupted.
+  Publish {
+    #[arg(value_name = "INPUT")]
+    file: PathBuf,
+    /// Local source for a seed input; defaults to info.name beside that seed.
+    #[arg(long = "file")]
+    source: Option<PathBuf>,
+    /// Export a new seed; raw files default to <FILE>.q2q, existing seeds are reused.
     #[arg(long)]
     seed: Option<PathBuf>,
   },
-  /// Download using a seed; existing checkpoints are resumed automatically.
+  /// Download a seed file or Q2Q magnet URL; checkpoints resume automatically.
   Download {
+    #[arg(value_name = "INPUT")]
     seed: PathBuf,
     /// Destination filename; defaults to a safe name from the seed.
     #[arg(short, long)]

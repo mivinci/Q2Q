@@ -1,9 +1,10 @@
 use crate::args::{Args, Command};
-use crate::progress::{PreparationDisplay, Progress};
+use crate::progress::{MetadataDisplay, PreparationDisplay, Progress};
 use crate::shutdown::{Stop, initialize, initialize_with_progress};
 use crate::{Outcome, Result};
 use q2q_core::client::{Client, Publication};
-use q2q_primitives::seed::Seed;
+use q2q_core::publication::PreparedFile;
+use q2q_primitives::seed::{Magnet, Seed, parse_magnet, to_magnet};
 use std::{
   env,
   fs::{self, File, OpenOptions},
@@ -17,29 +18,69 @@ use url::Url;
 const DEFAULT_TRACK_URL: &str = "https://track.q2q.app";
 
 pub(crate) async fn run(args: Args, mut stop: Stop) -> Result<Outcome> {
-  let seed = match &args.command {
+  match &args.command {
+    Command::Seed { file, output } => {
+      return create_seed(&args, file, output.as_deref(), &mut stop).await;
+    }
+    Command::Publish { .. } => return publish_command(&args, &mut stop).await,
+    _ => {}
+  }
+  if let Command::Magnet { seed } = &args.command {
+    let seed = read_seed(seed).await?;
+    if seed.info.encode().len() > q2q_primitives::seed::MAX_INFO_BYTES {
+      return Err(q2q_primitives::seed::SeedError::InfoTooLarge.into());
+    }
+    let link = to_magnet(&seed);
+    // Never print a link our own downloader cannot parse (e.g. oversized hints).
+    parse_magnet(&link)?;
+    writeln!(io::stdout().lock(), "{link}")?;
+    return Ok(Outcome::Complete);
+  }
+  let magnet = match &args.command {
+    Command::Download { seed, .. } if seed.to_str().is_some_and(|s| s.starts_with("magnet:")) => {
+      Some(parse_magnet(seed.to_str().expect("magnet is UTF-8"))?)
+    }
+    _ => None,
+  };
+  let home = resolve_home()?;
+  let identity_path = args
+    .identity
+    .clone()
+    .unwrap_or_else(|| home.join("identity"));
+  let mut identity_lock = None;
+  let mut seed = match &args.command {
+    Command::Download { .. } if magnet.is_some() => {
+      q2q_core::client::cached_magnet(magnet.as_ref().expect("magnet"), &home).await?
+    }
     Command::Download { seed, .. } => Some(read_seed(seed).await?),
-    Command::Publish { .. } => None,
+    _ => None,
   };
-  let publish_seed_path = match &args.command {
-    Command::Publish { file, seed } => Some(match seed {
-      Some(path) => path.clone(),
-      None => default_seed_path(file)?,
-    }),
-    Command::Download { .. } => None,
-  };
+  if let Some(magnet) = &magnet {
+    if seed.is_none() {
+      identity_lock = Some(lock_identity(&identity_path)?);
+      seed =
+        resolve_magnet_with_track_failover(magnet, &args, &identity_path, &home, &mut stop).await?;
+      if seed.is_none() {
+        return Ok(Outcome::Interrupted);
+      }
+    }
+    // Track hints remain local request policy, never cached metadata authority.
+    seed.as_mut().expect("resolved metadata").track_list = magnet.trackers.clone();
+  }
   let download_output = match &args.command {
     Command::Download {
       seed: path, output, ..
     } => Some(match output {
       Some(output) => output.clone(),
+      None if magnet.is_some() => {
+        default_magnet_download_path(seed.as_ref().expect("resolved metadata"))
+      }
       None => default_download_path(path, seed.as_ref().expect("download seed loaded"))?,
     }),
-    Command::Publish { .. } => None,
+    _ => None,
   };
   let mut resume_from_checkpoint = false;
   let mut offline_resume = None;
-  let home = resolve_home()?;
   if matches!(&args.command, Command::Download { .. }) {
     let (transfer, interrupted) = initialize(
       async {
@@ -75,38 +116,15 @@ pub(crate) async fn run(args: Args, mut stop: Stop) -> Result<Outcome> {
     }
   }
   fs::create_dir_all(&home)?;
-  let identity_path = args
-    .identity
-    .clone()
-    .unwrap_or_else(|| home.join("identity"));
-  let _identity_lock = lock_identity(&identity_path)?;
+  let _identity_lock = match identity_lock {
+    Some(lock) => lock,
+    None => lock_identity(&identity_path)?,
+  };
   match &args.command {
-    Command::Publish { file, .. } => {
-      let track = args.track.as_deref().unwrap_or(DEFAULT_TRACK_URL);
-      validate_publish_track_url(track)?;
-      let (client, interrupted) =
-        build_client(track, &args, &identity_path, &home, &mut stop).await?;
-      if interrupted {
-        return Ok(Outcome::Interrupted);
-      }
-      if !args.quiet {
-        eprintln!("Local peer: {}", client.peer_id());
-      }
-      publish(
-        &client,
-        file,
-        publish_seed_path
-          .as_deref()
-          .expect("publish seed path resolved"),
-        args.quiet,
-        &mut stop,
-      )
-      .await
-    }
     Command::Download { resume, .. } => {
       let candidates = download_track_candidates(
         args.track.as_deref(),
-        seed.as_ref().expect("download seed loaded"),
+        &seed.as_ref().expect("download seed loaded").track_list,
       );
       download_with_track_failover(
         &candidates,
@@ -125,7 +143,72 @@ pub(crate) async fn run(args: Args, mut stop: Stop) -> Result<Outcome> {
       )
       .await
     }
+    _ => unreachable!("handled before initialization"),
   }
+}
+
+async fn resolve_magnet_with_track_failover(
+  magnet: &Magnet,
+  args: &Args,
+  identity_path: &Path,
+  home: &Path,
+  stop: &mut Stop,
+) -> Result<Option<Seed>> {
+  let candidates = download_track_candidates(args.track.as_deref(), &magnet.trackers);
+  let _display = MetadataDisplay::new(args.quiet);
+  let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+  let mut last = None;
+  for (index, track) in candidates.iter().enumerate() {
+    let (client, interrupted) = build_client(track, args, identity_path, home, stop).await?;
+    if interrupted {
+      return Ok(None);
+    }
+    let attempt = tokio::select! {
+      signal = &mut *stop => { signal?; return Ok(None); }
+      result = tokio::time::timeout_at(deadline, client.resolve_magnet(magnet)) =>
+        result.map_err(|_| q2q_core::client::MetadataError::Timeout)?,
+    };
+    match attempt {
+      Ok(seed) => return Ok(Some(seed)),
+      Err(
+        error @ (q2q_core::client::MetadataError::Cache(_)
+        | q2q_core::client::MetadataError::Task(_)),
+      ) => return Err(error.into()),
+      Err(error) => {
+        if index + 1 < candidates.len() && !args.quiet {
+          eprintln!(
+            "Metadata Track candidate {} failed ({error}); trying candidate {}.",
+            index + 1,
+            index + 2
+          );
+        }
+        last = Some(error);
+      }
+    }
+  }
+  Err(
+    last
+      .unwrap_or(q2q_core::client::MetadataError::NoPeers)
+      .into(),
+  )
+}
+
+fn default_magnet_download_path(seed: &Seed) -> PathBuf {
+  if let Some(name) = seed
+    .info
+    .name
+    .as_deref()
+    .filter(|name| is_safe_filename(name))
+  {
+    return PathBuf::from(name);
+  }
+  PathBuf::from(
+    seed
+      .info_hash()
+      .iter()
+      .map(|byte| format!("{byte:02x}"))
+      .collect::<String>(),
+  )
 }
 
 async fn build_client(
@@ -148,12 +231,12 @@ async fn build_client(
   initialize(async { Ok(builder.build().await?) }, stop).await
 }
 
-fn download_track_candidates(preferred: Option<&str>, seed: &Seed) -> Vec<String> {
+fn download_track_candidates(preferred: Option<&str>, tracks: &[String]) -> Vec<String> {
   let mut candidates = Vec::new();
   if let Some(preferred) = preferred {
     push_track_candidate(&mut candidates, preferred);
   }
-  for track in &seed.track_list {
+  for track in tracks {
     if is_http_track_url(track) {
       push_track_candidate(&mut candidates, track);
     }
@@ -363,53 +446,189 @@ async fn read_seed(path: &Path) -> Result<Seed> {
   Ok(Seed::parse(&bytes)?)
 }
 
-async fn publish(
-  client: &Client,
-  file: &Path,
-  seed_path: &Path,
-  quiet: bool,
-  stop: &mut Stop,
-) -> Result<Outcome> {
-  // Reserve a temporary file beside the destination before announcing. The
-  // final persist is atomic and refuses even a concurrently created target.
-  let target = seed_path.to_path_buf();
-  let staged = tokio::task::spawn_blocking(move || -> io::Result<_> {
-    match std::fs::symlink_metadata(&target) {
-      Ok(_) => {
-        return Err(io::Error::new(
-          io::ErrorKind::AlreadyExists,
-          "seed output already exists",
-        ));
+async fn reserve_seed_output(target: &Path) -> Result<tempfile::NamedTempFile> {
+  let target = target.to_path_buf();
+  Ok(
+    tokio::task::spawn_blocking(move || -> io::Result<_> {
+      match std::fs::symlink_metadata(&target) {
+        Ok(_) => {
+          return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "seed output already exists",
+          ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
       }
-      Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-      Err(error) => return Err(error),
-    }
-    let parent = target
-      .parent()
-      .filter(|p| !p.as_os_str().is_empty())
-      .unwrap_or(Path::new("."));
-    tempfile::NamedTempFile::new_in(parent)
+      let parent = target
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+      tempfile::NamedTempFile::new_in(parent)
+    })
+    .await??,
+  )
+}
+
+async fn export_seed(
+  mut staged: tempfile::NamedTempFile,
+  target: PathBuf,
+  bytes: Vec<u8>,
+) -> Result<()> {
+  tokio::task::spawn_blocking(move || -> io::Result<()> {
+    staged.write_all(&bytes)?;
+    staged.as_file().sync_all()?;
+    staged.persist_noclobber(target).map_err(|e| e.error)?;
+    Ok(())
   })
   .await??;
+  Ok(())
+}
+
+async fn prepare_source(
+  file: &Path,
+  seed: Option<Seed>,
+  track: &str,
+  quiet: bool,
+  stop: &mut Stop,
+) -> Result<Option<PreparedFile>> {
   let (progress, updates) =
     tokio::sync::watch::channel(q2q_core::client::PublishProgress::default());
   let mut display = PreparationDisplay::new(file, quiet);
+  let path = file.to_path_buf();
+  let track = track.to_owned();
   let initialized = initialize_with_progress(
-    async { Ok(client.publish_file_with_progress(file, progress).await?) },
+    async {
+      Ok(
+        tokio::task::spawn_blocking(move || match seed {
+          Some(seed) => PreparedFile::from_seed_with_progress(path, seed, progress),
+          None => PreparedFile::open_with_progress(path, track, progress),
+        })
+        .await??,
+      )
+    },
     stop,
     updates,
     |update| display.update(update),
   )
   .await;
   display.finish();
+  let (prepared, interrupted) = initialized?;
+  Ok((!interrupted).then_some(prepared))
+}
+
+async fn create_seed(
+  args: &Args,
+  file: &Path,
+  output: Option<&Path>,
+  stop: &mut Stop,
+) -> Result<Outcome> {
+  let target = match output {
+    Some(path) => path.to_path_buf(),
+    None => default_seed_path(file)?,
+  };
+  let track = args.track.as_deref().unwrap_or(DEFAULT_TRACK_URL);
+  validate_publish_track_url(track)?;
+  let staged = reserve_seed_output(&target).await?;
+  let Some(prepared) = prepare_source(file, None, track, args.quiet, stop).await? else {
+    return Ok(Outcome::Interrupted);
+  };
+  export_seed(staged, target.clone(), prepared.seed().encode()).await?;
+  writeln!(io::stdout().lock(), "{}", target.display())?;
+  Ok(Outcome::Complete)
+}
+
+async fn publish_command(args: &Args, stop: &mut Stop) -> Result<Outcome> {
+  let Command::Publish {
+    file: input,
+    source,
+    seed: output,
+  } = &args.command
+  else {
+    unreachable!()
+  };
+  let seed_input = source.is_some()
+    || input
+      .extension()
+      .is_some_and(|ext| ext.eq_ignore_ascii_case("q2q"));
+  let expected = if seed_input {
+    Some(read_seed(input).await?)
+  } else {
+    None
+  };
+  let file = match (&expected, source) {
+    (_, Some(path)) => path.clone(),
+    (Some(seed), None) => {
+      let name = seed
+        .info
+        .name
+        .as_deref()
+        .filter(|name| is_safe_filename(name))
+        .ok_or_else(|| {
+          io::Error::other(
+            "seed has no safe source filename; pass --file to choose the local source",
+          )
+        })?;
+      input.parent().unwrap_or(Path::new(".")).join(name)
+    }
+    (None, None) => input.clone(),
+  };
+  let track = args
+    .track
+    .as_deref()
+    .or_else(|| {
+      expected.as_ref().and_then(|seed| {
+        seed
+          .track_list
+          .iter()
+          .find(|url| validate_publish_track_url(url).is_ok())
+          .map(String::as_str)
+      })
+    })
+    .unwrap_or(DEFAULT_TRACK_URL)
+    .to_owned();
+  validate_publish_track_url(&track)?;
+  let target = match output {
+    Some(path) => path.clone(),
+    None if seed_input => input.clone(),
+    None => default_seed_path(input)?,
+  };
+  // Reusing an existing seed never rewrites it; an explicit export remains atomic.
+  let staged = if !seed_input || output.is_some() {
+    Some(reserve_seed_output(&target).await?)
+  } else {
+    None
+  };
+  let Some(prepared) = prepare_source(&file, expected, &track, args.quiet, stop).await? else {
+    return Ok(Outcome::Interrupted);
+  };
+  let home = resolve_home()?;
+  let identity_path = args
+    .identity
+    .clone()
+    .unwrap_or_else(|| home.join("identity"));
+  let _identity_lock = lock_identity(&identity_path)?;
+  let (client, interrupted) = build_client(&track, args, &identity_path, &home, stop).await?;
+  if interrupted {
+    return Ok(Outcome::Interrupted);
+  }
+  if !args.quiet {
+    eprintln!("Local peer: {}", client.peer_id());
+  }
+  let mut display = PreparationDisplay::new(&file, args.quiet);
+  display.update(q2q_core::client::PublishProgress {
+    phase: q2q_core::client::PublishPhase::Announcing,
+    bytes_read: prepared.seed().info.length,
+    total_bytes: prepared.seed().info.length,
+  });
+  let initialized = initialize(async { Ok(client.publish_prepared(prepared).await?) }, stop).await;
+  display.finish();
   let (publication, interrupted) = initialized?;
   if interrupted {
     publication.close().await?;
     return Ok(Outcome::Interrupted);
   }
-  let result = serve(&publication, staged, seed_path.to_path_buf(), quiet, stop).await;
-  // Always await SDK cleanup, including output/export errors. Drop alone only
-  // requests asynchronous withdrawal, which process exit could interrupt.
+  let result = serve(&publication, staged, target, args.quiet, stop).await;
   let closed = publication.close().await;
   match result {
     Err(error) => {
@@ -427,20 +646,14 @@ async fn publish(
 
 async fn serve(
   publication: &Publication,
-  mut staged: tempfile::NamedTempFile,
+  staged: Option<tempfile::NamedTempFile>,
   target: PathBuf,
   quiet: bool,
   stop: &mut Stop,
 ) -> Result<Outcome> {
-  let encoded = publication.seed().encode();
-  let output = target.clone();
-  tokio::task::spawn_blocking(move || -> io::Result<()> {
-    staged.write_all(&encoded)?;
-    staged.as_file().sync_all()?;
-    staged.persist_noclobber(output).map_err(|e| e.error)?;
-    Ok(())
-  })
-  .await??;
+  if let Some(staged) = staged {
+    export_seed(staged, target.clone(), publication.seed().encode()).await?;
+  }
   writeln!(io::stdout().lock(), "{}", target.display())?;
   if !quiet {
     eprintln!("Published; keep this process running. Ctrl-C stops sharing.");

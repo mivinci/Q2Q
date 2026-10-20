@@ -99,9 +99,10 @@ pub(crate) fn has_checkpoint(
 }
 
 fn clean_stale_temporary_files(journal_path: &Path) -> Result<(), TransferError> {
-  let Some(directory) = journal_path.parent() else {
-    return Ok(());
-  };
+  let directory = journal_path
+    .parent()
+    .filter(|p| !p.as_os_str().is_empty())
+    .unwrap_or(Path::new("."));
   let Some(name) = journal_path.file_name() else {
     return Ok(());
   };

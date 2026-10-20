@@ -18,6 +18,20 @@ cargo install --path crates/q2q --locked
 q2q --help
 ```
 
+## Build a seed offline
+
+```sh
+q2q seed ./file.bin
+q2q seed ./file.bin --output ./share.q2q
+```
+
+This hashes the local file and writes a binary `.q2q` seed, then exits. It creates
+no identity/state directory and contacts no Track or Punch. The default output is
+`<FILE>.q2q`; existing outputs are never overwritten. `--track` / `Q2Q_TRACK_URL`
+sets a discovery hint in the seed; otherwise the official default is written.
+Writing that hint does not publish the file. Progress goes to stderr and the
+successful seed path to stdout; `--quiet` suppresses progress.
+
 ## Publish
 
 ```sh
@@ -43,6 +57,62 @@ then closes the acquired handle. Further signals are ignored while it finishes
 initialization and cleanup.
 A failed withdrawal is reported; a remote holding may remain until its TTL expires.
 A crash or forced kill cannot guarantee withdrawal.
+
+### Publish an existing seed
+
+```sh
+q2q publish ./file.bin.q2q
+q2q publish ./share.q2q --file ./renamed-file.bin
+q2q publish ./share.q2q --file ./renamed-file.bin --seed ./export.q2q
+```
+
+A `.q2q` input (case-insensitive extension), or an input accompanied by `--file`,
+is an existing seed. By default the source is the safe `info.name` beside the seed;
+`--file` selects a source relative to the current working directory. Missing/unsafe
+names require `--file`. The entire local file is checked against its length, block
+size and Merkle root before announcing. Renamed files, custom block sizes and
+unknown info fields preserve the original content identity.
+
+The input seed is never rewritten. Without `--seed`, stdout prints its path; an
+explicit `--seed` exports a new file and refuses existing destinations. Track
+selection is explicit parameter/environment, the first usable seed Track, then
+the official default. The in-memory/exported seed includes the selected Track;
+share that new export when recipients need an overridden Track hint. For raw content
+named `*.q2q`, first run `q2q seed`, then publish the resulting seed. Keep the
+publisher running to serve file bytes.
+
+## Magnet links
+
+Create a Q2Q magnet URL locally from an existing seed:
+
+```sh
+q2q magnet ./model.bin.q2q
+q2q download 'magnet:?xt=urn:sha256:<64-hex-info-hash>&tr=<percent-encoded-Track-URL>'
+```
+
+Quote links in the shell because `&` separates commands. The format uses Q2Q info
+hashes, not BitTorrent `btih`/`btmh`. `magnet` prints one URL to stdout without
+creating an identity or connecting to a service; `publish` still prints the seed path.
+
+Downloads try the explicit `--track` / `Q2Q_TRACK_URL`, valid `tr` hints, then the
+official Track, deduplicating URLs. With no `tr`, the default official Track still
+works when it knows an online metadata source. Metadata discovery has a 60-second
+budget across CLI Track attempts. The CLI authenticates a Peer, verifies its info
+against `xt`, and only then opens the output. `dn` is a display hint and never
+chooses the output path. A safe verified `info.name` is used in the current directory;
+otherwise the full info hash becomes the filename. `--output` overrides it.
+
+Verified metadata is cached under `<Q2Q_HOME>/metadata/<info-hash>.q2q` and checked
+again when read. Keep this cache with the destination and checkpoints for automatic
+resume. A complete download can finish revalidation offline without opening an
+identity or Track session. Metadata discovery can be interrupted immediately;
+`--quiet` suppresses its spinner and progress messages.
+
+The initial implementation fetches info from online complete or partial Peers.
+Track stores no metadata. CDN URLs and leaf/proof lists are seed-envelope fields,
+so magnets do not recover CDN fallback: a CDN-only file with no online Peer still
+requires its `.q2q` seed. Raw info is limited to 8 KiB, links to 16 KiB; noncanonical,
+wrong-hash and unsupported metadata are rejected before any destination is created.
 
 ## Download and resume
 
@@ -142,4 +212,4 @@ SIGTERM). Help and version exit successfully. If cleanup fails after an interrup
 the command reports the error and exits with 1.
 
 This first version has no daemon mode, GUI, browser receiver, account service,
-magnet metadata fetching, or automatic background seeding.
+or automatic background seeding.

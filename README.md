@@ -77,7 +77,13 @@ Publish a file and create its seed, then give the seed to a downloader:
 ```sh
 q2q publish ./model.bin
 q2q download ./model.bin.q2q
+# Or generate a Q2Q magnet URL for recipients:
+q2q magnet ./model.bin.q2q
 ```
+
+To build a seed without publishing, run `q2q seed ./model.bin`. Later, use
+`q2q publish ./model.bin.q2q` to serve the matching file beside that seed, or pass
+`--file PATH` to select its local source. Existing seed inputs are never rewritten.
 
 Publishing writes `./model.bin.q2q` by default; pass `--seed PATH` to choose a custom seed path.
 Downloading uses the seed's safe `info.name` by default; pass `--output PATH` to choose another destination.

@@ -1,6 +1,57 @@
 use super::*;
 
 #[test]
+fn existing_seed_preserves_identity_with_renamed_source_and_custom_blocks() {
+  let dir = tempfile::tempdir().unwrap();
+  let path = dir.path().join("renamed.bin");
+  let bytes: Vec<_> = (0..1_100_001).map(|i| (i % 251) as u8).collect();
+  std::fs::write(&path, &bytes).unwrap();
+  let block_size = 512 * 1024;
+  let mut builder = SeedBuilder::with_block_size(bytes.len() as u64, block_size).unwrap();
+  builder.update(&bytes).unwrap();
+  let mut seed = builder.finish().unwrap();
+  seed.info.name = Some("original.bin".into());
+  seed.info.mime = Some("application/example".into());
+  seed.cdn_list.push("https://cdn.example/content".into());
+  seed.leaf_hashes = None;
+  let mut value = seed.info.to_value();
+  let q2q_primitives::bencode::BValue::Dict(ref mut fields) = value else {
+    panic!()
+  };
+  fields.insert(b"future".to_vec(), q2q_primitives::bencode::BValue::Int(7));
+  seed.info = q2q_primitives::seed::Info::parse_verified(
+    &value.encode(),
+    &q2q_primitives::bencode::digest(&value),
+  )
+  .unwrap();
+  let prepared = PreparedFile::from_seed(path.clone(), seed.clone()).unwrap();
+  assert_eq!(prepared.seed().info, seed.info);
+  assert_eq!(prepared.seed().cdn_list, seed.cdn_list);
+  for (index, chunk) in bytes.chunks(block_size as usize).enumerate() {
+    assert_eq!(prepared.read_verified_block(index).unwrap(), chunk);
+    assert!(merkle::verify(
+      chunk,
+      index,
+      prepared.block_count(),
+      &prepared.proof(index).unwrap(),
+      &seed.info.root
+    ));
+  }
+  let mut wrong = seed.clone();
+  wrong.info.length += 1;
+  assert!(matches!(
+    PreparedFile::from_seed(path.clone(), wrong),
+    Err(PrepareError::SeedMismatch)
+  ));
+  let mut wrong = seed;
+  wrong.info.root = [0; 32];
+  assert!(matches!(
+    PreparedFile::from_seed(path, wrong),
+    Err(PrepareError::SeedMismatch)
+  ));
+}
+
+#[test]
 fn prepared_seed_preserves_the_existing_file_identity_and_sources() {
   let directory = tempfile::tempdir().unwrap();
   let path = directory.path().join("identity.bin");

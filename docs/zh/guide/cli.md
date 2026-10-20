@@ -17,6 +17,18 @@ cargo install --path crates/q2q --locked
 q2q --help
 ```
 
+## 离线生成种子
+
+```sh
+q2q seed ./file.bin
+q2q seed ./file.bin --output ./share.q2q
+```
+
+只读取并哈希本地文件、生成二进制 `.q2q` 种子后退出，不创建身份或状态目录，
+也不连接 Track/Punch。默认输出 `<FILE>.q2q`，拒绝覆盖已有目标。
+`--track` / `Q2Q_TRACK_URL` 指定种子里的发现地址提示，未指定时写入官方默认地址；
+写入提示不代表已发布。进度写入 stderr，成功后 stdout 输出种子路径，`--quiet` 抑制进度。
+
 ## 发布
 
 ```sh
@@ -35,6 +47,54 @@ q2q publish ./model.bin --seed ./model.q2q
 Ctrl-C 停止服务并等待清理和撤销，Unix SIGTERM 使用相同流程。
 初始化期间（例如文件哈希或连接）会显示文件准备进度；收到首个信号时，会完成当前初始化，再关闭取得的句柄。初始化和清理期间的后续信号会忽略。
 撤销失败会报告错误，远端持有记录可能保留到 TTL 到期；崩溃或强制结束进程不能保证撤销。
+
+### 发布已有种子
+
+```sh
+q2q publish ./file.bin.q2q
+q2q publish ./share.q2q --file ./renamed-file.bin
+# 需要分享更新后的 Track 提示时，可显式导出新副本：
+q2q publish ./share.q2q --file ./renamed-file.bin --seed ./export.q2q
+```
+
+输入扩展名为 `.q2q`（不区分大小写），或指定了 `--file` 时，按已有种子处理。
+默认从种子所在目录按安全的 `info.name` 找源文件；`--file` 路径相对当前工作目录。
+种子没有名称或名称不安全时必须指定 `--file`。宣告前完整校验文件长度、块大小和 Merkle 根；
+重命名的源文件、非默认块大小及 info 扩展字段均保留原来的 info hash。
+
+输入种子不会被重写。未指定 `--seed` 时，stdout 输出输入种子路径；显式 `--seed` 导出新文件，
+拒绝覆盖。Track 依次选择显式参数/环境变量、种子中首个可用地址、官方默认地址。
+内存和导出副本会包含实际使用的 Track；覆盖 Track 后，需要更新分享提示时应分发新导出副本。
+若原始数据文件本身叫 `*.q2q`，先用 `q2q seed` 生成种子，再发布生成的种子即可。
+发布进程仍须保持在线才能提供数据。
+
+## 磁力链
+
+可以从已有种子本地生成 Q2Q 磁力链，再把链接交给下载端：
+
+```sh
+q2q magnet ./model.bin.q2q
+q2q download 'magnet:?xt=urn:sha256:<64位info-hash>&tr=<百分号编码的Track地址>'
+```
+
+在 shell 中用引号包住链接，避免 `&` 被解释为命令分隔符。该格式使用 Q2Q 的 info hash，
+不支持 BitTorrent 的 `btih`/`btmh`。`magnet` 只向 stdout 输出一行链接，不创建身份或联网；
+`publish` 的默认 stdout 仍是 seed 路径。
+
+下载按显式 `--track` / `Q2Q_TRACK_URL`、有效 `tr` 提示、官方 Track 的顺序去重尝试。
+没有 `tr` 时，只要官方 Track 能找到在线元数据来源，就可使用默认地址。
+CLI 跨 Track 的元数据发现总预算为 60 秒：认证 Peer、取得并对照 `xt` 校验 info，
+通过后才创建目标文件。`dn` 只作提示，不决定输出路径；当前目录默认使用已验证且安全的
+`info.name`，缺失或不安全时使用完整 info hash 作为文件名，也可通过 `--output` 指定。
+
+通过校验的元数据保存到 `<Q2Q_HOME>/metadata/<info-hash>.q2q`，读回时再次验证。
+保留该缓存、目标文件和检查点即可自动续传；完整文件可离线重验完成，无需打开身份或连接 Track。
+元数据发现期间可立即中断，`--quiet` 同样抑制 spinner 和进度输出。
+
+首期从在线完整或部分 Peer 获取 info，Track 不存 metadata。CDN 地址和叶子/证明列表属于
+seed 外层，因此磁力链不会恢复 CDN 兜底来源：只有 CDN、没有在线 Peer 时仍需 `.q2q` 种子。
+info 原始字节最多 8 KiB、链接最多 16 KiB；非 canonical、hash 不符或不支持的 metadata
+会在创建目标前被拒绝。
 
 ## 下载与恢复
 
@@ -109,4 +169,4 @@ CLI 接受的种子文件最大 8 MiB。
 退出码：**0** 成功完成，**1** 运行/配置/清理错误，**2** 命令行参数解析错误，
 **130** 已处理的中断（包括 Unix SIGTERM）。帮助与版本正常退出；中断后的清理失败返回 1 并报告错误。
 
-第一版不提供后台服务、GUI、浏览器接收端、账号、磁力链元数据获取或自动后台做种。
+第一版不提供后台服务、GUI、浏览器接收端、账号或自动后台做种。

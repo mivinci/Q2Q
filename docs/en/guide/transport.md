@@ -65,6 +65,49 @@ After receiving the bytes and proof, Destination verifies length and the Merkle 
 
 VerifiedFile reads completed blocks and checks disk bytes against authenticated leaf hashes. The destination may already have its final allocated length; applications should use SDK reads rather than treating sparse zero bytes as downloaded content.
 
+## Preparing an existing seed
+
+`PreparedFile::open(path, track_hint)` and its progress variant synchronously hash
+local content without a Client or network session. Async callers should use
+`spawn_blocking`. `PreparedFile::from_seed(path, seed)` and its progress variant
+fully verify local length, configured block size and Merkle root while retaining
+all info fields and the original info hash. They rebuild local leaves/proofs even
+if the seed carries only its info root.
+
+Pass the resulting handle to `client.publish_prepared(prepared).await?` to announce
+and serve it. The Client applies its upload budgets and selected Track hint, checks
+that the source is unchanged, and uses the existing publication lifecycle. Each
+uploaded block is checked against its committed leaf again; preparation never
+permits changed local bytes to bypass verification.
+
+## Resolving magnets in the SDK
+
+```rust
+let magnet = q2q_primitives::seed::parse_magnet(link)?;
+let seed = client.resolve_magnet(&magnet).await?;
+client.download(&seed, "download.bin").await?.wait().await?;
+```
+
+`Client::resolve_magnet` uses the Client's configured Track. The caller owns Track
+hint/default/failover policy; the SDK does not hardcode the official service.
+It fetches and verifies info from authenticated Peers with bounded concurrency and
+cancellation, closes metadata sessions, and returns a minimal `Seed` for existing
+download, resume, reader and sharing APIs. `MetadataError` distinguishes discovery,
+no candidates, timeouts, invalid metadata, exhausted candidates and cache failures.
+No destination is opened by resolution.
+
+Verified minimal seeds are atomically cached under `storage_dir/metadata`, without
+remote URL hints. `q2q_core::client::cached_magnet(&magnet, storage_dir).await?`
+reads and revalidates a cache entry without constructing a Client. Corrupt entries
+are misses; I/O failures remain visible. Cache hits require no Track session.
+Metadata does not include CDN/proof URLs or leaf tables; magnets need an online
+Peer on first use. Partial holders can provide info once they have advertised at
+least one committed verified block. See [Wire](./wire) for limits and ordering.
+
+Parsed `Info` retains unknown fields so hashes survive roundtrips. Construct new
+values with `Info::new` and set the public known fields; struct literals now require
+migration to that constructor because retained fields are private.
+
 ## Lifecycle and current scope
 
 Publication manages announcements, holding renewal, uploads and withdrawal. Active publications and downloads share one heartbeat task per control session. The last user releasing its lease stops that task. Callers using the lower-level `Client::connect()` alone must still maintain heartbeats themselves.

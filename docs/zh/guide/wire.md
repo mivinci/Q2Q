@@ -2,7 +2,7 @@
 
 本文记录当前 Rust SDK 实际发送和接收的文件协议。网络无关的编码定义在 `q2q_primitives::peer_wire`，握手签名输入在 `q2q_primitives::peer_auth`；SDK 通过 `q2q_core::protocol::peer` 重导出 Peer 编码。
 
-连接与通道配置见 [传输层](./transport)，消息与持久化之间的顺序见 [调度](./scheduling)。本页描述当前实现，设计稿中的 pause/resume 和磁力链 info 获取尚未接入。
+连接与通道配置见 [传输层](./transport)，消息与持久化之间的顺序见 [调度](./scheduling)。本页描述当前实现，设计稿中的通用 pause/resume 尚未接入。
 
 ## 身份确认
 
@@ -14,6 +14,22 @@
 ```
 
 双方先交换随机 nonce，再验证绑定当前连接与双方 DTLS 指纹的 Ed25519 签名。消息最多 512 字节，总限时 10 秒；业务消息不能代替身份消息。
+
+## 磁力链元数据交换
+
+身份认证后、交换 bitfield 前，缺少 info 的下载端发送 `request_info`，上传端返回
+`info { data }`。`data` 是 canonical bencode info 字典的 base64，原始字节最多 8 KiB。
+下载端对照会话的 info hash 验证 SHA-256，解析 info 并检查文件/块数限制后才创建目标。
+未知 info 字段保留在内容身份中；bencode 解析限制嵌套深度为 32 层。
+
+上传端只接受一次位于首条文件消息的元数据请求，随后等待 bitfield 或连接关闭。
+仅拉取元数据的接收端在验证后关闭，上传端将其视为成功交换。持有 seed 的下载端直接发送
+bitfield，上传端回复自己的 bitfield。旧上传端可能先发 bitfield 或拒绝新消息，resolver
+会切换 Peer。envelope 版本仍为 1，已有 seed 传输不需要新增元数据请求。
+
+SDK 当前通过短连接解析元数据，关闭连接后调用普通下载 API。单 Track 解析总限时 60 秒，
+最多并发两个候选（同时受下载并发限制），单次尝试最多 45 秒、建连后等 info 最多 10 秒。
+坏候选不影响其他候选；取消会关闭会话并中止剩余尝试。
 
 ## 控制消息
 
@@ -27,6 +43,8 @@
 
 | type | 字段 | 当前语义 |
 | --- | --- | --- |
+| `request_info` | — | bitfield 前请求 info |
+| `info` | `data` | 与会话 hash 绑定的 canonical info，base64 |
 | `bitfield` | `bits` | base64 位图，按 block 标记已验证内容 |
 | `have` | `block_index` | 当前块已通过校验并持久化 |
 | `request` | `block_index`, `count` | 请求单块，当前 count 必须为 1 |

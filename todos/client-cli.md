@@ -101,3 +101,14 @@
 
 - 将 `OfflineResume::NeedsNetwork` 的已校验句柄装箱，避免恢复结果枚举过大；下载请求参数集中为 `DownloadRequest`，错误判断直接借用错误对象，严格 Clippy 检查通过。
 - 共用下载初始化 future 在 SDK 边界装箱，避免 CLI 组合多个下载模式时扩大栈占用。Linux 上将进程栈限制为 1 MiB 可复现 Windows CI 的三项栈溢出；修复后常规 CLI 集成测试 7 项全部通过。Windows 实际运行结果以 PR 检查为准。
+
+## 离线 seed 与已有种子发布（2026-10-20）
+
+- [x] 新增 `q2q seed FILE [-o OUTPUT]`：纯本地构建，默认 `FILE.q2q`，不创建身份/状态目录或联网，原子写入且拒绝覆盖。Track 参数只作为种子发现提示。
+- [x] `publish INPUT.q2q` 默认从种子旁的安全 `info.name` 找文件，`--file` 可指定重命名/其他路径的源；`--seed` 保留为可选的新副本导出。输入种子不改写。
+- [x] SDK 支持从已有 Seed 准备源文件和发布 PreparedFile：校验完整长度、可变块大小及 Merkle 根，保留 name/mime/未知 info 字段和原内容身份。
+- [x] 完成本轮验证：`cargo test --locked --offline` 工作区 423 项通过、14 项显式忽略；严格 Clippy、格式及 diff 检查、文档构建通过。
+- [x] 使用全新临时 Track/Punch 显式运行 `seed_only_then_publish_seed_with_default_and_explicit_sources`：纯本地 seed、不创建状态、默认同目录源、重命名源 `--file`、可选新副本导出、下载字节一致、输入种子不改写及停止发布均通过。
+- [x] 另一组全新 Track/Punch 显式运行原有磁力链发布/下载/中断续传用例，通过；两组服务均已停止。
+- 新增 SDK 回归覆盖非默认 512 KiB 块、重命名、name/mime/未知字段身份保持、逐块读取/证明、错误长度/根拒绝；CLI 回归覆盖离线构建、`-o`、禁止覆盖、无身份/状态副作用及不安全源名/源不匹配的发布前拒绝。首次受限沙箱中的 loopback 用例无法绑定端口，使用本地网络权限后通过。
+- 本轮本地验证为 Linux；未将 Windows/macOS、远端 CI 或新版本发布写作已完成。

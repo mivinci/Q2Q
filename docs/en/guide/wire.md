@@ -2,7 +2,7 @@
 
 This page records the file protocol implemented by the Rust SDK. Network-independent codecs live in `q2q_primitives::peer_wire`, with the authentication transcript in `q2q_primitives::peer_auth`. The SDK reexports peer codecs through `q2q_core::protocol::peer`.
 
-See [Transport](./transport) for connections and channels, and [Scheduling](./scheduling) for commit ordering. The design document's pause/resume messages and magnet info retrieval are not implemented yet.
+See [Transport](./transport) for connections and channels, and [Scheduling](./scheduling) for commit ordering. The design document's general pause/resume messages are not implemented yet.
 
 ## Identity exchange
 
@@ -14,6 +14,28 @@ Identity confirmation precedes bitfield exchange. These JSON text frames use the
 ```
 
 Both sides exchange random nonces, then verify Ed25519 signatures bound to the connection and both DTLS fingerprints. Frames are limited to 512 bytes and the exchange to 10 seconds. File messages cannot substitute for identity frames.
+
+## Magnet metadata exchange
+
+After identity authentication and before bitfields, a receiver without info sends
+`request_info` and receives `info { data }`. `data` is base64 of the canonical bencode
+info dictionary, limited to 8 KiB before encoding. The receiver verifies its SHA-256
+against the session's info hash, parses supported info fields and enforces file/block
+limits before creating a destination. Unknown info fields are preserved in content
+identity. Parsing also limits bencode nesting to 32 levels.
+
+The uploader accepts at most one metadata request as the first file message and then
+waits for a bitfield or closure. A metadata-only receiver closes after validation;
+that closure is a successful exchange. A seed receiver sends its bitfield immediately,
+and the uploader responds with its own bitfield. An old uploader may send a bitfield
+first or reject the new request: the resolver tries another Peer. Envelope version
+remains 1, and existing seed transfers require no metadata request.
+
+The SDK currently resolves metadata on a short-lived connection, closes it, then
+uses the normal download API. Resolution is bounded to 60 seconds per Track, at most
+two concurrent candidates (further limited by download concurrency), 45 seconds per
+attempt and 10 seconds waiting for info after connection. Invalid candidates are
+isolated; cancellation closes sessions and aborts remaining attempts.
 
 ## Control messages
 
@@ -27,6 +49,8 @@ Version is currently 1. Unsupported versions/types and unknown fields in the con
 
 | type | Fields | Current meaning |
 | --- | --- | --- |
+| `request_info` | — | Request info before bitfields |
+| `info` | `data` | Base64 canonical info bound to the session hash |
 | `bitfield` | `bits` | Base64 bitmap of verified blocks |
 | `have` | `block_index` | Block verified and durably committed |
 | `request` | `block_index`, `count` | Request one block; count must be 1 |

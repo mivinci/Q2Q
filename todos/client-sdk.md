@@ -56,7 +56,7 @@ SDK 的高层 API 不要求应用直接发送 `announce`、`join` 或 `piece` �
 
 第二阶段已实现首个完整路径：本地准备 → 宣告 → Track 查询 → Punch 同意与信令 → WebRTC 建连与双向身份确认 → bitfield → block 请求与证明 → piece 传输与缺片重传 → Merkle 校验 → 完成。`Client` 复用同一控制会话，可同时发布和下载；文件宣告导致的 Track 会话密钥轮换与查询、心跳串行处理。Punch 的完整推送消息由独立接收任务排队，避免 select 取消正在读取的 QUIC 流而丢失 candidate。后台任务维护在线状态与文件索引租约。
 
-当前范围：每个 Client 一个活跃发布文件，每个发布句柄同时服务多个下载 Peer，`max_upload_peers` 默认 4，范围 1–16，覆盖握手、传输与 VOD 空闲连接；下载从 Track 当前页选取去重后的完整持有者，默认最多 4 个并行连接（`max_download_peers` 可设为 1–16）；每个节点最多尝试一次，建连上限 45 秒，每个连接一个 block 的在途窗口；Peer 建连、传输或校验失败后回收未完成的块，交给健康节点或新的候选者，最多 65536 个 block（默认块大小对应 16 GiB）。普通 `download` 拒绝覆盖已有目标；显式 `resume_download` 可恢复本版本创建的目标和检查点。并行调度、续传与进度通知已接入；CDN 按块回退已接入；磁力链 info 拉取、Track 分页/重新查询、自动重连尚待实现。低层 `PeerSession::serve_file` / `download_file` 可用于自行管理调度。
+当前范围：每个 Client 一个活跃发布文件，每个发布句柄同时服务多个下载 Peer，`max_upload_peers` 默认 4，范围 1–16，覆盖握手、传输与 VOD 空闲连接；下载从 Track 当前页选取去重后的完整持有者，默认最多 4 个并行连接（`max_download_peers` 可设为 1–16）；每个节点最多尝试一次，建连上限 45 秒，每个连接一个 block 的在途窗口；Peer 建连、传输或校验失败后回收未完成的块，交给健康节点或新的候选者，最多 65536 个 block（默认块大小对应 16 GiB）。普通 `download` 拒绝覆盖已有目标；显式 `resume_download` 可恢复本版本创建的目标和检查点。并行调度、续传与进度通知已接入；CDN 按块回退已接入；磁力链 info 拉取已接入（方案与验收见 [magnet-download.md](magnet-download.md)）；Track 分页等后续项仍以实际实现为准。低层 `PeerSession::serve_file` / `download_file` 可用于自行管理调度。
 
 ### 当前 Peer 消息编码
 

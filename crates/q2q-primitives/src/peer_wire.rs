@@ -12,6 +12,10 @@ const VERSION: u32 = 1;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Control {
+  RequestInfo {},
+  Info {
+    data: String,
+  },
   Bitfield {
     bits: String,
   },
@@ -71,6 +75,33 @@ impl std::fmt::Display for WireError {
 }
 
 impl std::error::Error for WireError {}
+
+#[cfg(test)]
+mod metadata_tests {
+  use super::*;
+  #[test]
+  fn metadata_messages_use_the_existing_envelope_and_bounds() {
+    assert!(matches!(
+      Control::decode(br#"{"v":1,"message":{"type":"request_info"}}"#).unwrap(),
+      Control::RequestInfo {}
+    ));
+    assert!(Control::decode(br#"{"v":1,"message":{"type":"request_info","extra":1}}"#).is_err());
+    let raw = Control::Info {
+      data: "a".repeat((8 * 1024_usize).div_ceil(3) * 4),
+    }
+    .encode()
+    .unwrap();
+    assert!(matches!(
+      Control::decode(raw.as_bytes()).unwrap(),
+      Control::Info { .. }
+    ));
+    assert!(Control::Info {
+      data: "a".repeat(MAX_CONTROL_BYTES)
+    }
+    .encode()
+    .is_err());
+  }
+}
 
 impl Control {
   pub fn encode(&self) -> Result<String, WireError> {

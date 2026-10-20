@@ -268,6 +268,33 @@ impl PeerSession {
     if advertised.failed {
       return Err(protocol("upload source is unavailable"));
     }
+    // Metadata precedes bitfields: a magnet receiver does not know their size
+    // until info is verified. Seed receivers send Bitfield immediately.
+    let first = tokio::time::timeout(IDLE, receive_upload(incoming))
+      .await
+      .map_err(|_| TransferError::Timeout)??;
+    let first = if matches!(first, Control::RequestInfo {}) {
+      let encoded = seed.info.encode();
+      if encoded.len() > q2q_primitives::seed::MAX_INFO_BYTES {
+        return Err(protocol("info exceeds the 8 KiB metadata limit"));
+      }
+      send(
+        &*self.control,
+        Control::Info {
+          data: B64.encode(encoded),
+        },
+      )
+      .await?;
+      // Metadata-only receivers close here; this is a successful exchange.
+      match tokio::time::timeout(IDLE, receive_upload(incoming)).await {
+        Ok(Err(TransferError::Closed)) => return Ok(()),
+        Ok(result) => result?,
+        Err(_) => return Err(TransferError::Timeout),
+      }
+    } else {
+      first
+    };
+    decode_bitfield(first, seed.info.leaf_count())?;
     send(
       &*self.control,
       Control::Bitfield {
@@ -276,10 +303,6 @@ impl PeerSession {
     )
     .await?;
     let mut changing = availability.has_changed().is_ok();
-    let message = tokio::time::timeout(IDLE, receive_upload(incoming))
-      .await
-      .map_err(|_| TransferError::Timeout)??;
-    decode_bitfield(message, seed.info.leaf_count())?;
     let mut pending: Option<(usize, Arc<VerifiedBlock>)> = None;
     loop {
       let control = tokio::select! {
