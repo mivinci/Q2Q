@@ -7,11 +7,17 @@
   import { Button } from '#lib/components/ui/button/index.js';
   import type { PageProps } from './$types';
   import StorageUsage from '#lib/components/storage-usage.svelte';
+  import ResponsiveMetadata from '#lib/components/responsive-metadata.svelte';
   let { data, form }: PageProps = $props();
   const text = $derived(messages[data.locale]);
   const enabledDate = $derived(data.storageConnection
     ? new Intl.DateTimeFormat(data.locale, { dateStyle: 'medium', timeZone: 'UTC' }).format(data.storageConnection.createdAt)
     : null);
+  const storageMetadata = $derived([
+    { label: text.storageProvider, value: text.s3Compatible },
+    { label: text.storageScopeLabel, value: text.storageScope },
+    ...(enabledDate ? [{ label: text.storageEnabledAt, value: enabledDate }] : [])
+  ]);
 </script>
 
 <svelte:head><title>{text.storage} · Q2Q</title></svelte:head>
@@ -35,11 +41,10 @@
         <p class="mt-2 text-[13px] leading-relaxed text-muted-foreground">{text.platformStorageDescription}</p>
       </div>
     </div>
-    <dl class="grid gap-5 border-t px-5 py-5 text-[13px] sm:grid-cols-2 sm:px-6 lg:grid-cols-3">
-      <div><dt class="text-muted-foreground">{text.storageProvider}</dt><dd class="mt-2">{text.s3Compatible}</dd></div>
-      <div><dt class="text-muted-foreground">{text.storageScopeLabel}</dt><dd class="mt-2">{text.storageScope}</dd></div>
-      {#if enabledDate}<div><dt class="text-muted-foreground">{text.storageEnabledAt}</dt><dd class="mt-2">{enabledDate}</dd></div>{/if}
-    </dl>
+    <ResponsiveMetadata
+      wrapperClass="border-t px-5 py-3 text-[13px] sm:grid-cols-3 sm:gap-5 sm:px-6 sm:py-5"
+      items={storageMetadata}
+    />
     <div class="border-t px-5 py-4 sm:px-6"><StorageUsage usage={data.storageUsage} limit={data.entitlements.limits.storageBytes} /><a class="mt-2 inline-block text-[13px] text-primary" href="/usage">{text.viewPlans}</a></div>
     <div class="flex flex-col items-start justify-between gap-4 border-t bg-muted/30 px-5 py-4 sm:flex-row sm:items-center sm:px-6">
       <p class="text-[13px] leading-relaxed text-muted-foreground">{data.storageConnection ? text.storageReadyDescription : text.storageStartDescription}</p>

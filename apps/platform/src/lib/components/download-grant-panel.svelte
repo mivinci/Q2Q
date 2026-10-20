@@ -4,15 +4,16 @@
   import { messages } from '#lib/i18n.js';
   import { uploadRequest } from '#lib/upload-client.js';
   import { Button } from '#lib/components/ui/button/index.js';
+  import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
   let { publicationId, name }: { publicationId: string; name: string } = $props();
   const text = $derived(messages[page.data.locale]);
   let grants = $state<{ id: string; createdAt: number; revokedAt: number | null }[]>([]);
   let busy = $state(false);
   let issue = $state('');
+  let confirmExport = $state(false);
   async function refresh() { grants = await uploadRequest(`/api/publications/${publicationId}/download-grants`, undefined, 'GET'); }
   onMount(() => { refresh().catch(() => { issue = text.projectActionFailed; }); });
   async function exportSeed() {
-    if (!window.confirm(text.downloadGrantWarning)) return;
     busy = true; issue = '';
     try {
       const { downloadSeed } = await import('#lib/download-seed.js');
@@ -32,7 +33,7 @@
   }
 </script>
 <div class="mt-3 w-full rounded-lg bg-muted/40 p-3">
-  <Button size="sm" variant="outline" disabled={busy} onclick={exportSeed}>{text.exportDownloadSeed}</Button>
+  <Button size="sm" variant="outline" disabled={busy} onclick={() => confirmExport = true}>{text.exportDownloadSeed}</Button>
   <p class="mt-2 text-[13px] text-muted-foreground">{text.downloadGrantWarning}</p>
   {#each grants as grant (grant.id)}
     <div class="mt-3 flex flex-wrap items-center justify-between gap-2 text-[13px]">
@@ -42,3 +43,14 @@
   {/each}
   {#if issue}<p role="alert" class="mt-2 text-sm text-destructive">{issue}</p>{/if}
 </div>
+
+<ConfirmDialog
+  open={confirmExport}
+  title={text.exportDownloadSeed}
+  description={text.downloadGrantWarning}
+  confirmLabel={text.exportDownloadSeed}
+  cancelLabel={text.cancel}
+  destructive={false}
+  onOpenChange={(open) => confirmExport = open}
+  onConfirm={() => { confirmExport = false; void exportSeed(); }}
+/>

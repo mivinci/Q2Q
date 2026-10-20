@@ -30,7 +30,7 @@
   }
 </script>
 
-<div class={`border-t ${compact ? 'px-1 py-2' : 'px-3 py-3'}`}>
+<div class={compact ? 'px-1 py-2' : 'px-3 py-3'}>
   <div class="flex min-w-0 items-center gap-1">
     <DropdownMenu.Root>
       <DropdownMenu.Trigger

@@ -9,8 +9,10 @@
   import { uploadRequest } from '#lib/upload-client.js';
   import { Button } from '#lib/components/ui/button/index.js';
   import UploadPanel from '#lib/components/upload-panel.svelte';
+  import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
   import ProcessingPanel from '#lib/components/processing-panel.svelte';
   import PublicationPanel from '#lib/components/publication-panel.svelte';
+  import ResponsiveMetadata from '#lib/components/responsive-metadata.svelte';
   import type { PageProps } from './$types';
   let { data }: PageProps = $props();
   const text = $derived(messages[page.data.locale]);
@@ -51,9 +53,9 @@
   let issue = $state('');
   let uploading = $state(false);
   let processing = $state(false);
+  let confirmDelete = $state(false);
   const blocked = $derived(data.publicationDeletionBlocked || uploading || processing || data.uploads.some((task) => ['initializing', 'uploading', 'completing'].includes(task.status) || task.cleanupPending));
   async function remove() {
-    if (!window.confirm(text.deleteFileConfirm)) return;
     deleting = true;
     issue = '';
     try {
@@ -83,21 +85,34 @@
       {/each}
     </ol>
   </section>
-  <dl class="mb-5 grid gap-5 rounded-xl border bg-card p-5 sm:grid-cols-2">
-    <div><dt class="text-[13px] text-muted-foreground">{text.size}</dt><dd class="mt-2 text-sm">{formatBytes(data.file.size, page.data.locale)}</dd></div>
-    <div><dt class="text-[13px] text-muted-foreground">{text.fileCreatedAt}</dt><dd class="mt-2 text-sm">{new Intl.DateTimeFormat(page.data.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(data.file.createdAt)}</dd></div>
-    <div><dt class="text-[13px] text-muted-foreground">{text.updated}</dt><dd class="mt-2 text-sm">{new Intl.DateTimeFormat(page.data.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(data.file.updatedAt)}</dd></div>
-  </dl>
+  <ResponsiveMetadata
+    wrapperClass="mb-5 rounded-xl border bg-card p-4 sm:grid-cols-3 sm:gap-5 sm:p-5"
+    items={[
+      { label: text.size, value: formatBytes(data.file.size, page.data.locale), valueClass: 'text-sm' },
+      { label: text.fileCreatedAt, value: new Intl.DateTimeFormat(page.data.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(data.file.createdAt), valueClass: 'text-sm' },
+      { label: text.updated, value: new Intl.DateTimeFormat(page.data.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(data.file.updatedAt), valueClass: 'text-sm' }
+    ]}
+  />
   {#if data.file.status === 'uploaded'}
     {#key data.file.id}<ProcessingPanel fileId={data.file.id} size={data.file.size} summary={data.processing} available={data.processingAvailable} canManage={data.canManage} onBusyChange={(value) => processing = value} />{/key}
   {/if}
   {#if data.currentProject}
-  <div class="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4 text-sm"><div><p class="text-[13px] text-muted-foreground">{text.nextPublicationNetwork}</p><p class="mt-1">{data.network.trackUrl ? data.network.mode === 'custom' ? text.networkCustom : text.networkPlatform : text.networkNotConfigured}</p></div><Button href="/network" variant="ghost" size="sm">{text.networkConfigure}</Button></div>
+    <div class="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4 text-sm"><div><p class="text-[13px] text-muted-foreground">{text.nextPublicationNetwork}</p><p class="mt-1">{data.network.trackUrl ? data.network.mode === 'custom' ? text.networkCustom : text.networkPlatform : text.networkNotConfigured}</p></div><Button href="/network" variant="ghost" size="sm">{text.networkConfigure}</Button></div>
     <PublicationPanel fileId={data.file.id} publications={data.publications} ready={data.processing?.status === 'ready' && data.processingAvailable && data.file.status === 'uploaded'} canManage={data.canManage} />
     {#key data.file.id}
       <UploadPanel detail onActiveChange={(value) => uploading = value} retryFile={data.canManage && data.file.status === 'pending' ? data.file : undefined} projectId={data.currentProject.id} ready={data.uploadReady && data.file.status !== 'deleting' && !deleting} storageEnabled={data.storageEnabled} localUploads={data.localUploads} maxFileSize={data.maxFileSize} storageRemainingBytes={data.storageRemainingBytes} uploads={data.uploads} />
     {/key}
   {/if}
   {#if issue}<p role="alert" class="mb-4 text-sm text-destructive">{issue}</p>{/if}
-  {#if data.canManage}<div class="border-t pt-5"><Button variant="destructive" disabled={deleting || blocked} onclick={remove}>{text.deleteFile}</Button>{#if blocked}<p class="mt-2 text-[13px] text-muted-foreground">{data.publicationDeletionBlocked ? text.publicationInUse : text.fileUploadActive}</p>{/if}</div>{/if}
+  {#if data.canManage}<div class="border-t pt-5"><Button variant="destructive" disabled={deleting || blocked} onclick={() => confirmDelete = true}>{text.deleteFile}</Button>{#if blocked}<p class="mt-2 text-[13px] text-muted-foreground">{data.publicationDeletionBlocked ? text.publicationInUse : text.fileUploadActive}</p>{/if}</div>{/if}
 </div>
+
+<ConfirmDialog
+  open={confirmDelete}
+  title={text.deleteFile}
+  description={text.deleteFileConfirm}
+  confirmLabel={text.deleteFile}
+  cancelLabel={text.cancel}
+  onOpenChange={(open) => confirmDelete = open}
+  onConfirm={() => { confirmDelete = false; void remove(); }}
+/>
