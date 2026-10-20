@@ -5,7 +5,8 @@ use tokio::sync::mpsc;
 use webrtc::data_channel::{DataChannel, RTCDataChannelInit};
 use webrtc::peer_connection::{
   PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
-  RTCIceCandidateInit, RTCIceServer, RTCPeerConnectionIceEvent, RTCPeerConnectionState,
+  RTCIceCandidateInit, RTCIceConnectionState, RTCIceGatheringState, RTCIceServer,
+  RTCPeerConnectionIceErrorEvent, RTCPeerConnectionIceEvent, RTCPeerConnectionState,
   RTCSessionDescription,
 };
 
@@ -26,6 +27,23 @@ impl PeerConnectionEventHandler for Events {
         .in_scope(|| crate::peer::log_candidate("gathered", &candidate));
       let _ = self.candidates.send(candidate);
     }
+  }
+
+  async fn on_ice_candidate_error(&self, event: RTCPeerConnectionIceErrorEvent) {
+    // Error text/URL may contain credentials; retain only structured safe fields.
+    self.span.in_scope(|| tracing::debug!(error_code = event.error_code, address = %event.address, port = event.port, "ICE server request failed"));
+  }
+
+  async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
+    self
+      .span
+      .in_scope(|| tracing::debug!(?state, "ICE connection state"));
+  }
+
+  async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+    self
+      .span
+      .in_scope(|| tracing::debug!(?state, "ICE gathering state"));
   }
 
   async fn on_data_channel(&self, channel: Arc<dyn DataChannel>) {
@@ -180,6 +198,41 @@ impl RtcConnection {
       candidate = self.candidates.recv() => candidate.map(RtcEvent::Candidate),
       channel = self.channels.recv() => channel.map(RtcEvent::Channel),
       state = self.states.recv() => state.map(RtcEvent::State),
+    }
+  }
+
+  /// Snapshot the selected path at channel establishment, never infer it from
+  /// gathered candidates. Diagnostics must not fail an otherwise valid transfer.
+  pub(crate) async fn log_selected_path(&self) {
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+      return;
+    }
+    let Some(sctp) = self.peer.sctp().await else {
+      tracing::debug!("Selected ICE path unavailable: SCTP transport missing");
+      return;
+    };
+    match sctp
+      .transport()
+      .ice_transport()
+      .get_selected_candidate_pair()
+      .await
+    {
+      Ok(Some(pair)) => {
+        let local = pair.local();
+        let remote = pair.remote();
+        let path = if local.typ == webrtc::peer_connection::RTCIceCandidateType::Relay
+          || remote.typ == webrtc::peer_connection::RTCIceCandidateType::Relay
+        {
+          "turn"
+        } else {
+          "direct"
+        };
+        tracing::debug!(path, local_type = %local.typ, local_address = %local.address, local_port = local.port,
+          local_protocol = %local.protocol, remote_type = %remote.typ, remote_address = %remote.address,
+          remote_port = remote.port, remote_protocol = %remote.protocol, "Selected ICE path at channel establishment");
+      }
+      Ok(None) => tracing::debug!("Selected ICE path unavailable"),
+      Err(_) => tracing::debug!("Selected ICE path lookup failed"),
     }
   }
 

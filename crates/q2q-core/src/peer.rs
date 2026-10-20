@@ -118,7 +118,7 @@ pub(crate) async fn dial(
   }
 
   tracing::debug!(%connection_id, "Peer accepted; creating WebRTC offer");
-  let mut rtc = rtc_connection(turn, &connection_id).await?;
+  let mut rtc = rtc_connection(turn).await?;
   let (offer, data_channel) = rtc.offer().await.map_err(ControlError::Transport)?;
   let mut offer_message = message(SignalType::Offer, &connection_id);
   offer_message.connect_token = Some(token);
@@ -316,7 +316,7 @@ impl PendingPeer {
     }
     tracing::debug!("Received WebRTC offer; creating answer");
     let offer = description(&offered, RTCSdpType::Offer)?;
-    let mut rtc = rtc_connection(&self.turn, &connect.connection_id).await?;
+    let mut rtc = rtc_connection(&self.turn).await?;
     let answer = rtc.answer(offer).await.map_err(ControlError::Transport)?;
     let mut answer_message = message(SignalType::Answer, &connect.connection_id);
     answer_message.sdp = Some(
@@ -381,11 +381,7 @@ fn verify_accept(
   Ok(())
 }
 
-#[tracing::instrument(skip_all, fields(connection_id = %connection_id))]
-async fn rtc_connection(
-  turn: &TurnWire,
-  connection_id: &str,
-) -> Result<RtcConnection, ControlError> {
+async fn rtc_connection(turn: &TurnWire) -> Result<RtcConnection, ControlError> {
   let creds = (turn.expires_at > q2q_punch::binding::now()).then_some((
     turn.url.as_str(),
     turn.username.as_str(),
@@ -484,7 +480,6 @@ impl SignalChannel for PunchEphemeral {
   }
 }
 
-#[tracing::instrument(skip_all, fields(connection_id = %connection_id))]
 async fn negotiate(
   rtc: &mut RtcConnection,
   signal: &impl SignalChannel,
@@ -577,6 +572,7 @@ async fn negotiate(
         },
       }
       if connected && control_open && data_open {
+        rtc.log_selected_path().await;
         let data = data.ok_or_else(|| ControlError::Protocol("missing data channel".into()))?;
         if data.ordered().await.map_err(|e| ControlError::Transport(e.to_string()))?
           || data.max_retransmits().await.map_err(|e| ControlError::Transport(e.to_string()))? != Some(0)

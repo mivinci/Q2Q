@@ -29,7 +29,11 @@ ICE 候选收集与发送/接收（host/srflx/relay、协议和地址）、WebRT
 数据通道打开及握手失败原因。协商超时会显示连接与两个数据通道的就绪状态。
 通过 peer ID 和 connection ID 关联两端日志；日志包含公网/私网地址，分享前注意隐私。
 不输出 TURN 密码、用户名、信令票据或完整 SDP。候选为 relay 只表示存在中继候选，
-不代表最终选中了中继路径；当前日志不提供选中候选对或 TURN 流量统计。
+不代表最终选中了中继路径。通道建立时输出 `Selected ICE path at channel establishment`，
+`path="turn"` 表示至少一侧选中了 relay；`path="direct"` 表示未使用 TURN。
+同时显示两侧选中候选的类型、协议、地址和端口。这是建连时的快照，不是持续路径监控；
+查询失败会显示 unavailable/failed，不影响传输，也不推断为直连。暂不提供 TURN 流量统计。
+详细日志与进度条共用终端渲染器，日志输出时暂停重绘，避免覆盖日志。
 默认不启用详细日志；`--quiet --verbose` 抑制进度但保留诊断，stdout 结果格式不变。
 
 ## 离线生成种子

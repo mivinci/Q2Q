@@ -119,4 +119,13 @@
 - [x] TURN 服务与有效期状态；ICE 候选收集、发送、接收；WebRTC 状态与通道打开；超时阶段与上传握手错误。
 - [x] 按 peer/connection ID 关联，不记录凭据、票据、完整 SDP 或完整 candidate。
 - [x] 同步中英文指南，说明网络地址隐私及 relay 候选不等于选中中继路径。
-- `cargo check --locked --offline -p q2q`、格式检查与 `git diff --check` 通过；本轮未运行测试。选中候选对及流量统计不在本次实现内。
+- `cargo check --locked --offline -p q2q`、格式检查与 `git diff --check` 通过；本轮未运行测试。此阶段未实现选中候选对及流量统计；后续选中路径补充见下节。
+
+### 选中路径与输出复查
+
+- [x] 通道就绪后查询 SDK 的 selected candidate pair，显示 direct/turn 与两侧结构化候选信息；查询不可用不影响传输。只记录建连快照，不声称持续监控。
+- [x] 补充 ICE gathering/connection state 和 ICE 服务错误码，不记录错误原文/URL。
+- [x] verbose 日志与 metadata/preparation/transfer 进度统一通过同一个 MultiProgress 渲染，日志写入暂停重绘；及时移除已结束进度条。
+- [x] 普通模式继续显示交互进度，重定向继续按行输出，quiet 抑制进度，stdout 保留成功路径/磁力链。
+- [x] 同步中英文说明。未运行测试。
+- 本轮 `cargo check --locked --offline -p q2q` 与 `git diff --check` 通过；真实终端渲染及联网路径日志待设备验证。

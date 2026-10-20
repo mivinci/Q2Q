@@ -32,7 +32,13 @@ and handshake failures. Negotiation timeouts include connection and channel read
 Correlate logs using peer and connection IDs. Logs contain public/private network
 addresses; review them before sharing. TURN passwords/usernames, signalling tickets
 and full SDP are excluded. A relay candidate does not prove the selected path uses
-TURN; selected-pair and TURN traffic statistics are not currently reported.
+TURN. Once channels open, `Selected ICE path at channel establishment` reports
+`path="turn"` if either selected candidate is relay, otherwise `path="direct"`,
+with both candidate types, protocols, addresses and ports. This is an establishment
+snapshot, not continuous path monitoring. Unavailable/failed lookups are reported
+without interrupting the transfer or guessing a direct path. TURN traffic statistics
+are not reported. Diagnostics suspend the shared progress renderer while writing,
+so live progress does not overwrite log lines.
 Diagnostics are off by default. `--quiet --verbose` hides progress while retaining
 diagnostics; stdout result formatting is unchanged.
 

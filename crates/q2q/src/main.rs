@@ -19,7 +19,7 @@ async fn main() -> ExitCode {
   if args.verbose {
     tracing_subscriber::fmt()
       .with_env_filter("off,q2q_core=debug")
-      .with_writer(std::io::stderr)
+      .with_writer(|| progress::DiagnosticWriter)
       .with_ansi(false)
       .with_target(false)
       .init();
