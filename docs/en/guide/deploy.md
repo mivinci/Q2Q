@@ -20,6 +20,9 @@ flowchart LR
   P -->|QUIC over UDP| PS[Punch]
   P -.->|optional WSS over TCP/TLS| PS
   P -->|relay| CT[coturn]
+
+    class P core
+    class CT support
 ```
 
 ### Images
@@ -84,6 +87,9 @@ flowchart TB
   T2 --> S
   P -->|direct| PS1[Punch 1]
   P -->|direct| PS2[Punch 2]
+
+    class P,LB,T1,T2 core
+    class S,PS1,PS2 support
 ```
 
 **Track is stateless.** Any instance can serve any request, so it sits behind an

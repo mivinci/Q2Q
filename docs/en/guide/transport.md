@@ -31,6 +31,9 @@ flowchart TB
     Workers --> Dest["Verification and commit<br/>destination.rs"]
     Handles -->|"Verified reads"| Dest
     Dest --> Store["Disk and receipts<br/>download_store.rs"]
+
+    class Client,Peer,Dest core
+    class Rate,Stats,DownloadStats,Cache support
 ```
 
 The shared `control.rs` / `online.rs` modules sit outside this diagram and provide Track discovery, Punch sessions and heartbeat maintenance for publication and download tasks. The block queue and source policy are expanded in [Scheduling](./scheduling).

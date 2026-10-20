@@ -27,6 +27,9 @@ flowchart TB
     Commit --> Disk["Verify, write, recheck disk<br/>Sync data, then sync receipt"]
     Disk -->|"Complete lease after durability"| Done
     Done --> N["Update progress and wake readers"]
+
+    class D,Policy,Commit,Done core
+    class C,N support
 ```
 
 - **Policy** performs no network I/O. It tracks the window, source availability, urgent deadlines and source errors.

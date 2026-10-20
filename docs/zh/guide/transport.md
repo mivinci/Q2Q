@@ -31,6 +31,9 @@ flowchart TB
     Workers --> Dest["校验与提交<br/>destination.rs"]
     Handles -->|"已验证读取"| Dest
     Dest --> Store["磁盘与检查点<br/>download_store.rs"]
+
+    class Client,Peer,Dest core
+    class Rate,Stats,DownloadStats,Cache support
 ```
 
 共享的 `control.rs` / `online.rs` 位于图外，为发布和下载提供 Track 查询、Punch 会话与心跳维护。块队列与来源策略在 [调度](./scheduling) 中展开。
