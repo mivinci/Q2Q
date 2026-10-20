@@ -2,7 +2,7 @@
 // 构建产物自检：起一个静态服务器（VitePress 的 dist 用绝对路径引用资源，
 // 直接 file:// 打开会挂），然后用 playwright 打开文档页检查。
 //
-// 检查页面、侧边栏/目录、Mermaid 渲染与明暗切换、多行标签和窄屏滚动；
+// 检查页面、侧边栏/目录、Mermaid 渲染与明暗切换、多行标签和窄屏缩放；
 // 最后覆盖客户端页面导航及连续主题切换，确认异步重绘不会覆盖新页面。
 
 import { existsSync } from 'node:fs';
@@ -165,11 +165,14 @@ for (const PAGE of PAGES) {
       [...document.querySelectorAll('.mermaid')].every(el => {
         const bounds = el.getBoundingClientRect();
         const svg = el.querySelector('svg');
+        const graphic = svg.getBoundingClientRect();
         return bounds.left >= 0 && bounds.right <= innerWidth + 1
-          && svg.getBoundingClientRect().width + 1 >= svg.viewBox.baseVal.width;
+          && graphic.width > 0 && graphic.height > 0
+          && graphic.left >= bounds.left - 1 && graphic.right <= bounds.right + 1
+          && el.scrollWidth <= el.clientWidth + 1;
       }),
     );
-    appearances.push(['窄屏图框与文字尺寸', contained, contained]);
+    appearances.push(['窄屏图形缩放且无横向溢出', contained, contained]);
   }
 
   // 首页没有侧边栏，设计文档暂时没有入口也没有——只有指南各节要求它
