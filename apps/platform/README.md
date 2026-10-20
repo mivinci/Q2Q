@@ -87,6 +87,19 @@ npx shadcn-svelte@latest add dialog --cwd apps/platform
 
 `/settings` 集中承载外观和语言。外观仍保存在当前浏览器，语言仍使用 Cookie；切换语言后留在设置页。登录页保留进入平台前的语言与外观选择。设置页要求登录，不向匿名访问者暴露项目数据。
 
+## Registry 节点状态
+
+登录后的 `/nodes` 页面以只读方式展示 Registry 中的 Track 和 Punch 状态。Platform 服务端请求 Registry 的 `GET /v1/nodes`，浏览器不会收到 Registry token、服务地址或节点公钥。离线节点仍显示最后一次上报的状态和指标，并明确标记为历史快照。
+
+本地开发时，在 `.dev.vars` 中配置：
+
+```dotenv
+REGISTRY_URL=https://registry.example.com
+REGISTRY_NODES_TOKEN=<由 keygen 签发且含 nodes:read:display 权限的 token>
+```
+
+`REGISTRY_URL` 填 Registry 的 HTTPS origin；Platform 会请求其 `/v1/nodes` 接口。生产环境将 `REGISTRY_URL` 添加为 Platform Worker 环境变量，并将 `REGISTRY_NODES_TOKEN` 配置为 Worker secret。不要把 token 写入 `wrangler.jsonc`、提交到版本库或配置到浏览器。未配置时页面会提示尚未接入；Registry 不可用或响应不合法时会显示独立错误状态，不会伪装成空节点列表。页面不自动轮询，使用“刷新状态”重新读取。
+
 ## 项目存储
 
 `/storage` 展示当前项目的平台存储接入配置。成员可查看，只有项目 owner 可启用；操作登记 D1 连接记录并保持幂等，不创建云资源。生产额度、计费、自带 S3 与种子生成仍待接入。上传实现见下文。

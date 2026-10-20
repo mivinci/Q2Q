@@ -19,6 +19,9 @@ toml = "1.1.8"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls"] }
+url = "2.5.8"
+
 [dev-dependencies]
 redis = { version = "1.7.1", features = ["tokio-comp", "connection-manager"] }
 tower = "0.5.3"

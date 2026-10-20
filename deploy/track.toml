@@ -31,3 +31,13 @@ url = "quic://punch.example.com:4433"
 # Filled in during bootstrap: start Punch first, read its public key from the
 # log, paste it here. Leaving it wrong means clients reject the server.
 public_key = "PASTE_PUNCH_PUBLIC_KEY_HERE"
+
+# Alternatively, remove every [[punch]] section above and use Registry as the
+# exclusive Punch source. For both service discovery and Registry presence,
+# the Track token needs nodes:write:self and discovery:punch:read.
+# [registry]
+# url = "https://registry.example.com"
+# token_file = "/etc/q2q/secrets/track.token"
+# region = "hk"
+# accepting_new_connections = true
+# Or set Q2Q_REGISTRY_TOKEN instead of token_file.

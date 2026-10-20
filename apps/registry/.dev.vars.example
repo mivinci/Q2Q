@@ -1,0 +1,3 @@
+# Replace with the public JWKS exported by q2q-keygen. Empty keys fail closed.
+# Never place a private JWK or service token here.
+REGISTRY_JWKS='{"keys":[]}'

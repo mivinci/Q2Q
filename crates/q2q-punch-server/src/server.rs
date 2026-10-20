@@ -41,12 +41,14 @@ pub struct State {
   pub punch_id: String,
   pub ttl: UnixSeconds,
   pub max_request_bytes: usize,
+  pub quic_slots: Arc<Semaphore>,
+  pub websocket_slots: Arc<Semaphore>,
 }
 
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const CONNECTION_LIMIT: usize = 1024;
+pub const CONNECTION_LIMIT: usize = 1024;
 const CONNECTIONS_PER_IP: usize = 32;
 const WEBSOCKET_WRITE_QUEUE: usize = 64;
 
@@ -447,7 +449,7 @@ pub fn endpoint(identity: &PunchIdentity, bind: SocketAddr) -> Result<Endpoint, 
 }
 
 pub async fn serve(endpoint: Endpoint, state: Arc<State>) {
-  let connections = Arc::new(Semaphore::new(CONNECTION_LIMIT));
+  let connections = state.quic_slots.clone();
   let per_ip = PerIpConnections(Arc::new(Mutex::new(HashMap::new())));
   while let Some(incoming) = endpoint.accept().await {
     let Ok(permit) = connections.clone().try_acquire_owned() else {
@@ -477,7 +479,7 @@ pub async fn serve_websocket(
   acceptor: TlsAcceptor,
   state: Arc<State>,
 ) -> std::io::Result<()> {
-  let global_connections = Arc::new(Semaphore::new(CONNECTION_LIMIT));
+  let global_connections = state.websocket_slots.clone();
   let per_ip_connections = PerIpConnections(Arc::new(Mutex::new(HashMap::new())));
   loop {
     let (stream, remote) = listener.accept().await?;
@@ -844,6 +846,8 @@ mod tests {
       punch_id: "punch-1".into(),
       ttl,
       max_request_bytes: 64 * 1024,
+      quic_slots: Arc::new(Semaphore::new(CONNECTION_LIMIT)),
+      websocket_slots: Arc::new(Semaphore::new(CONNECTION_LIMIT)),
     }
   }
 
@@ -1179,8 +1183,17 @@ mod tests {
     assert_eq!(resp.id, "r-3");
     assert!(resp.error.is_none(), "{:?}", resp.error);
 
+    assert_eq!(st.quic_slots.available_permits(), CONNECTION_LIMIT - 1);
+    assert_eq!(st.bindings.live_count(q2q_punch::binding::now()), 1);
     conn.close(0u32.into(), b"done");
     client.wait_idle().await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+      while st.quic_slots.available_permits() != CONNECTION_LIMIT {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+      }
+    })
+    .await
+    .unwrap();
   }
 
   #[tokio::test]

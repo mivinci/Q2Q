@@ -4,8 +4,9 @@
 //! a socket, a config file and a sweep loop.
 
 mod api;
+mod directory;
+mod registry;
 
-use axum::Router;
 use clap::Parser;
 use q2q_primitives::identity::PeerId;
 use q2q_track::redis::RedisState;
@@ -23,7 +24,8 @@ use std::time::Duration;
 /// ConnectInfo has to be asked for explicitly: without it the rate limiter
 /// finds no peer address and lets everything through. Unit tests cannot see
 /// that, because they call the router directly and never go through here.
-async fn serve(listener: tokio::net::TcpListener, app: Router) -> std::io::Result<()> {
+#[cfg(test)]
+async fn serve(listener: tokio::net::TcpListener, app: axum::Router) -> std::io::Result<()> {
   axum::serve(
     listener,
     app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -38,6 +40,7 @@ struct Config {
   bind: SocketAddr,
   #[serde(default)]
   punch: Vec<PunchServer>,
+  registry: Option<registry::Config>,
   #[serde(default = "default_turn_url")]
   turn_url: String,
   #[serde(default)]
@@ -236,7 +239,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     StateConfig::Memory => StateBackend::Memory(MemoryState::new()),
     StateConfig::Redis { url } => StateBackend::Redis(RedisState::connect(url).await?),
   });
-  let punch_list = api::PunchList::new(config.punch_servers()?);
+  if config.registry.is_some() && !config.punch.is_empty() {
+    return Err("configure either [[punch]] entries or [registry], not both".into());
+  }
+  let static_directory = if config.registry.is_none() {
+    Some(directory::StaticPunchDirectory::new(
+      config.punch_servers()?,
+    ))
+  } else {
+    None
+  };
+  let registry_directory = if let Some(registry_config) = &config.registry {
+    let token = match std::env::var("Q2Q_REGISTRY_TOKEN") {
+      Ok(value) => Some(value),
+      Err(std::env::VarError::NotPresent) => None,
+      Err(std::env::VarError::NotUnicode(_)) => {
+        return Err("Q2Q_REGISTRY_TOKEN is not valid Unicode".into());
+      }
+    };
+    Some(registry::RegistryPunchDirectory::prepare(
+      registry_config,
+      token,
+    )?)
+  } else {
+    None
+  };
+  let punch_list: Arc<dyn directory::PunchDirectory> =
+    match (&static_directory, &registry_directory) {
+      (Some(value), None) => value.clone(),
+      (None, Some(value)) => value.clone(),
+      _ => return Err("configure exactly one Punch directory source".into()),
+    };
   let track_config = Arc::new(api::TrackConfig {
     turn_url: config.turn_url.clone(),
     turn_secret: config.turn_secret.clone(),
@@ -261,39 +294,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
   });
 
-  // the list is deployment state: an instance can move, so watch the file and
-  // swap it in without a restart
-  let watch = punch_list.clone();
-  let path = args.config.clone();
-  let every = Duration::from_secs(config.reload_interval.max(1));
-  tokio::spawn(async move {
-    let mut seen = modified(&path);
-    loop {
-      tokio::time::sleep(every).await;
-      let now = modified(&path);
-      if now == seen {
-        continue;
-      }
-      seen = now;
-      match Config::load(&path)
-        .map_err(|e| e.to_string())
-        .and_then(|c| c.punch_servers())
-      {
-        Ok(next) => {
-          tracing::info!(count = next.len(), "reloaded the Punch list");
-          watch.replace(next);
+  // Static deployments retain their existing atomic file-reload behaviour.
+  if let Some(watch) = static_directory {
+    let path = args.config.clone();
+    let every = Duration::from_secs(config.reload_interval.max(1));
+    tokio::spawn(async move {
+      let mut seen = modified(&path);
+      loop {
+        tokio::time::sleep(every).await;
+        let now = modified(&path);
+        if now == seen {
+          continue;
         }
-        // keep serving the old list: a typo should not take the service down
-        Err(e) => tracing::warn!("keeping the old Punch list: {e}"),
+        seen = now;
+        match Config::load(&path)
+          .map_err(|e| e.to_string())
+          .and_then(|c| c.punch_servers())
+        {
+          Ok(next) => {
+            tracing::info!(count = next.len(), "reloaded the Punch list");
+            watch.replace(next);
+          }
+          Err(error) => tracing::warn!("keeping the old Punch list: {error}"),
+        }
       }
-    }
-  });
+    });
+  }
 
   let app = api::router_with(state, track_config, punch_list, api::limiter());
   let listener = tokio::net::TcpListener::bind(config.bind).await?;
   tracing::info!(bind = %config.bind, "listening");
-  serve(listener, app).await?;
+  let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+  let registry_task = registry_directory.map(|directory| tokio::spawn(directory.run(stop_rx)));
+  let server = axum::serve(
+    listener,
+    app.into_make_service_with_connect_info::<SocketAddr>(),
+  )
+  .with_graceful_shutdown(shutdown_signal());
+  let result = server.await;
+  let _ = stop_tx.send(true);
+  if let Some(task) = registry_task
+    && task.await.is_err()
+  {
+    tracing::error!("Registry discovery task exited unexpectedly");
+  }
+  result?;
   Ok(())
+}
+
+async fn shutdown_signal() {
+  #[cfg(unix)]
+  {
+    let Ok(mut terminate) =
+      tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    else {
+      return;
+    };
+    tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+  }
+  #[cfg(not(unix))]
+  {
+    let _ = tokio::signal::ctrl_c().await;
+  }
 }
 
 fn modified(path: &PathBuf) -> Option<std::time::SystemTime> {
@@ -303,6 +365,7 @@ fn modified(path: &PathBuf) -> Option<std::time::SystemTime> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use axum::Router;
   use axum::extract::ConnectInfo;
   use axum::routing::get;
   use base64::Engine as _;

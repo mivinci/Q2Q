@@ -4,17 +4,21 @@
 //! it *does* issue is a TURN credential, because relay capacity costs money and
 //! has to be rate limited somewhere.
 
+#[cfg(test)]
+use crate::directory::StaticPunchDirectory as PunchList;
+use crate::directory::{DirectoryError, PunchDirectory};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use parking_lot::RwLock;
 use q2q_primitives::identity::PeerId;
 use q2q_ratelimit::{Limiter, RateLimitLayer, Rule};
 use q2q_track::auth::{self, AuthError};
-use q2q_track::state::{InfoHash, PunchAssignment, StateError, TrackState, UnixSeconds};
+#[cfg(test)]
+use q2q_track::state::PunchAssignment;
+use q2q_track::state::{InfoHash, StateError, TrackState, UnixSeconds};
 use q2q_track::wire::{
   AnnounceRequest, AnnounceResponse, ErrorBody, HeartbeatRequest, HeartbeatResponse, PeerWire,
   PunchWire, QueryParams, QueryResponse, TurnWire,
@@ -54,40 +58,7 @@ pub struct AppState<S: TrackState> {
   pub config: Arc<TrackConfig>,
   /// Replaceable at runtime: an instance can be moved or retired, and the next
   /// query has to hand out whatever is true now.
-  pub punch: Arc<PunchList>,
-}
-
-/// The Punch Servers Track knows about. Read on every query, because the
-/// address is deployment state rather than identity — the public key is the
-/// long-lived part, and clients must not cache either.
-#[derive(Debug)]
-pub struct PunchList(RwLock<Vec<PunchAssignment>>);
-
-impl PunchList {
-  pub fn new(list: Vec<PunchAssignment>) -> Arc<PunchList> {
-    Arc::new(PunchList(RwLock::new(list)))
-  }
-
-  /// Swap in a new list. Kept separate from `snapshot` so a reload cannot observe a
-  /// half-written list.
-  pub fn replace(&self, list: Vec<PunchAssignment>) {
-    *self.0.write() = list;
-  }
-
-  pub fn snapshot(&self) -> HashMap<String, PunchAssignment> {
-    self
-      .0
-      .read()
-      .iter()
-      .map(|p| (p.punch_id.clone(), p.clone()))
-      .collect()
-  }
-
-  /// Which Punch Server to hand to a peer that just announced. With one entry
-  /// this is that entry; the policy lives here so it has one home.
-  pub fn assign(&self) -> Option<PunchAssignment> {
-    self.0.read().first().cloned()
-  }
+  pub punch: Arc<dyn PunchDirectory>,
 }
 
 // Hand-written: deriving Clone would require `S: Clone`, which state backends
@@ -118,7 +89,7 @@ pub fn limiter() -> Arc<Limiter> {
 pub fn router_with<S: TrackState + 'static>(
   state: Arc<S>,
   config: Arc<TrackConfig>,
-  punch: Arc<PunchList>,
+  punch: Arc<dyn PunchDirectory>,
   limits: Arc<Limiter>,
 ) -> Router {
   let app = AppState {
@@ -163,7 +134,9 @@ fn fail(code: &'static str, detail: Option<String>) -> (StatusCode, Json<ErrorBo
     "bad_signature" | "key_not_issuer" | "expired" | "wrong_audience" | "bad_mac"
     | "stale_timestamp" => StatusCode::UNAUTHORIZED,
     "unknown_session" => StatusCode::UNAUTHORIZED,
-    "storage_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+    "storage_unavailable" | "discovery_unavailable" | "no_available_punch" => {
+      StatusCode::SERVICE_UNAVAILABLE
+    }
     _ => StatusCode::INTERNAL_SERVER_ERROR,
   };
 
@@ -181,6 +154,17 @@ fn fail(code: &'static str, detail: Option<String>) -> (StatusCode, Json<ErrorBo
     Json(ErrorBody {
       code: code.into(),
       detail,
+    }),
+  )
+}
+
+fn directory_failure(_: DirectoryError) -> (StatusCode, Json<ErrorBody>) {
+  // Background refresh logs discovery failures; avoid one error log per Peer request.
+  (
+    StatusCode::SERVICE_UNAVAILABLE,
+    Json(ErrorBody {
+      code: "discovery_unavailable".into(),
+      detail: None,
     }),
   )
 }
@@ -261,11 +245,10 @@ async fn announce<S: TrackState>(
   let ttl = req.ttl.min(app.config.max_ttl);
   let expires_at = now + ttl;
 
-  let Some(punch) = app.punch.assign() else {
+  let Some(punch) = app.punch.assign(&ticket.iss).map_err(directory_failure)? else {
     // no Punch Server listed means nobody can be reached; say so rather than
     // handing out an empty address
-    tracing::error!("no Punch Server configured");
-    return Err(fail("not_configured", Some("no Punch Server".into())));
+    return Err(fail("no_available_punch", None));
   };
 
   let session_key = match random_32() {
@@ -365,6 +348,17 @@ async fn heartbeat<S: TrackState>(
   )
   .map_err(auth_failure)?;
 
+  if app.punch.requires_matching_identity() {
+    let current = app
+      .punch
+      .get(&record.punch.punch_id)
+      .map_err(directory_failure)?;
+    if current.as_ref() != Some(&record.punch) {
+      // Reuse the SDK's existing reannounce path; never migrate a binding by editing its ID.
+      return Err(fail("unknown_session", None));
+    }
+  }
+
   let ttl = app.config.max_ttl.min(3600);
   let expires_at = now + ttl;
   app
@@ -433,7 +427,8 @@ async fn query<S: TrackState>(
 
   let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
   // Resolve one Punch snapshot for the whole selection and response.
-  let punches: HashMap<_, _> = app.punch.snapshot();
+  let snapshot = app.punch.snapshot().map_err(directory_failure)?;
+  let punches = snapshot.nodes;
   let punch_ids = punches.keys().cloned().collect();
   let mut entropy = [0; 32];
   getrandom::fill(&mut entropy).map_err(|_| {
@@ -462,8 +457,24 @@ async fn query<S: TrackState>(
     q2q_track::selection::SelectionError::State(error) => state_failure(error),
     _ => fail("bad_request", Some("invalid query cursor or limit".into())),
   })?;
-  let peers = selection
-    .peers
+  let mut compatible = Vec::new();
+  for candidate in selection.peers {
+    if snapshot.strict_identity {
+      let Some(record) = app
+        .state
+        .online(&candidate.peer_id, now)
+        .await
+        .map_err(state_failure)?
+      else {
+        continue;
+      };
+      if record.punch != punches[&candidate.punch_id] {
+        continue;
+      }
+    }
+    compatible.push(candidate);
+  }
+  let peers = compatible
     .into_iter()
     .map(|c| {
       let punch = &punches[&c.punch_id];
