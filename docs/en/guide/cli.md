@@ -244,3 +244,7 @@ the command reports the error and exits with 1.
 
 This first version has no daemon mode, GUI, browser receiver, account service,
 or automatic background seeding.
+
+## Maintainer releases
+
+See [version preparation, approval, publishing and CI impact gating](./cli-release.md).

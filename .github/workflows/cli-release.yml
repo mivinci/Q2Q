@@ -2,114 +2,68 @@ name: CLI release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
+  deployments: read
+
+concurrency:
+  group: cli-release
+  cancel-in-progress: false
 
 jobs:
-  validate-tag:
-    name: Validate release tag
+  validate:
     runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.release.outputs.sha }}
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Check tag matches CLI version
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "q2q") | .version')"
-          test "$GITHUB_REF_NAME" = "v$version"
-
-  build:
-    name: Build ${{ matrix.target }}
-    needs: validate-tag
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: windows-2022
-            target: x86_64-pc-windows-msvc
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          fetch-depth: 0
+      - name: Validate version, main ancestry, CI and approval configuration
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/cli-release.py resolve
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Build CLI
-        run: cargo build --locked --release -p q2q --target ${{ matrix.target }}
-
-      - name: Package Unix binary
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          name="q2q-${version}-${{ matrix.target }}"
-          mkdir -p dist/staging
-          cp "target/${{ matrix.target }}/release/q2q" dist/staging/
-          cp LICENSE README.md dist/staging/
-          tar -czf "dist/${name}.tar.gz" -C dist/staging .
-
-      - name: Package Windows binary
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $version = $env:GITHUB_REF_NAME.Substring(1)
-          $name = "q2q-$version-${{ matrix.target }}"
-          New-Item -ItemType Directory -Path dist/staging -Force | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/q2q.exe" dist/staging/
-          Copy-Item LICENSE dist/staging/
-          Copy-Item README.md dist/staging/
-          Compress-Archive -Path dist/staging/* -DestinationPath "dist/$name.zip"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: q2q-${{ matrix.target }}
-          path: dist/q2q-*
-          if-no-files-found: error
-          retention-days: 7
-
-  release:
-    name: Publish GitHub release
-    needs: [validate-tag, build]
+  approve:
+    name: Approve CLI release and create tag
+    needs: validate
     runs-on: ubuntu-24.04
+    environment:
+      name: cli-release
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
         with:
-          path: dist
-          merge-multiple: true
-
-      - name: Create checksums
-        run: cd dist && sha256sum q2q-* > SHA256SUMS
-
-      - name: Create release
+          ref: ${{ needs.validate.outputs.sha }}
+          fetch-depth: 0
+      - name: Create immutable release tag
         env:
-          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_SHA: ${{ needs.validate.outputs.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          if git rev-parse --verify "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_SHA"
           else
-            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes --title "Q2Q $GITHUB_REF_NAME"
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git tag -a "$RELEASE_TAG" "$RELEASE_SHA" -m "Q2Q CLI $RELEASE_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
           fi
+
+  publish:
+    needs: [validate, approve]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/cli-release-build.yml
+    with:
+      sha: ${{ needs.validate.outputs.sha }}
+      tag: ${{ needs.validate.outputs.tag }}

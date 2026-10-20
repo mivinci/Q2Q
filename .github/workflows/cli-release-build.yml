@@ -1,0 +1,132 @@
+name: CLI release build
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build CLI
+        run: cargo build --locked --release -p q2q --target ${{ matrix.target }}
+
+      - name: Verify Unix binary version
+        if: runner.os != 'Windows'
+        shell: bash
+        run: test "$(target/${{ matrix.target }}/release/q2q --version)" = "q2q ${RELEASE_TAG#v}"
+
+      - name: Verify Windows binary version
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $actual = & "target/${{ matrix.target }}/release/q2q.exe" --version
+          if ($LASTEXITCODE -ne 0 -or $actual -ne "q2q $($env:RELEASE_TAG.Substring(1))") {
+            throw "CLI binary version does not match release tag"
+          }
+
+      - name: Package Unix binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          name="q2q-${version}-${{ matrix.target }}"
+          mkdir -p dist/staging
+          cp "target/${{ matrix.target }}/release/q2q" dist/staging/
+          cp LICENSE README.md dist/staging/
+          tar -czf "dist/${name}.tar.gz" -C dist/staging .
+
+      - name: Package Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG.Substring(1)
+          $name = "q2q-$version-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path dist/staging -Force | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/q2q.exe" dist/staging/
+          Copy-Item LICENSE dist/staging/
+          Copy-Item README.md dist/staging/
+          Compress-Archive -Path dist/staging/* -DestinationPath "dist/$name.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: q2q-${{ matrix.target }}
+          path: dist/q2q-*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        run: cd dist && sha256sum q2q-* > SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true || {
+              echo "Release already published; assets are immutable."
+              exit 1
+            }
+          else
+            gh release create "$RELEASE_TAG" --draft --verify-tag --generate-notes --title "Q2Q $RELEASE_TAG"
+          fi
+          # Only drafts may be repaired on retry. Publish after all assets exist.
+          gh release upload "$RELEASE_TAG" dist/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest
