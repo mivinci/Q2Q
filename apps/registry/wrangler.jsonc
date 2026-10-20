@@ -4,12 +4,14 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-20",
   "workers_dev": false,
+  "routes": [
+    { "pattern": "registry.q2q.app", "custom_domain": true }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "q2q-registry",
-      // Replace with the ID from `wrangler d1 create q2q-registry` before deployment.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "b0105b50-d7a5-4ee5-9f2d-706b1b2d8995",
       "migrations_dir": "migrations"
     }
   ]

@@ -2,6 +2,8 @@
 
 独立节点注册及状态服务，技术选型为 TypeScript、Hono、Zod、Cloudflare Workers 和 D1。当前已完成认证、Worker 入口、D1 迁移、节点上报和列表接口；已实现按节点上报限流；Punch 后台上报、Track 自身状态上报及 Track 服务发现均已接入。
 
+完整的密钥生成、公钥配置、三类服务 token 签发、接入、续签与轮换流程见[部署指南](../../docs/zh/guide/deploy-single-node.md)（[English](../../docs/en/guide/deploy-single-node.md)）。
+
 ## 认证
 
 `src/auth.ts` 提供 Hono `authentication()`、`permissionRequired()` 中间件，以及可独立验证的 `createVerifier()` 和 `authorize()`。认证错误通过带安全 `code`、`status`、`message` 的异常返回，Worker 入口统一转换为 JSON。
@@ -50,6 +52,27 @@ npm test --workspace @q2q/registry
 
 测试使用 Node.js 22.18+／24 的 TypeScript 类型擦除与 Web Crypto，不需要部署或 D1。另提供 `npm run build --workspace @q2q/registry` 执行 Worker 打包 dry run，不会发布线上服务。
 
+GitHub Actions 的 Registry CI 执行类型检查、测试和打包 dry run；有相关改动合并到 `main` 后，检查通过即自动部署 Worker。PR 只检查，不读取部署凭据。三个 app 共用 `.github/scripts/app-impact.py`：各自源码及依赖的工作区共享包变化时执行；npm 锁文件仅比较该 app 实际解析到的依赖，Rust 锁文件仅影响依赖 Wasm 的 app。根配置或影响判断脚本变化会触发相关检查；无法确定影响时执行完整检查。无影响时跳过后续步骤，保留成功的检查状态；手动运行不指定比较基线时强制执行，在 `main` 上运行也会部署。
+
+故障与并发验收脚本在仓库根目录运行：
+
+```sh
+cargo build -p q2q-keygen -p q2q-punch-server -p q2q-track-server
+node e2e/check-registry.mjs
+```
+
+脚本需要按锁文件安装仓库 npm 依赖（`npm ci`）以及可监听本地端口的环境。它启动隔离的本地 workerd／D1、Punch 和 Track，使用临时密钥与 token，验证服务重启、身份不匹配、并发身份版本更新、上报限流、Registry 中断／恢复和展示字段白名单。基础模式运行约两分钟，包含等待最长 90 秒租约自然过期；结束时检查捕获日志不含所生成的 JWT／签发私钥内容，并清理进程、临时凭据和数据库。
+
+完整回归还可覆盖两个不同身份的 Punch 数据路径，以及 Platform 生产构建产物在本地 Worker 中的节点页读取：
+
+```sh
+cargo build -p q2q -p q2q-keygen -p q2q-punch-server -p q2q-track-server
+npm run platform:build
+node e2e/check-registry.mjs --full
+```
+
+`--full` 离线准备分别分配到两台 Punch 的临时 Peer 身份，验证实际绑定和上报指标，从两台节点各自的发布者下载不同文件并独立对比 SHA-256；同时为隔离的 Platform D1 创建临时登录会话，通过 HTTP 检查匿名重定向、节点页登录访问、Registry 故障、离线历史与恢复，以及页面不泄漏机器凭据、Registry 重定向不被跟随。运行需数分钟；限流保持启用，脚本按正常配额控制请求节奏。也可用 `--platform` 单独执行基础故障验收与 Platform HTTP 回归，省去双 Punch 下载部分。所有模式均不访问生产 Registry，不验证公网 UDP／TURN、跨地域网络或浏览器交互；测试账号与会话随临时数据库一并删除。需要排查失败时，可设置 `Q2Q_E2E_DIAGNOSTICS=1` 输出经过本次凭据脱敏的服务日志末尾。
+
 
 ## Worker 与 D1
 
@@ -67,7 +90,7 @@ npm run db:migrate:local
 npm run dev
 ```
 
-首次远程部署由维护者执行，以下命令是操作说明，当前工作尚未创建云资源：
+自建实例的首次远程部署由维护者执行。仓库配置已指向官方 Registry 的独立数据库和 `registry.q2q.app`；自建时替换为自己的数据库 ID 和域名：
 
 ```sh
 cd apps/registry
@@ -79,7 +102,9 @@ npx wrangler secret put REGISTRY_JWKS < /path/to/signing-public.jwks.json
 npm run deploy
 ```
 
-D1 使用独立数据库，不能填入 Platform 数据库 ID。配置默认 `workers_dev: false`，没有预设生产域名；确认访问入口、公钥和数据库配置后再部署。公钥可以作为 Worker secret 配置，名称为 REGISTRY_JWKS，但不得上传私钥。远程迁移和部署命令均需 Cloudflare 账户凭据，本地迁移和 dry run 无需生产凭据。
+D1 使用独立数据库，不能填入 Platform 数据库 ID。配置为 `workers_dev: false`，通过自定义域名访问；确认访问入口、公钥和数据库配置后再部署。公钥可以作为 Worker secret 配置，名称为 REGISTRY_JWKS，但不得上传私钥。远程迁移和部署命令均需 Cloudflare 账户凭据，本地迁移和 dry run 无需生产凭据。
+
+启用自动部署前，先完成上述 D1 创建、真实数据库 ID／访问入口配置、远程迁移和 `REGISTRY_JWKS` 配置，并将不含凭据的 Wrangler 配置提交到仓库。在 GitHub 仓库 Actions 设置中配置 secret `CLOUDFLARE_API_TOKEN` 和 variable `CLOUDFLARE_ACCOUNT_ID`；可复用 Platform／Seed Processing 的同名配置，但 API Token 必须有部署 Registry Worker 及绑定 D1 所需权限。之后有相关变化合并到 `main` 时自动部署。CI 不创建数据库、不自动应用远程迁移，也不上传或更换验签公钥；后续新增迁移应在部署前单独应用。
 
 
 ## 节点 API
@@ -111,7 +136,7 @@ Punch 上报示例：
 }
 ```
 
-Track 使用同一上报接口，正文包含程序版本、可选区域、接入意愿和 `"metrics": null`。Track 的发现与自身状态上报由两个独立后台任务执行；任一方临时故障不会阻塞另一方。Track 示例配置见[部署说明](../../docs/zh/guide/deploy.md#track-的-punch-来源)。
+Track 使用同一上报接口，正文包含程序版本、可选区域、接入意愿和 `"metrics": null`。Track 的发现与自身状态上报由两个独立后台任务执行；任一方临时故障不会阻塞另一方。Track 示例配置见[部署说明](../../docs/zh/guide/deploy-single-node.md#_6-按依赖顺序启动-punch-与-track)。
 
 数字只是格式示例。指标必须是非负安全整数或 null，未知／未实施的容量上限用 null；Track 的 metrics 必须是 null。region 可省略或为 null。各指标含义见 [Registry 计划](../../todos/service-registry.md)，不能将信令会话数当作正在传输文件的 WebRTC 数量。
 

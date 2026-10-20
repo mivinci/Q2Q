@@ -98,7 +98,7 @@ REGISTRY_URL=https://registry.example.com
 REGISTRY_NODES_TOKEN=<由 keygen 签发且含 nodes:read:display 权限的 token>
 ```
 
-`REGISTRY_URL` 填 Registry 的 HTTPS origin；Platform 会请求其 `/v1/nodes` 接口。生产环境将 `REGISTRY_URL` 添加为 Platform Worker 环境变量，并将 `REGISTRY_NODES_TOKEN` 配置为 Worker secret。不要把 token 写入 `wrangler.jsonc`、提交到版本库或配置到浏览器。未配置时页面会提示尚未接入；Registry 不可用或响应不合法时会显示独立错误状态，不会伪装成空节点列表。页面不自动轮询，使用“刷新状态”重新读取。
+`REGISTRY_URL` 填 Registry 的 HTTPS origin；Platform 会请求其 `/v1/nodes` 接口。生产环境将 `REGISTRY_URL` 添加为 Platform Worker 环境变量，并将 `REGISTRY_NODES_TOKEN` 配置为 Worker secret。不要把 token 写入 `wrangler.jsonc`、提交到版本库或配置到浏览器。未配置时页面会提示尚未接入；Registry 不可用或响应不合法时会显示独立错误状态，不会伪装成空节点列表。请求不跟随重定向，配置应直接指向 Registry 的最终访问入口。页面不自动轮询，使用“刷新状态”重新读取。
 
 ## 项目存储
 

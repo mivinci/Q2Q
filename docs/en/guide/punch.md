@@ -34,7 +34,7 @@ published by Track, so the fallback does not weaken server authentication.
 This fallback covers Punch's binding and signalling control plane and uses the
 WebSocket root path (`/`). Peer file data still uses WebRTC DataChannels and its
 own ICE path; WSS alone does not make a transfer work when UDP is blocked. See
-[Deploy](./deploy) for the listener configuration. Supporting file transfers on UDP-blocked networks
+[Deploy](./deploy-single-node) for the listener configuration. Supporting file transfers on UDP-blocked networks
 requires a separate data-plane path such as TURN over TCP/TLS.
 
 ## Bindings
@@ -146,9 +146,9 @@ bounds concurrent requests and their read/write deadlines.
 
 ## Running it
 
-See [Deploy](./deploy). A Punch needs:
+See [Deploy](./deploy-single-node). A Punch needs:
 
-- a `punch_id` that matches what Track lists
+- a `punch_id` and persistent public key matching its Registry token
 - a persisted identity keypair
 - inbound **UDP and TCP** on the configured `bind` port for QUIC and WSS
 - `cluster_size` set to the number of instances, so the rate limit is split

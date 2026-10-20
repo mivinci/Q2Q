@@ -86,6 +86,8 @@ pub struct RegistryPunchDirectory {
   client: Client,
   endpoint: Url,
   cache: RwLock<Option<Cache>>,
+  // Keep accepted identities even when a later snapshot omits or expires a node.
+  identities: RwLock<HashMap<String, (u64, PunchAssignment)>>,
   token_expires_at: u64,
   node_id: String,
   report_endpoint: Url,
@@ -236,6 +238,7 @@ impl RegistryPunchDirectory {
         .map_err(|_| "cannot initialize Registry client")?,
       endpoint,
       cache: RwLock::new(None),
+      identities: RwLock::new(HashMap::new()),
       token_expires_at: claims.exp,
       node_id: claims.sub,
       report_endpoint,
@@ -416,6 +419,7 @@ impl RegistryPunchDirectory {
     let mut snapshot_deadline: Option<Instant> = None;
     let mut page_count = 0usize;
     let mut seen_nodes = std::collections::HashSet::new();
+    let mut identities = HashMap::new();
     loop {
       page_count += 1;
       if page_count > 100 {
@@ -468,7 +472,8 @@ impl RegistryPunchDirectory {
       let elapsed = now.saturating_duration_since(started);
       let global_ttl = Duration::from_secs(90).saturating_sub(elapsed);
       let token_ttl = Duration::from_secs(self.token_expires_at.saturating_sub(page.server_time))
-        .saturating_sub(elapsed);
+        .saturating_sub(elapsed)
+        .min(global_ttl);
       snapshot_deadline = Some(
         snapshot_deadline.map_or(now + global_ttl.min(token_ttl), |current| {
           current.min(now + global_ttl).min(now + token_ttl)
@@ -527,12 +532,17 @@ impl RegistryPunchDirectory {
               metrics.websocket_connection_capacity,
             )
         });
+        let assignment = PunchAssignment {
+          punch_id: node.punch_id,
+          url: node.url,
+          public_key: key,
+        };
+        identities.insert(
+          assignment.punch_id.clone(),
+          (node.identity_version, assignment.clone()),
+        );
         nodes.push(LeasedNode {
-          assignment: PunchAssignment {
-            punch_id: node.punch_id,
-            url: node.url,
-            public_key: key,
-          },
+          assignment,
           assignable: node.accepting_new_connections && !full,
           expires_at: now + remaining,
         });
@@ -551,6 +561,22 @@ impl RegistryPunchDirectory {
     if expires_at <= Instant::now() {
       return Err(FetchError::Invalid);
     }
+    // Validate the whole response before changing either history or the cache.
+    // Holding this guard through publication also prevents overlapping refreshes
+    // from replacing a newer accepted identity with an older response.
+    let mut observed = self
+      .identities
+      .write()
+      .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (id, (version, assignment)) in &identities {
+      if let Some((previous_version, previous_assignment)) = observed.get(id)
+        && (version < previous_version
+          || (version == previous_version && assignment != previous_assignment))
+      {
+        return Err(FetchError::Invalid);
+      }
+    }
+    observed.extend(identities);
     *self
       .cache
       .write()
@@ -663,100 +689,5 @@ fn jitter(seconds: u64) -> Duration {
 }
 
 #[cfg(test)]
-mod tests {
-  use super::*;
-
-  fn node(id: &str, assignable: bool, expires_at: Instant) -> LeasedNode {
-    LeasedNode {
-      assignment: PunchAssignment {
-        punch_id: id.into(),
-        url: format!("quic://{id}.example:4433"),
-        public_key: vec![7; 32],
-      },
-      assignable,
-      expires_at,
-    }
-  }
-  fn directory(nodes: Vec<LeasedNode>) -> RegistryPunchDirectory {
-    RegistryPunchDirectory {
-      client: Client::new(),
-      endpoint: Url::parse("https://registry.example/v1/discovery/punches").unwrap(),
-      cache: RwLock::new(Some(Cache {
-        nodes,
-        expires_at: Instant::now() + Duration::from_secs(90),
-      })),
-      token_expires_at: u64::MAX,
-      node_id: "test-track".into(),
-      report_endpoint: Url::parse("https://registry.example/v1/nodes/self").unwrap(),
-      report_enabled: true,
-      region: Some("hk".into()),
-      accepting: true,
-    }
-  }
-
-  #[test]
-  fn assignments_reach_both_nodes_and_ignore_discovery_order() {
-    let until = Instant::now() + Duration::from_secs(60);
-    let first = directory(vec![node("hk", true, until), node("cd", true, until)]);
-    let replica = directory(vec![node("cd", true, until), node("hk", true, until)]);
-    let mut counts = HashMap::new();
-    for id in 0..512 {
-      let peer = PeerId::unchecked(format!("peer-{id}"));
-      let selected = first.assign(&peer).unwrap().unwrap();
-      assert_eq!(Some(selected.clone()), replica.assign(&peer).unwrap());
-      *counts.entry(selected.punch_id).or_insert(0usize) += 1;
-    }
-    assert_eq!(counts.len(), 2);
-    assert!(
-      counts.values().all(|&count| (128..384).contains(&count)),
-      "{counts:?}"
-    );
-  }
-
-  #[test]
-  fn removing_a_node_only_changes_its_own_assignments() {
-    let until = Instant::now() + Duration::from_secs(60);
-    let before = directory(vec![
-      node("hk", true, until),
-      node("cd", true, until),
-      node("sg", true, until),
-    ]);
-    let after = directory(vec![node("sg", true, until), node("hk", true, until)]);
-    let mut moved = 0;
-    for id in 0..512 {
-      let peer = PeerId::unchecked(format!("peer-{id}"));
-      let previous = before.assign(&peer).unwrap().unwrap();
-      let next = after.assign(&peer).unwrap().unwrap();
-      if previous.punch_id == "cd" {
-        moved += 1;
-      } else {
-        assert_eq!(previous, next);
-      }
-      assert_ne!(next.punch_id, "cd");
-    }
-    assert!(moved > 0);
-  }
-
-  #[test]
-  fn draining_nodes_remain_queryable_but_expired_nodes_do_not() {
-    let now = Instant::now();
-    let directory = directory(vec![
-      node("draining", false, now + Duration::from_secs(60)),
-      node("expired", true, now - Duration::from_secs(1)),
-    ]);
-    let peer = PeerId::unchecked("peer");
-    assert!(directory.assign(&peer).unwrap().is_none());
-    let snapshot = directory.snapshot().unwrap();
-    assert!(snapshot.nodes.contains_key("draining"));
-    assert!(!snapshot.nodes.contains_key("expired"));
-    directory
-      .cache
-      .write()
-      .unwrap()
-      .as_mut()
-      .unwrap()
-      .expires_at = now;
-    assert!(directory.assign(&peer).is_err());
-    assert!(directory.snapshot().is_err());
-  }
-}
+#[path = "registry_tests.rs"]
+mod tests;

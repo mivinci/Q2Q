@@ -111,8 +111,8 @@ so it gets a much smaller bucket than query.
 
 ## Running it
 
-See [Deploy](./deploy). Track needs:
+See [Deploy](./deploy-single-node). Track needs:
 
-- a Punch list (or, later, a registration interface)
+- a Registry endpoint and a Track token granting Punch discovery and state reporting
 - the same TURN shared secret as coturn
 - inbound TCP on its advertised port, reachable by clients

@@ -149,7 +149,9 @@ async function fetchNodes(baseUrl: string, token: string): Promise<RegistryNodes
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${token.trim()}` },
       cache: 'no-store',
-      redirect: 'error',
+      // Workers supports manual/follow only. Reject 3xx below rather than
+      // following an upstream Location with the machine credential attached.
+      redirect: 'manual',
       signal,
     });
     if (!response.ok) return { state: 'unavailable', server_time: null, nodes: [] };

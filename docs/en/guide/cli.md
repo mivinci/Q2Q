@@ -218,4 +218,4 @@ At connection establishment, `Selected ICE path at channel establishment` report
 
 Use `--quiet --verbose` to retain diagnostics and errors while hiding progress. For temporary debugging with self-signed HTTPS or proxy certificates, add `--insecure`. It applies only to that invocation; Peer authentication and content verification still run.
 
-See [Deploy](./deploy.md) for service setup and [CLI releases](./cli-release.md) for the maintainer's release process.
+See [Deploy](./deploy-single-node) for service setup and [CLI releases](./cli-release.md) for the maintainer's release process.

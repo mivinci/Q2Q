@@ -38,7 +38,7 @@ cargo run -p q2q-keygen -- token \
 
 JWT 使用固定 EdDSA 算法、`typ: JWT`，保留输入 claims，并生成 `iat`、`exp` 和随机 `jti`。有效期默认 90 天；输入不得包含这三个字段，以免覆盖语义不明确。工具检查 JSON、密钥格式和有效期数值，不判断业务 claims 是否获授权。
 
-token 写入新文件，标准输出不打印凭据。私钥和 token 不进入仓库、日志或浏览器。Registry 专用 claims 和权限要求见 [Registry 方案](../../todos/service-registry.md)。
+token 写入新文件，标准输出不打印凭据。私钥和 token 不进入仓库、日志或浏览器。Registry 专用 claims、服务接入及凭据轮换见[部署指南](../../docs/zh/guide/deploy-single-node.md)。
 
 ## 为 Punch 准备身份
 
@@ -55,6 +55,6 @@ cargo run -p q2q-punch-server -- ./punch.toml \
 
 Punch 根据配置中的 ID 和 `[identity]` 输出路径生成证书、保存导入私钥，向标准输出打印原始 32 字节身份公钥的标准 Base64，然后退出，不监听端口。导入目标必须尚不存在，输入密钥保留。重复检查已有身份时运行 `--init-identity`，不再传 `--identity-key`。
 
-也可以直接运行 `--init-identity`，由 Punch 生成并持久化身份。之后将输出的公钥填入 Registry claims，使用另一套签发私钥生成 token，再启动 Punch。
+将导入命令输出的公钥填入 Registry claims，使用独立的签发私钥生成 token，再启动 Punch。
 
-Punch 配置 `[registry]` 后要求已有完整持久身份。将 token 文件配置为 `[registry].token_file`，或设置 `Q2Q_REGISTRY_TOKEN`，并配置 Registry URL；二者不可同时使用。token 在启动时读取，更新后重启。完整配置和上报行为见 [部署指南](../../docs/zh/guide/deploy.md)。
+Punch 配置 `[registry]` 后要求已有完整持久身份。将 token 文件配置为 `[registry].token_file`，或设置 `Q2Q_REGISTRY_TOKEN`，并配置 Registry URL；二者不可同时使用。token 在启动时读取，更新后重启。完整配置和上报行为见 [部署指南](../../docs/zh/guide/deploy-single-node.md)。

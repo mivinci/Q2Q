@@ -112,6 +112,6 @@ neither a malicious peer nor a malicious Punch can corrupt a download.
 
 ## Next
 
-- [Deploy](./deploy) — how to run Track and Punch
+- [Deploy](./deploy-single-node) — how to run Track and Punch
 - [Track](./track) — the discovery service
 - [Punch](./punch) — bindings and signalling

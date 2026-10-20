@@ -29,7 +29,7 @@ QUIC 优先、WSS 回退的初版已实现；当前 PR 将部署配置收敛为�
 - 文件数据由 WebRTC DataChannel 传输；当前 ICE 配置使用 UDP。Punch 改走 WSS 并不会自动让 WebRTC 数据连接绕过 UDP。
 - Track 发布 Punch 地址和用于验证服务身份的公钥；新增传输必须延续此信任边界，不能只依赖 DNS 或未经绑定的 TLS 证书。
 
-参考：[Punch 指南](../docs/en/guide/punch.md)、[部署指南](../docs/en/guide/deploy.md)、[SDK 方案](client-sdk.md)、[PunchWire](../crates/q2q-track/src/wire.rs)。
+参考：[Punch 指南](../docs/en/guide/punch.md)、[部署指南](../docs/en/guide/deploy-single-node.md)、[SDK 方案](client-sdk.md)、[PunchWire](../crates/q2q-track/src/wire.rs)。
 
 ## 推荐设计
 

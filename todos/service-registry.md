@@ -1,6 +1,6 @@
 # Registry：服务节点登记与状态上报
 
-状态：最小协议设计及 `crates/q2q-keygen` 本地签发工具已完成；Registry 认证模块、Worker 入口、D1 迁移和部署骨架已实现；节点上报与列表接口已实现；节点上报限流已实现；Punch 已接入后台登记及状态上报；Track 已接入自身状态上报、Registry 服务发现目录及静态／动态二选一配置；Registry 多节点分配已使用 Rendezvous 哈希。两台不同身份的 Punch 已完成本地端到端联调。Platform `/nodes` 只读节点状态页已实现本地版本，尚未配置生产 Registry 凭据或部署。下一步是补齐部署与认证文档。用户要求每完成一项停下，说明下一项，确认后继续。
+状态：计划内本地实施与验收全部完成。通用签发工具、Registry 认证／节点 API／限流、Punch／Track 上报与动态发现、Rendezvous 多节点分配和 Platform 只读节点页均已实现，部署与认证文档已补齐。最终类型检查、构建、双 Punch 实际文件传输、Platform Worker HTTP 与故障恢复回归通过。生产 Registry 资源与凭据尚待配置，未执行生产部署。用户要求每完成一项停下，说明下一项，确认后继续。
 
 ## 范围与边界
 
@@ -18,7 +18,7 @@
 
 1. 本地生成 Ed25519 密钥对，以 `kid` 标识密钥版本。私钥不进入仓库、日志、Worker 或节点部署。
 2. 将公钥配置到 Registry 的信任密钥集合；公钥无需保密，其配置完整性必须受到保护。
-3. 通用本地工具放在 `crates/q2q-keygen`，读取调用方提供的 claims JSON 和有效期，用私钥签发 JWT；服务 ID、类型、权限及身份绑定规则由 Registry 验证端负责。默认有效期拟为 90 天，可显式指定。
+3. 通用本地工具放在 `crates/q2q-keygen`，读取调用方提供的 claims JSON 和有效期，用私钥签发 JWT；服务 ID、类型、权限及身份绑定规则由 Registry 验证端负责。默认有效期为 90 天，可显式指定。
 4. 将 token 通过环境变量或挂载的 secret 文件配置到对应服务，例如 `Q2Q_REGISTRY_TOKEN`。
 5. 服务通过 HTTPS 请求，携带 `Authorization: Bearer <JWT>`；固定复用尚未到期的 token，不为每次请求重新签发。
 6. Registry 验证成功后，从已签名的身份和权限字段确定调用方；请求体中的节点 ID 必须匹配 token，不允许跨节点更新。
@@ -122,7 +122,7 @@ Registry 必须检查签名、固定算法、已知 `kid`、签发方、受众�
 | `signalling_sessions` | `Connections` 中尚未过期的信令记录数，包含 Pending、Accepted、Offered；不表示端到端 WebRTC 正在传输的连接数 |
 | `signalling_session_capacity` | 实际执行的信令记录总量上限；当前代码没有明确全局容量上限，第一版应上报 `null` |
 
-这些观测目前没有完整导出接口，接入阶段需补快照及许可生命周期计数，不能把 HashMap 的裸长度直接充作全部活跃状态。第一版不采集 CPU、内存、Peer 文件吞吐及历史曲线。
+接入实现已补齐快照与许可生命周期计数；快照逐项采样，不提供同一时刻的全局原子快照，也不把 HashMap 的裸长度充作全部活跃状态。第一版不采集 CPU、内存、Peer 文件吞吐及历史曲线。
 
 上报成功响应：
 
@@ -139,7 +139,7 @@ Registry 必须检查签名、固定算法、已知 `kid`、签发方、受众�
 - 单次请求超时 10 秒。网络失败、429 和 5xx 以 1、2、4、8、16、30 秒上限退避并加抖动；429 尊重有界的 `Retry-After`。400、403、409、413、415 停止自动重试并给出可操作错误；401 停止使用当前 token，等待凭据更新或重启。失败不影响已有业务连接。
 - 仅成功且被接受的上报更新 `last_seen`；`expires_at = min(last_seen + 90, token.exp)`，请求失败、旧身份版本及被拒绝的状态不续期。只允许有限时钟容差用于认证，在线期限不越过 token 的实际 `exp`。
 - 在线条件为 `server_now < expires_at`，到期瞬间即离线。时间完全采用 Registry 的时钟，不信任节点发送的采样时间。
-- 容量满、停止分配与离线分别展示。发现接口过滤离线节点，但保留在线且停止接入或容量已满的节点，以便 Track 查询其已有 Peer。Track 不给拒绝新接入的节点分配新 Peer；所有传输均明确满载时也停止新分配。未知容量保留为未知，不冒充空闲容量；最终选择策略在接入阶段实现。
+- 容量满、停止分配与离线分别展示。发现接口过滤离线节点，但保留在线且停止接入或容量已满的节点，以便 Track 查询其已有 Peer。Track 不给拒绝新接入的节点分配新 Peer；所有传输均明确满载时也停止新分配。未知容量保留为未知，不冒充空闲容量；已实现的选择策略见下文多节点分配记录。
 
 发现响应形状为 `{ "server_time": ..., "nodes": [...] }`；每项包含 `punch_id`、`url`、`public_key`、`identity_version`、`region`、`accepting_new_connections`、`metrics`、`last_seen`、`expires_at`。对外身份字段沿用 Track 现有 `PunchWire` 名称和公钥编码，避免客户端接口平白引入字段转换。没有在线节点返回 200 和空数组，由 Track 决定业务错误和缓存策略。
 
@@ -192,7 +192,7 @@ Registry 必须检查签名、固定算法、已知 `kid`、签发方、受众�
 - 网络失败、429、5xx、异常响应、401 或 403 均不覆盖最后一份有效快照；401／403 停止当前凭据的自动请求并提示凭据问题。所有旧节点仍按原租约自然失效。
 - 冷启动未取得快照，或刷新失败且已没有有效节点时，新 announce 返回 HTTP 503、`code=discovery_unavailable`；已有会话的 Peer query 同样在发现状态不可用时返回 503，不伪造空候选列表。
 - 若完整获取成功但确实没有可分配节点，announce 返回 HTTP 503、`code=no_available_punch`；query 在有效发现快照下按真实候选返回，可为 200 空列表。发现结果最多按其获取时刻保留 90 秒有效性，到期仍无刷新时归为发现不可用。
-- Registry 恢复且完整刷新成功后自动恢复服务，无需重启 Track；凭据更新的读取／重启方式在客户端接入步骤固定下来。
+- Registry 恢复且完整刷新成功后自动恢复服务，无需重启 Track；Track 仅在启动时读取凭据，更新 token 后需重启。
 - 日志区分首次未就绪、刷新失败、凭据失效、节点移除／过期及恢复；持续故障日志按状态变化和有界频率输出，不逐 Peer 请求刷屏，不打印 token 或原始 Authorization。
 
 - 节点启动后登记，之后约每 30 秒在后台上报，加入随机抖动；失败使用有上限的退避，节点继续处理已有业务。
@@ -207,9 +207,9 @@ Registry 必须检查签名、固定算法、已知 `kid`、签发方、受众�
 
 ### 1. 确定最小协议和状态含义
 
-- [x] 明确节点身份、登记／更新权限、身份变更策略及可公开字段（设计完成，见上文；尚未实现）。
-- [x] 定义上报、节点列表响应与错误格式，固定指标单位、心跳间隔及过期阈值（设计完成，见上文；尚未实现）。
-- [x] 明确 Track 的缓存失效、Registry 故障及节点离线处理策略（设计完成，见上文；尚未实现）。
+- [x] 明确节点身份、登记／更新权限、身份变更策略及可公开字段（设计与实现已完成，见上文及后续验收记录）。
+- [x] 定义上报、节点列表响应与错误格式，固定指标单位、心跳间隔及过期阈值（设计与实现已完成，见上文及后续验收记录）。
+- [x] 明确 Track 的缓存失效、Registry 故障及节点离线处理策略（设计与实现已完成，见上文及后续验收记录）。
 
 ### 2. 实现 `crates/q2q-keygen` 与 Registry 验证
 
@@ -236,13 +236,37 @@ Registry 必须检查签名、固定算法、已知 `kid`、签发方、受众�
 ### 5. 展示、文档与验收
 
 - [x] Platform 增加只读节点状态展示，明确快照时间、离线历史状态、空列表和数据不可用状态；请求由已登录页面的服务端执行，只向浏览器返回展示字段。增加本地 `.dev.vars` 与 Worker 变量／secret 配置说明。尚未配置生产 Registry 凭据或部署。
-- [ ] 更新部署与认证文档，说明生成、公钥配置、签发、服务接入、更新 token 和密钥轮换的完整流程。
-- [ ] 验证节点过期、重启恢复、身份不匹配、Registry 中断／恢复及并发更新行为；检查日志无凭据泄漏。
-- [ ] 执行相关类型检查、构建和必要的联机回归，记录实际结果。
+- [x] 更新部署与认证文档：中英文部署指南已串联签发密钥生成、独立 D1／Worker 配置、Punch／Track／Platform claims 与签发、服务接入、续签、身份版本更新、双公钥轮换及故障诊断；Registry 与 keygen README 链接到正式指南。仅更新文档，未执行远程部署或凭据操作。
+- [x] 验证节点过期、Punch／Track 重启恢复、身份不匹配、Registry 中断／恢复及并发身份更新；检查捕获日志无本次 JWT／签发私钥内容泄漏。保留 `e2e/check-registry.mjs` 复现实验，使用隔离本地 workerd／D1 和真实 Rust 服务，等待最长 90 秒租约自然过期后验证自动恢复。未验证生产或跨地域环境。
+- [x] 执行相关类型检查、构建和最终联机回归：Registry／Platform／种子处理 Worker 检查及构建、Wasm 回归、相关 Rust 测试／Clippy、文档构建与 `node e2e/check-registry.mjs --full` 通过。补齐双 Punch 真实文件下载与 Platform 本地生产构建 HTTP 验证；修复节点页使用 Workers 不支持的重定向模式。实际结果与边界见下方最终收尾记录。
 
 ## 当前问题与证据边界
 
-- Platform 节点状态页验证：WASM release 构建通过；`svelte-kit sync` 和直接运行 `npx svelte-check --tsconfig ./tsconfig.json` 通过，0 错误、0 警告。完整 `npm run platform:check` 未完成：Wrangler 类型生成尝试写入环境不存在且不可创建的 `/home/agent/.config/.wrangler`，同时本地监听返回 EPERM。未部署，生产 Registry URL/token 尚未配置。
+- Platform 生产接入完成（2026-10-20）：按用户确认签发独立 `platform-1` 只读凭据（仅 `nodes:read:display`，到期 `2027-01-18 17:55:47 UTC`），以 Worker secret `REGISTRY_NODES_TOKEN` 配置；`REGISTRY_URL` 固定为 `https://registry.q2q.app` 并写入 Wrangler 配置，后续 CI 部署可保留该接线。完整 `platform:check`（0 错误／0 警告）和生产构建通过，使用 keep-vars 保留既有变量并发布 Platform，版本 `d0e3c531-5340-4734-a170-f8b46a5fb008`。实际使用该凭据访问 Registry 列表为 200（当前为空），访问发现接口为 403；远程绑定确认 URL 正确、凭据为 secret_text、原有 OAuth／认证／S3 secrets 均保留。公网 `/nodes` 匿名访问 303 到 `/login`，登录页 200；本轮没有用户浏览器登录会话，尚未实测已登录节点页或线上 Worker 到 Registry 的页面调用，不将配置成功等同于完整浏览器验收。凭据与签发密钥保存在仓库外，未写入页面或提交 Git；需到期前续签替换。尚未触发 GitHub CI 或接入生产 Punch／Track。
+
+- 生产初始化完成（2026-10-20）：用户补充 D1 权限后，在现有 Platform 同一 Cloudflare 账户创建独立的 `q2q-registry` D1（`b0105b50-d7a5-4ee5-9f2d-706b1b2d8995`），远程应用 `0001_nodes.sql`／`0002_report_limits.sql`。Registry 类型检查、Worker 打包 dry run 通过，首次部署至 `https://registry.q2q.app`，版本 `5a2266e0-5bbe-46b1-b2f6-4d754e758e93`。专用签发密钥在仓库外生成，Worker 只接收公共 JWKS，已确认 `REGISTRY_JWKS` 为 `secret_text`，私钥与 API Token 均未输出或提交。公网 HTTPS 验证 `/health` 200、匿名节点列表 401、五分钟临时只读凭据访问节点列表 200（空列表，真实 D1 查询）、该凭据访问发现接口 403，响应均 no-store；无 User-Agent 的请求也可达。默认 Python User-Agent 曾被 Cloudflare 边缘返回 1010，改用明确的验证客户端标识后通过，未修改防护规则。尚未接入生产 Punch／Track 或修改 Platform 凭据，未触发 GitHub CI；下方早期“未部署”记录属于当时的验证范围。
+
+- 主分支同步与节点页复用：已 fetch 并 rebase 到 `origin/main` 的 `729f099`（平台布局与响应式优化），未提交的改动通过临时 stash 完整恢复，无冲突。节点页复用新合入的 `ResponsiveMetadata`，统一总数／在线数、上报／租约时间和 Punch 负载；窄屏使用紧凑信息行，宽屏使用分列布局，减少重复卡片层级。完整 `platform:check` 通过，Svelte 0 错误、0 警告，`git diff --check` 通过。本轮未运行浏览器视觉回归、推送或部署。
+
+- App CI 影响判断调整：Registry 新增独立类型检查、测试和 Worker 打包 dry run 工作流；按用户要求，有相关变化合并到 main 后检查通过即自动部署，main 上的手动执行也可部署，PR 不接触部署凭据。生产 D1／域名／验签公钥及 GitHub Actions 凭据需事先配置，CI 不自动迁移数据库。三个 app 通过同一脚本追踪各自 npm 解析依赖与工作区源码；仅依赖 Wasm 的 app 比较 Rust 锁文件闭包。PR 使用 merge base，避免把主分支独有变化算入当前 PR。已在本地核对 15 组路径／锁文件影响场景，包括 app 隔离、共享包、原生 Punch、文档、单 app／共享 npm 依赖、未变化 Wasm 闭包和无法解析时保守执行；结果符合预期，`git diff --check` 通过。尚未触发 GitHub Actions，不能记为 CI 通过。
+
+- 部署文档重写（2026-10-21）：按用户要求将部署设为与 Introduction 平级的独立章节，文件保持扁平，分别为 [单机部署](../docs/zh/guide/deploy-single-node.md) 和 [集群部署](../docs/zh/guide/deploy-cluster.md)，英文同步。单机按签发工具／Registry → TURN → 显式生成并导入 Punch 身份 → 节点凭据 → Punch／Track → 状态与真实传输的顺序引导；集群按共享状态 → Punch 扩容 → Track 凭据与共享 Redis → HTTPS 入口 → 验证与维护展开。删除旧部署文章，更新导航、引用与站点回归；不再介绍自动生成 Punch 身份或静态 Punch 列表的部署路径。`CHROME_PATH=/usr/bin/chromium npm test` 通过，覆盖文档构建、四个新页面、Mermaid 明暗主题、窄屏和页面导航；无 404 资源或控制台错误。未执行文档中的生产部署命令。
+
+- 最终收尾（2026-10-21）：按仓库锁文件恢复 npm 依赖后，Registry `check`／Worker dry run、`platform:check`（Svelte 0 错误、0 警告）／`platform:build`、`seed-processing:check`／Worker dry run、`platform:check:processing`、`platform:check:storage`、`wasm:check` 和 `docs:build` 均通过。Wasm release 构建通过；文档构建仅保留 chunk 大于 500 kB 的提示。早期本地 esbuild 与锁文件不一致导致的文档构建失败，已通过按锁文件安装解决，未修改依赖清单或锁文件。此前 Wrangler 配置目录／本地监听的环境阻塞也已通过临时 XDG 配置目录与允许本地监听的执行环境解决。
+- 本轮相关 Rust 验证：keygen 2 项、Punch 库 38 项、Punch server 45 项、Track server 32 项测试通过；1 项需要外部 Redis 凭据的既有 Track 用例按原配置跳过。上述四包 all-targets Clippy（`-D warnings`）、Rust 格式检查、验收脚本语法检查与 `git diff --check` 通过。
+- 最终真实联机：`node e2e/check-registry.mjs --full` 通过，使用两个不同身份的 Punch、真实 Track 和 CLI 发布者／下载者。离线准备分别分配到两个节点的临时 Peer 身份，确认两者均建立实际绑定并上报；分别从两台节点的发布者下载不同的 600,000 字节文件，独立 SHA-256 比对一致。测试保持限流启用，通过节奏控制避免将正常限流误当作功能故障。
+- Platform 生产构建产物在隔离的本地 Worker／D1 中通过 HTTP 验证：匿名访问 `/nodes` 返回登录重定向，临时账号与签名会话可读取节点页；机器 JWT／签发私钥内容／临时登录密钥与会话 token 不进入页面，节点身份公钥不进入展示结果；上游重定向被拒绝且目标请求数为零。Registry 重启、服务路径断联、最长 90 秒租约自然过期、离线历史与恢复均通过；恢复后 Punch／Track 无需重启即可重新上报／发现，Platform 能区分 Registry 不可用与离线历史。捕获日志未发现本次生成的凭据，全部临时进程、账号、会话、密钥与数据库已清理。另有 `--platform` 模式可单独复现页面与故障回归。
+- 收尾联调发现并修复 Platform 节点页的真实运行时问题：Workers 不支持 `fetch` 的 `redirect: 'error'`，会在发送请求前抛错，使页面始终显示不可用。现使用 `manual`，并由非成功状态码分支拒绝 3xx；通过真实 workerd 先复现失败再验证恢复和不跟随重定向。验收代理也按 Node fetch 已解压的正文移除原压缩／长度头，避免测试代理破坏响应。
+- 以上均为本地验证；没有创建远程 D1、应用远程迁移、配置生产 Registry 凭据、发布 Worker、推送提交或触发 CI。不覆盖公网 UDP／TURN、跨地域网络、真实浏览器交互或两个 Track 进程经负载均衡器共享 Redis 的联调；不能据此宣称生产上线或 CI 通过。
+
+- 故障与并发验收（2026-10-21）：Registry 21 项行为测试通过；Punch server 45 项测试通过；Track server 32 项测试通过、1 项外部 Redis 用例按原配置跳过。新增 7 项真实本地 HTTP 回归，覆盖刷新故障不续期、恢复／空快照替换、分页失败不发布半份列表、身份版本／描述防回滚、失败刷新不污染身份历史、鉴权失败停止请求，以及关闭时取消在途请求。测试模块移至同层 `registry_tests.rs`。
+- 验收发现并修复两处 Track 问题：此前仅校验发现记录的 `identity_version` 格式，未保存进程内高水位，节点移除后可重新接受旧身份；现对完整快照统一校验并保留历史，拒绝低版本及同版本不同地址／公钥。另将 token 剩余有效期约束在快照最长 90 秒内再转换单调时钟期限，避免合法但极长有效期在多页刷新时溢出。已先复现防回滚用例失败，再修复并回归；身份历史不跨 Track 进程重启持久化，仍由 Registry D1 保证持久防回滚。
+- 本轮 `node e2e/check-registry.mjs` 最终版本通过：真实本地 workerd／D1 与 Rust keygen、Punch、Track 验证首次登记与字段白名单、Punch 持久身份重启、Track 冷启动重新发现、错误 Punch 身份拒绝、D1 并发最终保留最高身份版本及共享限流、Registry 重启后数据库保留、中断期间租约自然过期／离线展示／空发现列表、恢复后不重启服务自动上报与重新发现。捕获日志不含本次生成的 JWT 或签发私钥内容，临时凭据／数据库／进程已清理。此脚本不覆盖真实 Peer 绑定或文件传输；双 Punch 数据路径依据下方此前的独立联调记录，不将其记为本轮验证。
+- 当前修复的 Track all-targets Clippy（`-D warnings`）、Rust 格式检查、验收脚本语法检查和 `git diff --check` 通过。当时尚未开展本计划最后一项；最终类型检查、构建与联机结果见本节开头。未访问生产 Registry、执行远程迁移或部署。
+
+- 部署与认证文档收尾（2026-10-21）：对照 keygen CLI、Registry claims 校验、Punch／Track 凭据读取和 Worker 配置补齐中英文部署流程，更新 README 入口。`npm run docs:build` 和 `git diff --check` 通过；构建提示部分 chunk 大于 500 kB。未执行云资源创建、远程迁移、凭据签发／替换或生产部署；故障与并发整体验收仍待单独完成。
+
+- Platform 节点状态页早期验证（下述环境阻塞已在本轮最终收尾解决）：WASM release 构建通过；`svelte-kit sync` 和直接运行 `npx svelte-check --tsconfig ./tsconfig.json` 通过，0 错误、0 警告。完整 `npm run platform:check` 未完成：Wrangler 类型生成尝试写入环境不存在且不可创建的 `/home/agent/.config/.wrangler`，同时本地监听返回 EPERM。未部署，生产 Registry URL/token 尚未配置。
 - 双 Punch 联调：隔离的本地 workerd／D1 中启动两个不同身份的 Punch，并以独立 Track token 启动 Registry 模式 Track。Track 成功上报自身状态、发现两个节点；多个真实 `q2q publish` Peer 经 Track 分配后，两个 Punch 都记录到各自 Peer 的实际绑定（本次观察到 4 个 Peer）。确认 Punch 公钥不同、服务正常退出、临时 token／数据库／进程均已清理。未访问生产 Registry，也未测试公网 UDP、TURN 或跨地域网络。
 
 - 上报限流阶段：新增 3 组限流行为测试，验证突发、补充、长期闲置的容量上限、并发共享、token／身份版本变更不重置、节点隔离和限流存储故障。真实本地 workerd／D1 与 Rust keygen 凭据联调验证 12 个并发请求仅 3 个成功，429 携带 Retry-After，拒绝时节点快照不变，等待后恢复上报。临时环境及凭据按 finally 清理；未验证线上多地域部署。
