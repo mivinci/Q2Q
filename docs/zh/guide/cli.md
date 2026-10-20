@@ -1,201 +1,221 @@
 # 命令行客户端
 
-`q2q` 构建名为 `q2q` 的可执行文件，通过 Rust SDK 发布、下载和恢复文件。
-Track 和 Punch 由网络运营方运行，服务配置见[部署](./deploy.md)。
+用 `q2q` 发布本地文件，或通过磁力链、`.q2q` 种子下载文件。默认连接官方 `https://track.q2q.app`，日常使用无需配置服务器地址。
 
 ## 安装
 
-版本发布时会在 [GitHub Releases](https://github.com/mivinci/Q2Q/releases/latest)
-附带 Linux x86_64（glibc 2.35+）、macOS Intel、macOS Apple 芯片和 Windows x86_64
-的预编译包。
-选择对应压缩包，解压后将 `q2q`（或 `q2q.exe`）放到 `PATH` 中。
+从 [GitHub Releases](https://github.com/mivinci/Q2Q/releases/latest) 下载对应系统的压缩包，解压后把 `q2q`（Windows 为 `q2q.exe`）放进 `PATH`。支持 Linux x86_64（glibc 2.35+）、macOS Intel / Apple 芯片和 Windows x86_64。
 
-如需从源码构建，在仓库根目录执行：
+也可以在仓库根目录从源码安装：
 
 ```sh
 cargo install --path crates/q2q --locked
 q2q --help
 ```
 
-## 连接诊断
+## 命令速查
+
+| 想做什么 | 命令 | 执行后 |
+| --- | --- | --- |
+| 下载文件 | `q2q download <磁力链或种子>` | 下载、校验文件，完成后退出 |
+| 发布并提供文件 | `q2q publish <文件或种子>` | 保持运行，为接收方提供数据 |
+| 只生成种子 | `q2q seed <文件>` | 本地生成 `.q2q` 文件后退出 |
+| 获取磁力链 | `q2q magnet <种子>` | 本地输出一行链接后退出 |
+
+每个命令都可加 `--help` 查看参数，例如 `q2q seed --help`。
+
+## 下载文件
+
+收到磁力链后，直接下载。最简链接只需要内容哈希，实际链接由发布方提供：
 
 ```sh
-q2q --verbose publish ./file.bin.q2q
-q2q --verbose download ./file.bin.q2q
+q2q download 'magnet:?xt=urn:sha256:5caa06b9354427d3c06b3223cd17e2b2da205d12ee0865e78874e37f4d869074'
 ```
 
-`--verbose` 是全局参数，向 stderr 输出 TURN 是否启用、服务地址和凭据是否仍有效、
-ICE 候选收集与发送/接收（host/srflx/relay、协议和地址）、WebRTC 连接状态、
-数据通道打开及握手失败原因。协商超时会显示连接与两个数据通道的就绪状态。
-通过 peer ID 和 connection ID 关联两端日志；日志包含公网/私网地址，分享前注意隐私。
-不输出 TURN 密码、用户名、信令票据或完整 SDP。候选为 relay 只表示存在中继候选，
-不代表最终选中了中继路径。通道建立时输出 `Selected ICE path at channel establishment`，
-`path="turn"` 表示至少一侧选中了 relay；`path="direct"` 表示未使用 TURN。
-同时显示两侧选中候选的类型、协议、地址和端口。这是建连时的快照，不是持续路径监控；
-查询失败会显示 unavailable/failed，不影响传输，也不推断为直连。暂不提供 TURN 流量统计。
-详细日志与进度条共用终端渲染器，日志输出时暂停重绘，避免覆盖日志。
-默认不启用详细日志；`--quiet --verbose` 抑制进度但保留诊断，stdout 结果格式不变。
-
-## 离线生成种子
+收到 `.q2q` 种子时，把它作为输入即可：
 
 ```sh
-q2q seed ./file.bin
-q2q seed ./file.bin --output ./share.q2q
+q2q download ./video.mp4.q2q
 ```
 
-只读取并哈希本地文件、生成二进制 `.q2q` 种子后退出，不创建身份或状态目录，
-也不连接 Track/Punch。默认输出 `<FILE>.q2q`，拒绝覆盖已有目标。
-`--track` / `Q2Q_TRACK_URL` 指定种子里的发现地址提示，未指定时写入官方默认地址；
-写入提示不代表已发布。进度写入 stderr，成功后 stdout 输出种子路径，`--quiet` 抑制进度。
-
-## 发布
+文件默认保存到**当前目录**，名称优先采用种子或已验证元数据中的文件名。用 `--output`（或 `-o`）指定完整目标路径，父目录需已存在：
 
 ```sh
-q2q publish ./model.bin
-# 默认写入 ./model.bin.q2q；也可指定自定义位置：
-q2q publish ./model.bin --seed ./model.q2q
+q2q download ./video.mp4.q2q --output ./downloads/video.mp4
 ```
 
-省略 `--seed` 时，种子导出到源文件名后追加 `.q2q` 的路径，例如
-`./model.bin.q2q`。显式 `--seed` 可指定自定义位置。文件准备和宣告成功后才导出种子。
-种子目标文件必须不存在，父目录需已存在；
-导出失败会关闭发布并撤销宣告。将 `.q2q` 种子发给接收方，保持发布进程运行。
-种子是 Q2Q 二进制文档，不是 JSON 或磁力链。
-种子会公开包含发布端使用的 Track 地址，下载端默认使用同一个地址。为避免把凭据写入并分发，发布会拒绝含用户名、密码、查询参数或片段的 Track URL。
+### 中断后继续
 
-Ctrl-C 停止服务并等待清理和撤销，Unix SIGTERM 使用相同流程。
-初始化期间（例如文件哈希或连接）会显示文件准备进度；收到首个信号时，会完成当前初始化，再关闭取得的句柄。初始化和清理期间的后续信号会忽略。
-撤销失败会报告错误，远端持有记录可能保留到 TTL 到期；崩溃或强制结束进程不能保证撤销。
-
-### 发布已有种子
+保留下载中的文件和 Q2Q 状态目录，再运行同一条命令，CLI 会检测检查点、重新校验并自动续传：
 
 ```sh
-q2q publish ./file.bin.q2q
-q2q publish ./share.q2q --file ./renamed-file.bin
-# 需要分享更新后的 Track 提示时，可显式导出新副本：
-q2q publish ./share.q2q --file ./renamed-file.bin --seed ./export.q2q
+q2q download ./video.mp4.q2q --output ./downloads/video.mp4
 ```
 
-输入扩展名为 `.q2q`（不区分大小写），或指定了 `--file` 时，按已有种子处理。
-默认从种子所在目录按安全的 `info.name` 找源文件；`--file` 路径相对当前工作目录。
-种子没有名称或名称不安全时必须指定 `--file`。宣告前完整校验文件长度、块大小和 Merkle 根；
-重命名的源文件、非默认块大小及 info 扩展字段均保留原来的 info hash。
+磁力链下载也支持自动续传。`--resume` 可用于明确要求恢复已有检查点。
 
-输入种子不会被重写。未指定 `--seed` 时，stdout 输出输入种子路径；显式 `--seed` 导出新文件，
-拒绝覆盖。Track 依次选择显式参数/环境变量、种子中首个可用地址、官方默认地址。
-内存和导出副本会包含实际使用的 Track；覆盖 Track 后，需要更新分享提示时应分发新导出副本。
-若原始数据文件本身叫 `*.q2q`，先用 `q2q seed` 生成种子，再发布生成的种子即可。
-发布进程仍须保持在线才能提供数据。
+已有目标文件没有有效检查点时，CLI 会报错并保留文件；可选择其他输出路径。下载成功表示全部内容已通过校验并同步到磁盘。下载完成后进程退出，如需继续分享，运行 `publish`。
 
-## 磁力链
+## 发布文件
 
-可以从已有种子本地生成 Q2Q 磁力链，再把链接交给下载端：
+在拥有原始文件的设备上运行：
 
 ```sh
-q2q magnet ./model.bin.q2q
-q2q download 'magnet:?xt=urn:sha256:<64位info-hash>&tr=<百分号编码的Track地址>'
+q2q publish ./video.mp4
 ```
 
-磁力链中的 `tr` 可写 `track.q2q.app`，未指定协议时默认 HTTPS；也兼容完整
-`https://` 和 `http://` 地址。生成时省略 HTTPS 协议头，HTTP 保留完整协议头。
-参数按 URL 查询值做百分号编码一次，解析时解码一次；无效或非 HTTP(S) 的提示忽略。
-例如 `tr=track.q2q.app` 或 `tr=http%3A%2F%2Flocalhost%3A8080`。
+命令默认生成 `./video.mp4.q2q`，发布成功后持续运行。把种子发给接收方，**保持这个终端里的进程运行**；按 Ctrl-C 停止分享。Unix SIGTERM 也会触发清理和撤销宣告。
 
-
-在 shell 中用引号包住链接，避免 `&` 被解释为命令分隔符。该格式使用 Q2Q 的 info hash，
-不支持 BitTorrent 的 `btih`/`btmh`。`magnet` 只向 stdout 输出一行链接，不创建身份或联网；
-`publish` 的默认 stdout 仍是 seed 路径。
-
-下载按显式 `--track` / `Q2Q_TRACK_URL`、有效 `tr` 提示、官方 Track 的顺序去重尝试。
-没有 `tr` 时，只要官方 Track 能找到在线元数据来源，就可使用默认地址。
-CLI 跨 Track 的元数据发现总预算为 60 秒：认证 Peer、取得并对照 `xt` 校验 info，
-通过后才创建目标文件。`dn` 只作提示，不决定输出路径；当前目录默认使用已验证且安全的
-`info.name`，缺失或不安全时使用完整 info hash 作为文件名，也可通过 `--output` 指定。
-
-通过校验的元数据保存到 `<Q2Q_HOME>/metadata/<info-hash>.q2q`，读回时再次验证。
-保留该缓存、目标文件和检查点即可自动续传；完整文件可离线重验完成，无需打开身份或连接 Track。
-元数据发现期间可立即中断，`--quiet` 同样抑制 spinner 和进度输出。
-
-首期从在线完整或部分 Peer 获取 info，Track 不存 metadata。CDN 地址和叶子/证明列表属于
-seed 外层，因此磁力链不会恢复 CDN 兜底来源：只有 CDN、没有在线 Peer 时仍需 `.q2q` 种子。
-info 原始字节最多 8 KiB、链接最多 16 KiB；非 canonical、hash 不符或不支持的 metadata
-会在创建目标前被拒绝。
-
-## 下载与恢复
-
-接收进程默认使用系统用户状态目录保存身份和检查点，也可用 `Q2Q_HOME` 覆盖：
+需要指定种子保存位置时使用 `--seed`，目标文件必须不存在：
 
 ```sh
-Q2Q_HOME=./receiver-state q2q download ./model.q2q
-
-# 中断后保留目标文件和 receiver-state 目录，再次运行同一命令即可自动续传。
-Q2Q_HOME=./receiver-state q2q download ./model.q2q
+q2q publish ./video.mp4 --seed ./share.q2q
 ```
 
-默认优先使用种子中的 `info.name` 作为当前目录下的目标文件名；名称缺失或不安全时，
-从种子文件名去掉扩展名推导。安全名称必须是单个文件名，不能包含路径分隔符、控制字符或平台保留字符。
-可用 `--output` 指定精确目标路径，父目录需已存在。目标和有效检查点同时存在时，
-CLI 会自动重新校验并续传；已有目标没有有效检查点时仍会报错，不会覆盖目标。
-`--resume` 可显式要求从已有检查点恢复。检查点集中保存在
-`Q2Q_HOME/checkpoints`，用规范化后的目标路径匹配；旧版旁置 `.q2q.resume`
-会在首次恢复时迁移。
-成功表示全部块已校验且目标文件已同步。下载不会自动共享块，完成后也不继续做种。
+### 分享磁力链
 
-首选 Track 地址依次取显式 `--track`、`Q2Q_TRACK_URL`、种子的首个 Track，最后回退到官方 `https://track.q2q.app`。
-下载时先尝试首选地址，再按种子顺序尝试有效的 Track 地址，最后尝试官方地址；重复地址会跳过。
-建立会话失败，或首次 Peer 查询失败/没有可用 Peer 时，会切换到下一个地址。某个 Track 首次查询到 Peer 后，本次传输继续使用该 Track；之后的 Peer 重试及 CDN 回退仍由 SDK 处理。
-完整检查点恢复会先在本地校验，不读取 Track 配置，也不初始化身份；只有还需下载数据时才选择 Track 并启动客户端。
-CDN 回退沿用 SDK 的种子元数据与校验规则。
+发布后，可以在另一个终端从种子生成磁力链：
 
-## 配置与输出
+```sh
+q2q magnet ./video.mp4.q2q
+```
 
-| 参数 | 环境变量 / 默认值 |
+把输出的一整行链接发给接收方。使用官方 Track 时，链接可以简化为前面仅含 `xt` 的格式；生成结果也可能带有文件名 `dn` 和 Track 提示 `tr`。磁力链不包含文件本身，接收方仍需能找到在线的发布端。
+
+`magnet` 只读取本地种子并输出链接。提供文件数据由持续运行的 `publish` 进程负责。
+
+## 只生成种子
+
+想先准备种子、稍后再发布，可以使用 `seed`：
+
+```sh
+q2q seed ./video.mp4
+```
+
+这会读取本地文件、计算内容哈希，生成 `./video.mp4.q2q` 后退出。整个过程离线完成，不宣告文件，不创建身份和状态目录。自定义种子路径使用 `--output`：
+
+```sh
+q2q seed ./video.mp4 --output ./share.q2q
+```
+
+种子输出目标必须不存在。`seed` 和 `publish` 生成的都是二进制 `.q2q` 种子；仅生成种子后，接收方还需要等待发布端上线。
+
+### 用已有种子发布
+
+原文件仍在种子所在目录、文件名也没有改变时：
+
+```sh
+q2q publish ./video.mp4.q2q
+```
+
+原文件已经移动或重命名时，通过 `--file` 指定它：
+
+```sh
+q2q publish ./share.q2q --file ./archive/renamed.mp4
+```
+
+CLI 会校验原文件与种子是否匹配，保留内容身份，并使用原种子。输入种子不会被改写。需要导出带有新 Track 提示的副本时，加 `--seed ./export.q2q`。
+
+种子缺少可用文件名时，也需要 `--file`。如果原始内容文件本身以 `.q2q` 结尾，先用 `seed` 生成种子，再发布新生成的种子。
+
+## 配置
+
+### 状态目录与输出位置
+
+`Q2Q_HOME` 保存身份、检查点和磁力链元数据缓存；下载文件仍默认保存到当前目录。安装方式不会改变这个约定。
+
+| 系统 | 默认 `Q2Q_HOME` |
 | --- | --- |
-| `--track` | `Q2Q_TRACK_URL`；下载可使用种子的首个 Track；默认 `https://track.q2q.app` |
-| `--insecure` | 默认关闭；仅调试时跳过 Track/CDN 的 HTTPS 证书与主机名校验 |
-| `Q2Q_HOME` | 系统用户状态目录；所有 Q2Q 身份和本地状态的根目录 |
-| `--identity` | `Q2Q_IDENTITY_FILE`；`<Q2Q_HOME>/identity` |
-| `--download-peers` | 4；范围 1–16 |
-| `--upload-peers` | 4；范围 1–16 |
-| `--upload-rate` | 未设置时不限速；正整数，编码 piece 字节/秒 |
-| `--quiet` | 关闭周期进度及提示信息 |
+| Linux / 其他 Unix | `$XDG_STATE_HOME/q2q`；未设置时为 `~/.local/state/q2q` |
+| macOS | `~/Library/Application Support/Q2Q` |
+| Windows | `%LOCALAPPDATA%\Q2Q` |
 
-临时调试自签名 HTTPS 或代理证书时可使用 `q2q --insecure publish ./model.bin`
-或 `q2q --insecure download ./model.bin.q2q`。该参数仅对当前命令生效，覆盖
-Track、CDN 内容及证明元数据的 HTTPS 请求；服务端身份不再通过 HTTPS 证书验证。
-Punch 公钥核对、Peer 身份认证与 Seed/Merkle 内容校验仍执行。正常使用时应省略该参数。
+在 Linux / macOS 中可以为单次命令指定状态目录：
 
-全局参数可放在子命令前后，显式参数优先于环境变量。默认路径为 Linux/其他
-Unix 的 `$XDG_STATE_HOME/q2q`（未设置时 `~/.local/state/q2q`）、macOS 的
-`~/Library/Application Support/Q2Q`，以及 Windows 的 `%LOCALAPPDATA%\Q2Q`。
-身份和状态目录按需创建。CLI 会锁定当前身份；若同时运行多个客户端，为每个
-客户端设置不同的 `Q2Q_HOME` 或 `Q2Q_IDENTITY_FILE`。现有开发目录 `.q2q`
-不会自动搬迁；需要沿用旧身份时可设置 `Q2Q_HOME=./.q2q`。
+```sh
+Q2Q_HOME=./receiver-state q2q download ./video.mp4.q2q --output ./video.mp4
+```
 
-stdout 每条命令输出一行成功结果路径，stderr 输出进度与错误，重定向及非交互环境相同。
-发布命令在种子导出成功后输出路径并持续运行，不代表接收方已完成下载。
+Windows PowerShell 可先设置 `$env:Q2Q_HOME = '.\receiver-state'`，再运行命令。
 
-交互终端显示下载进度条、百分比、已验证大小、速率、预计剩余时间、活跃 Peer 数及 HTTP 请求数。
-发布端显示动态汇总和每条上传连接：缩短的 Peer ID、连接状态、发送量、速率及重传量；
-连接结束后移除对应行。启动时会显示本地 Peer ID。
-下载端也显示逐连接行：缩短的 Peer ID、状态、接收 payload、逐连接速率及已验证持久化字节。
-重连使用新的尝试编号与速率基线，Connecting 行表示候选身份，连接认证成功后才确认身份。
-结束的尝试会移除，不保留历史列表。接收速率包含有效的一致重复 piece，
-不含 piece 头、控制消息和被丢弃的旧块，可能高于已验证速率；CDN 和恢复数据不归属 Peer。
-详见[下载逐 Peer 观测](./transport#下载逐-peer-观测)。
+身份和状态目录按需创建。同一设备上同时运行多个客户端时，为它们设置不同的 `Q2Q_HOME`，或通过 `--identity` 分别指定身份文件。续传时沿用原来的状态目录与目标路径。
 
-stderr 重定向或 `TERM=dumb` 时使用普通逐行日志，不输出终端控制码；
-`--quiet` 同时关闭动态界面和进度日志。
+<details>
+<summary>状态文件与默认下载名称</summary>
 
-进度每秒采样。下载速率统计新增已验证并持久化的字节，不计续传的已有块；
-上传速率统计 SDK 已发送的编码 piece 字节，包含重传。两者都不是网卡流量计数。
-CLI 接受的种子文件最大 8 MiB。
+- 身份默认位于 `<Q2Q_HOME>/identity`，检查点位于 `<Q2Q_HOME>/checkpoints`，磁力链元数据缓存位于 `<Q2Q_HOME>/metadata`。保留这整个目录即可保留续传所需状态。
+- 种子下载遇到缺失或不安全的内容名称时，从种子文件名推导目标名；磁力链下载则使用完整内容哈希作为目标名。`--output` 可以覆盖默认名称。
+- 完整检查点可在本地离线重验；磁力链还需保留已验证元数据缓存。旧版旁置 `.q2q.resume` 检查点会在恢复时迁移。
+- 旧开发目录 `./.q2q` 不会自动搬迁；需要沿用时可设置 `Q2Q_HOME=./.q2q`。
 
-退出码：**0** 成功完成，**1** 运行/配置/清理错误，**2** 命令行参数解析错误，
-**130** 已处理的中断（包括 Unix SIGTERM）。帮助与版本正常退出；中断后的清理失败返回 1 并报告错误。
+</details>
 
-第一版不提供后台服务、GUI、浏览器接收端、账号或自动后台做种。
+### 常用参数
 
-## 维护者发版
+全局参数可放在子命令前后，显式参数优先于对应环境变量。
 
-[版本准备、审批、发布与 CI 影响判定](./cli-release.md)。
+| 参数 | 用途与默认值 |
+| --- | --- |
+| `--track URL` | 指定首选 Track；也可设置 `Q2Q_TRACK_URL`，默认使用官方服务 |
+| `--identity PATH` | 指定身份文件；也可设置 `Q2Q_IDENTITY_FILE` |
+| `--download-peers N` | 最大并发下载 Peer 或 CDN 请求数，默认 4，范围 1–16 |
+| `--upload-peers N` | 最大接入上传连接数，默认 4，范围 1–16 |
+| `--upload-rate N` | 总上传速率上限，正整数，单位字节/秒，默认不限速 |
+| `--quiet` | 隐藏进度及提示，保留结果与错误 |
+| `--verbose` | 输出详细连接和传输阶段日志 |
+| `--insecure` | 调试时跳过 Track/CDN 的 HTTPS 证书及主机名校验，默认关闭 |
+
+`seed` 的 `--output` 指定种子路径，`download` 的 `--output` 指定下载文件路径；`publish` 使用 `--seed` 指定种子导出路径。
+
+### 自定义 Track 与磁力链提示
+
+```sh
+q2q --track https://track.example.com publish ./video.mp4
+```
+
+`seed` 也可以使用 `--track` 将发现地址写入种子，供之后发布、下载时使用。发布所用地址会进入分享的种子，因此地址中不能包含用户名、密码、查询参数或片段。
+
+磁力链中的 `tr` 可用于提供自定义发现地址。省略协议头时默认 HTTPS；显式 HTTP 和 HTTPS 均可使用。值按 URL 查询参数规则进行一次百分号编码。例如 HTTPS 地址可写成 `tr=track.example.com`，本地 HTTP 地址可写成 `tr=http%3A%2F%2Flocalhost%3A8080`。生成链接时会省略 HTTPS 协议头。
+
+只有 `xt` 的链接通过官方 Track 查找来源；使用自定义网络时，保留相应的 `tr`，或让接收方通过 `--track` 指定地址。`dn` 是可选名称提示，输出文件名仍取自经过校验的内容信息。链接始终用引号包住，避免 shell 将 `&` 当成命令分隔符。
+
+<details>
+<summary>Track 选择与磁力链适用范围</summary>
+
+下载先尝试显式 `--track` / `Q2Q_TRACK_URL`，再尝试种子中的有效 Track 或磁力链的 `tr`，最后尝试官方地址，重复地址会跳过。会话建立失败、首次查询失败或没有可用 Peer 时，会尝试下一个地址；选定有 Peer 的 Track 后，后续重试由 SDK 处理。
+
+发布已有种子时，Track 依次选用显式配置、种子中首个可用地址、官方地址。覆盖地址后，需要分享新提示时可通过 `--seed` 导出副本。
+
+Q2Q 磁力链使用 `urn:sha256` 内容身份，不兼容 BitTorrent 的 `btih` / `btmh`；支持从在线完整或部分 Peer 获取并校验元数据。仅有 CDN 来源、没有在线 Peer 的文件需要分享 `.q2q` 种子，因为磁力链不携带种子外层的 CDN 地址和证明来源。CLI 的磁力链元数据发现预算为 60 秒；种子输入上限为 8 MiB，磁力链上限为 16 KiB，原始 info 上限为 8 KiB。协议格式见[消息编码](./wire.md)。
+
+</details>
+
+## 进度与输出
+
+成功结果写入 stdout：`seed`、`publish`、`download` 输出一行文件路径，`magnet` 输出一行链接。进度、提示和错误写入 stderr，便于重定向或在脚本中获取结果。
+
+终端会显示传输进度、速率及逐 Peer 状态；重定向 stderr 或使用 `TERM=dumb` 时输出普通文本。下载汇总速率按新校验并持久化的字节计算，逐 Peer 接收速率包含有效重复片；上传速率按交给 WebRTC 发送的编码 piece 字节计算，包含重传。这些数字都不等同于网卡流量。发布时输出种子路径表示已开始提供文件。
+
+| 退出码 | 含义 |
+| --- | --- |
+| 0 | 成功完成 |
+| 1 | 运行、配置或清理出错 |
+| 2 | 命令行参数错误 |
+| 130 | 已处理中断，包括 Unix SIGTERM |
+
+## 排查连接问题
+
+让发布方和接收方都开启 `--verbose`，保留同一次测试的完整日志：
+
+```sh
+q2q --verbose publish ./video.mp4.q2q
+q2q --verbose download ./video.mp4.q2q
+```
+
+通过 Peer ID 和 connection ID 对齐双方记录。日志显示协商、身份验证、位图交换、块请求、重试和失败阶段；具体字段见[连接诊断](./transport#连接诊断)。
+
+建连时的 `Selected ICE path at channel establishment` 可确认选中的路径：`path="turn"` 表示使用 TURN 中继，`path="direct"` 表示直连。这是建连快照；单独出现 relay 候选还不能确认最终路径。日志不输出 TURN 凭据，但包含网络地址。
+
+`--quiet --verbose` 可隐藏进度、仅保留诊断和错误。临时排查自签名 HTTPS 或代理证书问题时可加 `--insecure`；该参数只对本次命令生效，Peer 身份认证和内容校验仍执行。
+
+服务部署见[部署指南](./deploy.md)，维护者发布 CLI 版本见[发版流程](./cli-release.md)。
