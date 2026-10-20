@@ -1,3 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+
+# Keep published CLI archives smaller by removing static symbol/debug tables.
+# Local dev/test builds retain their normal diagnostics.
+[profile.release]
+strip = "symbols"
