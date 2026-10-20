@@ -96,6 +96,12 @@ q2q magnet ./model.bin.q2q
 q2q download 'magnet:?xt=urn:sha256:<64位info-hash>&tr=<百分号编码的Track地址>'
 ```
 
+磁力链中的 `tr` 可写 `track.q2q.app`，未指定协议时默认 HTTPS；也兼容完整
+`https://` 和 `http://` 地址。生成时省略 HTTPS 协议头，HTTP 保留完整协议头。
+参数按 URL 查询值做百分号编码一次，解析时解码一次；无效或非 HTTP(S) 的提示忽略。
+例如 `tr=track.q2q.app` 或 `tr=http%3A%2F%2Flocalhost%3A8080`。
+
+
 在 shell 中用引号包住链接，避免 `&` 被解释为命令分隔符。该格式使用 Q2Q 的 info hash，
 不支持 BitTorrent 的 `btih`/`btmh`。`magnet` 只向 stdout 输出一行链接，不创建身份或联网；
 `publish` 的默认 stdout 仍是 seed 路径。

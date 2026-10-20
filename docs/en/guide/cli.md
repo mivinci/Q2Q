@@ -114,6 +114,13 @@ q2q magnet ./model.bin.q2q
 q2q download 'magnet:?xt=urn:sha256:<64-hex-info-hash>&tr=<percent-encoded-Track-URL>'
 ```
 
+A magnet `tr` may be a bare host such as `track.q2q.app`; omitted schemes default
+to HTTPS. Explicit `https://` and `http://` remain supported. Generated links omit
+the HTTPS scheme but retain HTTP. Values are percent-encoded once and decoded once;
+invalid or non-HTTP(S) hints are ignored. Examples: `tr=track.q2q.app` and
+`tr=http%3A%2F%2Flocalhost%3A8080`.
+
+
 Quote links in the shell because `&` separates commands. The format uses Q2Q info
 hashes, not BitTorrent `btih`/`btmh`. `magnet` prints one URL to stdout without
 creating an identity or connecting to a service; `publish` still prints the seed path.

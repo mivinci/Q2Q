@@ -11,6 +11,7 @@ storage = []
 random = ["dep:getrandom"]
 
 [dependencies]
+url = "2.5.8"
 base64 = "0.23.1"
 ed25519-dalek = "3.0.0"
 getrandom = { version = "0.4.3", optional = true }

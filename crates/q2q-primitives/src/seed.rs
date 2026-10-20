@@ -409,7 +409,16 @@ pub fn to_magnet(seed: &Seed) -> String {
   }
   for t in &seed.track_list {
     out.push_str("&tr=");
-    out.push_str(&utf8_percent_encode(t, MAGNET_ENCODE).to_string());
+    // HTTPS is implicit in Q2Q tracker hints; HTTP must remain explicit.
+    let hint = if t
+      .get(..8)
+      .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+    {
+      &t[8..]
+    } else {
+      t
+    };
+    out.push_str(&utf8_percent_encode(hint, MAGNET_ENCODE).to_string());
   }
   out
 }
@@ -473,7 +482,10 @@ pub fn parse_magnet(s: &str) -> Result<Magnet, MagnetError> {
         display_name = Some(name);
       }
     } else if k == "tr" {
-      if let Ok(track) = percent_decode(v) {
+      if let Some(track) = percent_decode(v)
+        .ok()
+        .and_then(|hint| magnet_tracker(&hint))
+      {
         if !trackers.contains(&track) {
           trackers.push(track);
         }
@@ -486,6 +498,30 @@ pub fn parse_magnet(s: &str) -> Result<Magnet, MagnetError> {
     display_name,
     trackers,
   })
+}
+
+// Decode exactly once before adding the implicit scheme. Invalid optional hints
+// remain ignorable; they do not change the content identity in xt.
+fn magnet_tracker(hint: &str) -> Option<String> {
+  if hint.is_empty() || hint.chars().any(char::is_whitespace) || hint.starts_with('/') {
+    return None;
+  }
+  let track = if hint.contains("://") {
+    hint.to_owned()
+  } else {
+    format!("https://{hint}")
+  };
+  let url = url::Url::parse(&track).ok()?;
+  if !matches!(url.scheme(), "http" | "https")
+    || url.host_str().is_none()
+    || !url.username().is_empty()
+    || url.password().is_some()
+    || url.query().is_some()
+    || url.fragment().is_some()
+  {
+    return None;
+  }
+  Some(track)
 }
 
 fn hex(bytes: &[u8]) -> String {
