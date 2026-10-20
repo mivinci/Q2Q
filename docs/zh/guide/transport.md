@@ -65,6 +65,17 @@ flowchart TB
 
 `VerifiedFile` 只读取已完成的块，读取时还会核对磁盘字节与已认证叶子哈希。目标文件可能已预分配长度，应用应使用 SDK 读取接口，不能把稀疏文件中的零字节当成已下载内容。
 
+## 准备已有种子的源文件
+
+`PreparedFile::open(path, track_hint)` 及其进度版本可同步哈希本地内容，不需要 Client 或网络会话；
+异步调用方应放到 `spawn_blocking`。`PreparedFile::from_seed(path, seed)` 及其进度版本会按种子
+完整校验本地文件长度、指定块大小及 Merkle 根，并保留所有 info 字段和原 info hash。
+即便种子没有叶子列表，也会从源文件重建本地叶子与证明。
+
+将句柄传给 `client.publish_prepared(prepared).await?` 即可宣告并服务。Client 应用自身上传预算
+和实际 Track 提示，检查源文件未改变，并复用既有发布生命周期。每次上传块仍会再次对照已承诺
+的叶子哈希检查，准备阶段不会让后来改变的本地字节跳过校验。
+
 ## SDK 磁力链解析
 
 ```rust

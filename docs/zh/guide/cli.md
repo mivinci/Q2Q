@@ -17,6 +17,18 @@ cargo install --path crates/q2q --locked
 q2q --help
 ```
 
+## 离线生成种子
+
+```sh
+q2q seed ./file.bin
+q2q seed ./file.bin --output ./share.q2q
+```
+
+只读取并哈希本地文件、生成二进制 `.q2q` 种子后退出，不创建身份或状态目录，
+也不连接 Track/Punch。默认输出 `<FILE>.q2q`，拒绝覆盖已有目标。
+`--track` / `Q2Q_TRACK_URL` 指定种子里的发现地址提示，未指定时写入官方默认地址；
+写入提示不代表已发布。进度写入 stderr，成功后 stdout 输出种子路径，`--quiet` 抑制进度。
+
 ## 发布
 
 ```sh
@@ -35,6 +47,26 @@ q2q publish ./model.bin --seed ./model.q2q
 Ctrl-C 停止服务并等待清理和撤销，Unix SIGTERM 使用相同流程。
 初始化期间（例如文件哈希或连接）会显示文件准备进度；收到首个信号时，会完成当前初始化，再关闭取得的句柄。初始化和清理期间的后续信号会忽略。
 撤销失败会报告错误，远端持有记录可能保留到 TTL 到期；崩溃或强制结束进程不能保证撤销。
+
+### 发布已有种子
+
+```sh
+q2q publish ./file.bin.q2q
+q2q publish ./share.q2q --file ./renamed-file.bin
+# 需要分享更新后的 Track 提示时，可显式导出新副本：
+q2q publish ./share.q2q --file ./renamed-file.bin --seed ./export.q2q
+```
+
+输入扩展名为 `.q2q`（不区分大小写），或指定了 `--file` 时，按已有种子处理。
+默认从种子所在目录按安全的 `info.name` 找源文件；`--file` 路径相对当前工作目录。
+种子没有名称或名称不安全时必须指定 `--file`。宣告前完整校验文件长度、块大小和 Merkle 根；
+重命名的源文件、非默认块大小及 info 扩展字段均保留原来的 info hash。
+
+输入种子不会被重写。未指定 `--seed` 时，stdout 输出输入种子路径；显式 `--seed` 导出新文件，
+拒绝覆盖。Track 依次选择显式参数/环境变量、种子中首个可用地址、官方默认地址。
+内存和导出副本会包含实际使用的 Track；覆盖 Track 后，需要更新分享提示时应分发新导出副本。
+若原始数据文件本身叫 `*.q2q`，先用 `q2q seed` 生成种子，再发布生成的种子即可。
+发布进程仍须保持在线才能提供数据。
 
 ## 磁力链
 

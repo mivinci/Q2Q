@@ -286,3 +286,85 @@ fn cached_magnet_uses_verified_name_or_hash_and_resumes_without_identity() {
     success(&output);
   }
 }
+
+#[test]
+fn seed_command_hashes_locally_without_state_or_network_and_refuses_overwrites() {
+  let dir = TempDir::new().unwrap();
+  let source = dir.path().join("photo.bin");
+  let bytes = vec![37; 524_301];
+  std::fs::write(&source, &bytes).unwrap();
+  let output = cli(dir.path())
+    .env("Q2Q_HOME", "")
+    .args(["--quiet", "--track", "http://127.0.0.1:1", "seed"])
+    .arg(&source)
+    .output()
+    .unwrap();
+  success(&output);
+  let path = dir.path().join("photo.bin.q2q");
+  assert_eq!(
+    String::from_utf8_lossy(&output.stdout).trim(),
+    path.display().to_string()
+  );
+  let seed_bytes = std::fs::read(&path).unwrap();
+  let seed = Seed::parse(&seed_bytes).unwrap();
+  assert_eq!(seed.info.length, bytes.len() as u64);
+  assert_eq!(
+    seed.info.root,
+    q2q_primitives::merkle::root(
+      &bytes
+        .chunks(262144)
+        .map(q2q_primitives::merkle::leaf_hash)
+        .collect::<Vec<_>>()
+    )
+  );
+  assert_eq!(seed.info.name.as_deref(), Some("photo.bin"));
+  assert!(output.stderr.is_empty());
+  assert!(!dir.path().join("state").exists());
+  let again = cli(dir.path()).arg("seed").arg(&source).output().unwrap();
+  assert_eq!(again.status.code(), Some(1));
+  assert_eq!(std::fs::read(&path).unwrap(), seed_bytes);
+  let custom = dir.path().join("custom.q2q");
+  success(
+    &cli(dir.path())
+      .arg("seed")
+      .arg(&source)
+      .arg("-o")
+      .arg(&custom)
+      .output()
+      .unwrap(),
+  );
+  assert!(!dir.path().join("state").exists());
+}
+
+#[test]
+fn publish_seed_rejects_unsafe_or_mismatched_sources_before_creating_identity() {
+  let dir = TempDir::new().unwrap();
+  let path = dir.path().join("seed.q2q");
+  let source = dir.path().join("data.bin");
+  std::fs::write(&source, b"wrong bytes").unwrap();
+  for name in [None, Some("../../outside"), Some("data.bin")] {
+    let mut seed = Seed::new(Info::new(0, EMPTY_ROOT));
+    seed.info.name = name.map(String::from);
+    std::fs::write(&path, seed.encode()).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let result = cli(dir.path())
+      .args(["--track", "http://127.0.0.1:1", "publish"])
+      .arg(&path)
+      .output()
+      .unwrap();
+    assert_eq!(result.status.code(), Some(1));
+    assert!(result.stdout.is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(!dir.path().join("state").exists());
+  }
+  let result = cli(dir.path())
+    .arg("publish")
+    .arg(&path)
+    .arg("--file")
+    .arg(&source)
+    .output()
+    .unwrap();
+  assert_eq!(result.status.code(), Some(1));
+  assert!(String::from_utf8_lossy(&result.stderr).contains("does not match"));
+  assert!(!dir.path().join("state").exists());
+}

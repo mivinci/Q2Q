@@ -65,6 +65,21 @@ After receiving the bytes and proof, Destination verifies length and the Merkle 
 
 VerifiedFile reads completed blocks and checks disk bytes against authenticated leaf hashes. The destination may already have its final allocated length; applications should use SDK reads rather than treating sparse zero bytes as downloaded content.
 
+## Preparing an existing seed
+
+`PreparedFile::open(path, track_hint)` and its progress variant synchronously hash
+local content without a Client or network session. Async callers should use
+`spawn_blocking`. `PreparedFile::from_seed(path, seed)` and its progress variant
+fully verify local length, configured block size and Merkle root while retaining
+all info fields and the original info hash. They rebuild local leaves/proofs even
+if the seed carries only its info root.
+
+Pass the resulting handle to `client.publish_prepared(prepared).await?` to announce
+and serve it. The Client applies its upload budgets and selected Track hint, checks
+that the source is unchanged, and uses the existing publication lifecycle. Each
+uploaded block is checked against its committed leaf again; preparation never
+permits changed local bytes to bypass verification.
+
 ## Resolving magnets in the SDK
 
 ```rust

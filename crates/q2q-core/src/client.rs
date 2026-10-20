@@ -326,7 +326,28 @@ impl Client {
     progress: Option<watch::Sender<PublishProgress>>,
   ) -> Result<Publication, TransferError> {
     let prepared = self.prepare_file_inner(path, progress.clone()).await?;
+    self.publish_prepared_inner(prepared, progress).await
+  }
+
+  /// Announce and serve previously prepared local bytes, retaining the client's
+  /// upload budgets and adding its Track as a discovery hint.
+  pub async fn publish_prepared(
+    &self,
+    prepared: PreparedFile,
+  ) -> Result<Publication, TransferError> {
+    self.publish_prepared_inner(prepared, None).await
+  }
+
+  async fn publish_prepared_inner(
+    &self,
+    prepared: PreparedFile,
+    progress: Option<watch::Sender<PublishProgress>>,
+  ) -> Result<Publication, TransferError> {
+    let prepared = prepared
+      .with_read_limit(self.upload_reads.clone())
+      .with_track(self.track_url.to_string());
     crate::destination::check_seed(prepared.seed())?;
+    prepared.source_revision()?;
     if let Some(progress) = progress {
       progress.send_replace(PublishProgress {
         phase: PublishPhase::Announcing,

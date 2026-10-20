@@ -271,3 +271,69 @@ fn interrupt_during_magnet_discovery_creates_no_destination_or_checkpoint() {
   assert!(!dir.path().join("state/metadata").exists());
   server.join().unwrap();
 }
+
+#[test]
+#[ignore = "requires Q2Q_TEST_TRACK_URL pointing to a fresh local Track/Punch pair"]
+fn seed_only_then_publish_seed_with_default_and_explicit_sources() {
+  let track = std::env::var("Q2Q_TEST_TRACK_URL").expect("Q2Q_TEST_TRACK_URL");
+  let dir = TempDir::new().unwrap();
+  let source = dir.path().join("content.bin");
+  let renamed = dir.path().join("renamed.bin");
+  let bytes: Vec<_> = (0..800_001).map(|i| (i % 251) as u8).collect();
+  std::fs::write(&source, &bytes).unwrap();
+  let seed_path = dir.path().join("content.bin.q2q");
+  success(
+    &cli(dir.path())
+      .args(["--track", &track, "--quiet", "seed"])
+      .arg(&source)
+      .output()
+      .unwrap(),
+  );
+  assert!(!dir.path().join("state").exists());
+  let original = std::fs::read(&seed_path).unwrap();
+  for explicit in [false, true] {
+    let export = dir.path().join("export.q2q");
+    let mut command = cli(dir.path());
+    command.args(["--quiet", "publish"]).arg(&seed_path);
+    if explicit {
+      command
+        .arg("--file")
+        .arg(&renamed)
+        .arg("--seed")
+        .arg(&export);
+    }
+    let name = if explicit {
+      "explicit-seed"
+    } else {
+      "default-seed"
+    };
+    let mut publisher = logged(&mut command, dir.path(), name);
+    wait_for(|| {
+      std::fs::read_to_string(dir.path().join(format!("{name}.out")))
+        .is_ok_and(|text| !text.is_empty())
+    });
+    let input = if explicit { &export } else { &seed_path };
+    assert_eq!(
+      Seed::parse(&std::fs::read(input).unwrap())
+        .unwrap()
+        .info_hash(),
+      Seed::parse(&original).unwrap().info_hash()
+    );
+    let destination = dir.path().join(format!("download-{name}"));
+    let result = cli(&dir.path().join(name))
+      .args(["--quiet", "download"])
+      .arg(input)
+      .arg("-o")
+      .arg(&destination)
+      .output()
+      .unwrap();
+    success(&result);
+    assert_eq!(std::fs::read(destination).unwrap(), bytes);
+    assert_eq!(std::fs::read(&seed_path).unwrap(), original);
+    publisher.signal("-TERM");
+    assert_eq!(publisher.wait().code(), Some(130));
+    if !explicit {
+      std::fs::rename(&source, &renamed).unwrap();
+    }
+  }
+}

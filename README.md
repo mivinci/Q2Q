@@ -81,6 +81,10 @@ q2q download ./model.bin.q2q
 q2q magnet ./model.bin.q2q
 ```
 
+To build a seed without publishing, run `q2q seed ./model.bin`. Later, use
+`q2q publish ./model.bin.q2q` to serve the matching file beside that seed, or pass
+`--file PATH` to select its local source. Existing seed inputs are never rewritten.
+
 Publishing writes `./model.bin.q2q` by default; pass `--seed PATH` to choose a custom seed path.
 Downloading uses the seed's safe `info.name` by default; pass `--output PATH` to choose another destination.
 If a download is interrupted, keep the destination and `Q2Q_HOME` directory and run the same command again; a valid checkpoint is detected and resumed automatically.
