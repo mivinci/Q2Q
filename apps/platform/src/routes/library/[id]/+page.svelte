@@ -12,6 +12,7 @@
   import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
   import ProcessingPanel from '#lib/components/processing-panel.svelte';
   import PublicationPanel from '#lib/components/publication-panel.svelte';
+  import ResponsiveMetadata from '#lib/components/responsive-metadata.svelte';
   import type { PageProps } from './$types';
   let { data }: PageProps = $props();
   const text = $derived(messages[page.data.locale]);
@@ -84,11 +85,14 @@
       {/each}
     </ol>
   </section>
-  <dl class="mb-5 grid gap-5 rounded-xl border bg-card p-5 sm:grid-cols-2">
-    <div><dt class="text-[13px] text-muted-foreground">{text.size}</dt><dd class="mt-2 text-sm">{formatBytes(data.file.size, page.data.locale)}</dd></div>
-    <div><dt class="text-[13px] text-muted-foreground">{text.fileCreatedAt}</dt><dd class="mt-2 text-sm">{new Intl.DateTimeFormat(page.data.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(data.file.createdAt)}</dd></div>
-    <div><dt class="text-[13px] text-muted-foreground">{text.updated}</dt><dd class="mt-2 text-sm">{new Intl.DateTimeFormat(page.data.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(data.file.updatedAt)}</dd></div>
-  </dl>
+  <ResponsiveMetadata
+    wrapperClass="mb-5 rounded-xl border bg-card p-4 sm:grid-cols-3 sm:gap-5 sm:p-5"
+    items={[
+      { label: text.size, value: formatBytes(data.file.size, page.data.locale), valueClass: 'text-sm' },
+      { label: text.fileCreatedAt, value: new Intl.DateTimeFormat(page.data.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(data.file.createdAt), valueClass: 'text-sm' },
+      { label: text.updated, value: new Intl.DateTimeFormat(page.data.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(data.file.updatedAt), valueClass: 'text-sm' }
+    ]}
+  />
   {#if data.file.status === 'uploaded'}
     {#key data.file.id}<ProcessingPanel fileId={data.file.id} size={data.file.size} summary={data.processing} available={data.processingAvailable} canManage={data.canManage} onBusyChange={(value) => processing = value} />{/key}
   {/if}

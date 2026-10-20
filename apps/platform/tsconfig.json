@@ -5,6 +5,7 @@
   ],
   "compilerOptions": {
     "allowJs": false,
+    "allowArbitraryExtensions": true,
     "checkJs": false,
     "types": [
       "$app/types",

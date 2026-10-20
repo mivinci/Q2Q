@@ -62,34 +62,33 @@
 </script>
 
 {#snippet fullSidebar(drawer = false, compact = false)}
-  <div class={`flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain ${compact ? 'gap-4 px-1 pt-4 pb-4' : 'gap-6 px-3 pt-6 pb-5'}`} style={`width: ${drawer ? '100%' : compact ? '64px' : '232px'};`}>
+  <div class={`flex min-h-0 w-full flex-1 flex-col overflow-y-auto overscroll-contain ${compact ? 'gap-4 px-1 pt-4 pb-4' : 'gap-6 px-3 pt-6 pb-5'}`}>
     <a href="/" onclick={drawer ? closeDrawer : undefined} class={`flex h-8 items-center text-xl font-medium tracking-tight ${compact ? 'justify-center px-0' : 'gap-2 px-2'}`} aria-label="Q2Q">
       <Brand compact={compact} collapsed={compact} />
     </a>
     <ProjectPicker {projects} {currentProject} {compact} />
     <div>
-      <p class={`sidebar-label mb-2 px-3 text-xs text-muted-foreground ${compact ? 'hidden' : ''}`} aria-hidden={compact}>{text.workspace}</p>
       <nav aria-label={text.navigation} class="flex flex-col gap-1">
         {#each navigation as item}
           {@const active = item.href !== null && (page.url.pathname === item.href || page.url.pathname.startsWith(item.href + '/'))}
           <Button href={item.href ?? undefined} variant="ghost" disabled={item.href === null}
             onclick={drawer ? closeDrawer : undefined} aria-current={active ? 'page' : undefined}
             aria-label={text[item.label]} title={compact ? text[item.label] : undefined}
-            style={`width: ${drawer ? '100%' : compact ? '40px' : '208px'};`}
+            style={`width: ${compact ? '40px' : '100%'};`}
             class={active
-              ? `${compact ? 'mx-auto h-10 justify-center px-0' : 'h-11 justify-start gap-3 px-3.75'} transition-[width] duration-200 motion-reduce:transition-none bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent`
-              : `${compact ? 'mx-auto h-10 justify-center px-0' : 'h-11 justify-start gap-3 px-3.75'} transition-[width] duration-200 motion-reduce:transition-none text-muted-foreground`}>
+              ? `${compact ? 'mx-auto h-10 justify-center px-0' : 'h-11 justify-start gap-3 px-3.75'} bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent`
+              : `${compact ? 'mx-auto h-10 justify-center px-0' : 'h-11 justify-start gap-3 px-3.75'} text-muted-foreground`}>
             <item.icon class="size-4.5 shrink-0" aria-hidden="true" /><span class={`sidebar-label text-sm ${compact ? 'hidden' : ''}`} aria-hidden="true">{text[item.label]}</span>
           </Button>
         {/each}
       </nav>
     </div>
   </div>
-  <div class="shrink-0 overflow-hidden transition-[width] duration-200 motion-reduce:transition-none" style={`width: ${drawer ? '100%' : compact ? '64px' : '232px'};`}><AccountMenu {user} planId={entitlements.planId} {compact} onNavigate={drawer ? closeDrawer : undefined} /></div>
+  <div class="w-full shrink-0"><AccountMenu {user} planId={entitlements.planId} {compact} onNavigate={drawer ? closeDrawer : undefined} /></div>
 {/snippet}
 
 <Sheet.Root bind:open={drawerOpen}>
-  <div class="app-layout min-h-dvh bg-background text-foreground" style={`--sidebar-width: ${expanded ? 232 : 64}px;`}>
+  <div class="app-layout min-h-dvh bg-background text-foreground" style={`--sidebar-width: ${expanded ? 232 : 56}px;`}>
     <aside aria-label={text.navigation} class="sticky top-0 hidden h-dvh min-h-0 flex-col overflow-x-clip border-r bg-sidebar md:flex" style="padding-bottom: env(safe-area-inset-bottom);">
       {@render fullSidebar(false, !expanded)}
     </aside>

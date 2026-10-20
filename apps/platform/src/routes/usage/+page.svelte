@@ -5,6 +5,7 @@
   import type { PlanId } from '#lib/server/plans.js';
   import { formatBytes } from '#lib/upload.js';
   import StorageUsage from '#lib/components/storage-usage.svelte';
+  import ResponsiveMetadata from '#lib/components/responsive-metadata.svelte';
 
   let { data, form }: PageProps = $props();
   const text = $derived(messages[data.locale]);
@@ -28,21 +29,29 @@
 
   {#if form?.error}<p role="alert" class="mt-5 text-sm text-destructive">{text[form.error]}</p>{/if}
 
-  <section class="mt-6 grid gap-3 rounded-xl border bg-card p-4 sm:grid-cols-3 sm:p-5" aria-label={text.currentPlan}>
-    <div><p class="text-[13px] text-muted-foreground">{text.currentProject}</p><p class="mt-1.5 text-sm font-medium">{data.currentProject.name}</p></div>
-    <div><p class="text-[13px] text-muted-foreground">{text.currentPlan}</p><p class="mt-1.5 text-sm font-medium">{text[planNameKey[data.entitlements.planId]]}</p></div>
-    <div><p class="text-[13px] text-muted-foreground">{text.subscriptionStatus}</p><p class="mt-1.5 text-sm font-medium">{statusLabel}</p></div>
-  </section>
+  <ResponsiveMetadata
+    ariaLabel={text.currentPlan}
+    wrapperClass="mt-6 rounded-xl border bg-card p-4 sm:grid-cols-3 sm:gap-3 sm:p-5"
+    items={[
+      { label: text.currentProject, value: data.currentProject.name, valueClass: 'text-sm font-medium' },
+      { label: text.currentPlan, value: text[planNameKey[data.entitlements.planId]], valueClass: 'text-sm font-medium' },
+      { label: text.subscriptionStatus, value: statusLabel, valueClass: 'text-sm font-medium' }
+    ]}
+  />
 
   <section class="mt-4 grid gap-3 sm:grid-cols-2" aria-label={text.usageSummary}>
-    <div class="rounded-xl border bg-card p-4"><p class="text-[13px] text-muted-foreground">{text.recordedFiles}</p><p class="mt-1.5 text-xl font-medium tabular-nums">{new Intl.NumberFormat(data.locale).format(data.usage.files)}</p></div>
+    <ResponsiveMetadata
+      ariaLabel={text.recordedFiles}
+      wrapperClass="rounded-xl border bg-card p-4"
+      items={[{ label: text.recordedFiles, value: new Intl.NumberFormat(data.locale).format(data.usage.files), valueClass: 'text-xl font-medium tabular-nums' }]}
+    />
     <div class="rounded-xl border bg-card p-4"><StorageUsage usage={data.storageUsage} limit={data.entitlements.limits.storageBytes} /></div>
   </section>
   <p class="mt-2 text-[13px] leading-relaxed text-muted-foreground">{text.usageNotQuota}</p>
 
   <section class="mt-8" aria-labelledby="plan-options">
     <div class="mb-4"><h2 id="plan-options" class="text-base font-medium">{text.availablePlans}</h2><p class="mt-1 text-[13px] text-muted-foreground">{text.planLimitsPending}</p></div>
-    <div class="grid gap-4 lg:grid-cols-3">
+    <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
       {#each data.plans as plan (plan.id)}
         {@const planId = plan.id as PlanId}
         {@const selected = data.entitlements.planId === planId}

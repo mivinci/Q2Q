@@ -46,8 +46,8 @@
 </script>
 
 <section class="mb-7 rounded-xl border bg-card p-5" aria-label={text.publications}>
-  <div class="flex flex-wrap items-start justify-between gap-4">
-    <div><h2 class="text-sm font-medium">{text.publications}</h2><p class="mt-2 text-[13px] text-muted-foreground">{text.publicationDescription}</p></div>
+  <div class="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+    <div class="min-w-0"><h2 class="text-sm font-medium">{text.publications}</h2><p class="mt-2 text-[13px] text-muted-foreground">{text.publicationDescription}</p></div>
     {#if canManage}
       <div class="flex max-w-56 flex-col items-start gap-1 sm:items-end">
         <Button size="sm" disabled={!ready || active || busy} onclick={() => publish()}>{text.publishVersion}</Button>
