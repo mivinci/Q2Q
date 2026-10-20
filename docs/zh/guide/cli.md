@@ -218,4 +218,4 @@ q2q --verbose download ./video.mp4.q2q
 
 `--quiet --verbose` 可隐藏进度、仅保留诊断和错误。临时排查自签名 HTTPS 或代理证书问题时可加 `--insecure`；该参数只对本次命令生效，Peer 身份认证和内容校验仍执行。
 
-服务部署见[部署指南](./deploy.md)，维护者发布 CLI 版本见[发版流程](./cli-release.md)。
+服务部署见[部署指南](./deploy-single-node)，维护者发布 CLI 版本见[发版流程](./cli-release.md)。

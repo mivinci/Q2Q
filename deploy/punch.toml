@@ -22,3 +22,11 @@ join_per_minute = 10
 heartbeat_per_minute = 120
 connect_per_minute = 20
 signal_per_minute = 120
+
+# Optional Registry reporting. Initialize persistent identity and issue its token first.
+# Use token_file OR Q2Q_REGISTRY_TOKEN. Remote Registry URLs require HTTPS.
+# [registry]
+# url = "https://registry.example.com"
+# token_file = "/etc/q2q/secrets/registry.token"
+# region = "hk"
+# accepting_new_connections = true

@@ -7,7 +7,6 @@ import { mermaidBlock } from './mermaid.js';
 const guide = (prefix) => [
   { text: 'What is Q2Q?', link: `${prefix}guide/what-is-q2q` },
   { text: 'Command-line client', link: `${prefix}guide/cli` },
-  { text: 'Deploy', link: `${prefix}guide/deploy` },
   { text: 'Track', link: `${prefix}guide/track` },
   { text: 'Punch', link: `${prefix}guide/punch` },
   { text: 'Transport', link: `${prefix}guide/transport` },
@@ -29,10 +28,17 @@ const sidebar = (prefix, t) => [
     ],
   },
   {
+    text: t.deploy,
+    collapsed: false,
+    items: [
+      { text: t.singleNode, link: `${prefix}guide/deploy-single-node` },
+      { text: t.cluster, link: `${prefix}guide/deploy-cluster` },
+    ],
+  },
+  {
     text: t.planes,
     collapsed: false,
     items: [
-      { text: t.deploy, link: `${prefix}guide/deploy` },
       { text: 'Track', link: `${prefix}guide/track` },
       { text: 'Punch', link: `${prefix}guide/punch` },
     ],
@@ -55,7 +61,9 @@ const en = {
   overview: 'What is Q2Q?',
   cli: 'Command-line client',
   planes: 'Control Plane',
-  deploy: 'Deploy',
+  deploy: 'Deployment',
+  singleNode: 'Single node',
+  cluster: 'Cluster',
   data: 'Data Plane',
   transport: 'Transport',
   wire: 'Wire protocol',
@@ -70,6 +78,8 @@ const zh = {
   cli: '命令行客户端',
   planes: '控制面',
   deploy: '部署',
+  singleNode: '单机部署',
+  cluster: '集群部署',
   data: '数据面',
   transport: '传输层',
   wire: '消息编码',
@@ -125,8 +135,16 @@ export default defineConfig({
           {
             text: 'Guide',
             link: '/guide/what-is-q2q',
-            activeMatch: '/guide/',
+            activeMatch: '/guide/(?!deploy-)',
             items: guide('/'),
+          },
+          {
+            text: 'Deployment',
+            activeMatch: '/guide/deploy-',
+            items: [
+              { text: 'Single node', link: '/guide/deploy-single-node' },
+              { text: 'Cluster', link: '/guide/deploy-cluster' },
+            ],
           },
           { text: 'API', link: '/api/' },
         ],
@@ -153,17 +171,24 @@ export default defineConfig({
           {
             text: '指南',
             link: '/zh/guide/what-is-q2q',
-            activeMatch: '/zh/guide/',
+            activeMatch: '/zh/guide/(?!deploy-)',
             items: [
               { text: 'Q2Q 是什么？', link: '/zh/guide/what-is-q2q' },
               { text: '命令行客户端', link: '/zh/guide/cli' },
-              { text: '部署', link: '/zh/guide/deploy' },
               { text: 'Track', link: '/zh/guide/track' },
               { text: 'Punch', link: '/zh/guide/punch' },
               { text: '传输层', link: '/zh/guide/transport' },
               { text: '消息编码', link: '/zh/guide/wire' },
               { text: '调度', link: '/zh/guide/scheduling' },
               { text: 'CDN 回退', link: '/zh/guide/cdn' },
+            ],
+          },
+          {
+            text: '部署',
+            activeMatch: '/zh/guide/deploy-',
+            items: [
+              { text: '单机部署', link: '/zh/guide/deploy-single-node' },
+              { text: '集群部署', link: '/zh/guide/deploy-cluster' },
             ],
           },
           { text: 'API 参考', link: '/zh/api/' },

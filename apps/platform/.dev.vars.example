@@ -1,6 +1,8 @@
 # Copy to .dev.vars and fill locally. Use the actual public origin in production.
 AUTH_ORIGIN=http://localhost:5173
 PLATFORM_TRACK_URL=
+REGISTRY_URL=
+REGISTRY_NODES_TOKEN=
 # Set to "enabled" only when developing the local plans UI. Never set this in production.
 # BILLING_SIMULATION=enabled
 BETTER_AUTH_SECRET=

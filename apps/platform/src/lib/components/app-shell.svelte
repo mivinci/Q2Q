@@ -29,7 +29,7 @@
     children: Snippet;
   } = $props();
   const text = $derived(messages[page.data.locale]);
-  const section = $derived(page.url.pathname === '/' ? 'overview' : page.url.pathname.startsWith('/seeds') ? 'seeds' : page.url.pathname === '/network' ? 'network' : page.url.pathname === '/settings' ? 'settings' : page.url.pathname === '/storage' ? 'storage' : page.url.pathname === '/usage' ? 'usage' : page.url.pathname.startsWith('/project/') ? 'projectSettings' : 'library');
+  const section = $derived(page.url.pathname === '/' ? 'overview' : page.url.pathname.startsWith('/seeds') ? 'seeds' : page.url.pathname === '/network' ? 'network' : page.url.pathname === '/nodes' ? 'nodes' : page.url.pathname === '/settings' ? 'settings' : page.url.pathname === '/storage' ? 'storage' : page.url.pathname === '/usage' ? 'usage' : page.url.pathname.startsWith('/project/') ? 'projectSettings' : 'library');
   const pageBack = $derived(page.url.pathname.startsWith('/library/')
     ? { href: '/library', label: text.backToLibrary }
     : page.url.pathname.startsWith('/seeds/')
@@ -57,7 +57,7 @@
     { label: 'seeds', icon: Sprout, href: '/seeds' },
     { label: 'storage', icon: HardDrive, href: '/storage' },
     { label: 'network', icon: Network, href: '/network' },
-    { label: 'nodes', icon: Radio, href: null }
+    { label: 'nodes', icon: Radio, href: '/nodes' }
   ] as const;
 </script>
 

@@ -45,6 +45,11 @@ impl PunchIdentity {
   pub fn generate(punch_id: &str) -> Result<PunchIdentity, CertError> {
     let key_pair =
       KeyPair::generate_for(&PKCS_ED25519).map_err(|e| CertError::Generate(e.to_string()))?;
+    Self::with_key(punch_id, key_pair)
+  }
+
+  fn with_key(punch_id: &str, key_pair: KeyPair) -> Result<PunchIdentity, CertError> {
+    let _ = raw_ed25519(&key_pair)?;
     let mut params =
       CertificateParams::new(Vec::new()).map_err(|e| CertError::Generate(e.to_string()))?;
     let mut dn = DistinguishedName::new();
@@ -75,11 +80,13 @@ impl PunchIdentity {
       KeyPair::from_pem(key_pem).map_err(|e| CertError::Generate(format!("key: {e}")))?;
     let public_key = raw_ed25519(&key_pair)?;
 
-    Ok(PunchIdentity {
+    let identity = PunchIdentity {
       cert_der: cert.to_vec(),
       key_der: key.secret_der().to_vec(),
       public_key,
-    })
+    };
+    identity.tls_server_config()?;
+    Ok(identity)
   }
 
   /// The 32 bytes that must match the `punch_public_key` registered at Track.
@@ -118,12 +125,19 @@ pub fn load_or_create(
   key_path: &Path,
   punch_id: &str,
 ) -> Result<PunchIdentity, CertError> {
-  if cert_path.exists() && key_path.exists() {
-    let cert = std::fs::read_to_string(cert_path)
-      .map_err(|e| CertError::Generate(format!("read {}: {e}", cert_path.display())))?;
-    let key = std::fs::read_to_string(key_path)
-      .map_err(|e| CertError::Generate(format!("read {}: {e}", key_path.display())))?;
-    return PunchIdentity::from_pem(&cert, &key);
+  let cert_exists = cert_path
+    .try_exists()
+    .map_err(|e| CertError::Generate(e.to_string()))?;
+  let key_exists = key_path
+    .try_exists()
+    .map_err(|e| CertError::Generate(e.to_string()))?;
+  if cert_exists != key_exists {
+    return Err(CertError::Generate(
+      "incomplete identity files; refusing to replace an existing certificate or key".into(),
+    ));
+  }
+  if cert_exists {
+    return load_existing(cert_path, key_path);
   }
 
   let identity = PunchIdentity::generate(punch_id)?;
@@ -132,27 +146,78 @@ pub fn load_or_create(
   Ok(identity)
 }
 
+pub fn load_existing(cert_path: &Path, key_path: &Path) -> Result<PunchIdentity, CertError> {
+  let cert = std::fs::read_to_string(cert_path)
+    .map_err(|e| CertError::Generate(format!("read {}: {e}", cert_path.display())))?;
+  let key = std::fs::read_to_string(key_path)
+    .map_err(|e| CertError::Generate(format!("read {}: {e}", key_path.display())))?;
+  PunchIdentity::from_pem(&cert, &key)
+}
+
+/// Import a pre-generated Ed25519 PKCS#8 PEM key and issue its certificate.
+pub fn initialize_from_key(
+  cert_path: &Path,
+  key_path: &Path,
+  punch_id: &str,
+  source: &Path,
+) -> Result<PunchIdentity, CertError> {
+  if cert_path
+    .try_exists()
+    .map_err(|e| CertError::Generate(e.to_string()))?
+    || key_path
+      .try_exists()
+      .map_err(|e| CertError::Generate(e.to_string()))?
+  {
+    return Err(CertError::Generate(
+      "import destinations must not already exist".into(),
+    ));
+  }
+  let pem = std::fs::read_to_string(source)
+    .map_err(|e| CertError::Generate(format!("read input key: {e}")))?;
+  let pair =
+    KeyPair::from_pem(&pem).map_err(|_| CertError::Generate("invalid input private PEM".into()))?;
+  let identity = PunchIdentity::with_key(punch_id, pair)?;
+  identity.tls_server_config()?;
+  identity.save(cert_path, key_path)?;
+  Ok(identity)
+}
+
 impl PunchIdentity {
   fn save(&self, cert_path: &Path, key_path: &Path) -> Result<(), CertError> {
-    if let Some(parent) = cert_path.parent()
-      && !parent.as_os_str().is_empty()
-    {
-      std::fs::create_dir_all(parent)
-        .map_err(|e| CertError::Generate(format!("create {}: {e}", parent.display())))?;
+    if cert_path == key_path {
+      return Err(CertError::Generate(
+        "certificate and key paths must differ".into(),
+      ));
     }
-    std::fs::write(cert_path, pem("CERTIFICATE", &self.cert_der))
-      .map_err(|e| CertError::Generate(format!("write {}: {e}", cert_path.display())))?;
-    std::fs::write(key_path, pem("PRIVATE KEY", &self.key_der))
-      .map_err(|e| CertError::Generate(format!("write {}: {e}", key_path.display())))?;
-    // the private half is the whole identity; nothing else needs to read it
-    #[cfg(unix)]
-    {
-      use std::os::unix::fs::PermissionsExt;
-      std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| CertError::Generate(format!("chmod {}: {e}", key_path.display())))?;
+    for path in [cert_path, key_path] {
+      if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|e| CertError::Generate(e.to_string()))?;
+      }
     }
+    // Never overwrite an existing half, including partial identities after a failed write.
+    // Set secret permissions at creation so there is no world-readable write window.
+    write_new(key_path, &pem("PRIVATE KEY", &self.key_der))?;
+    write_new(cert_path, &pem("CERTIFICATE", &self.cert_der))?;
     Ok(())
   }
+}
+
+fn write_new(path: &Path, value: &str) -> Result<(), CertError> {
+  use std::io::Write;
+  let mut options = std::fs::OpenOptions::new();
+  options.write(true).create_new(true);
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::OpenOptionsExt;
+    options.mode(0o600);
+  }
+  let mut file = options
+    .open(path)
+    .map_err(|e| CertError::Generate(format!("create {}: {e}", path.display())))?;
+  file
+    .write_all(value.as_bytes())
+    .and_then(|_| file.sync_all())
+    .map_err(|e| CertError::Generate(format!("write {}: {e}", path.display())))
 }
 
 /// PEM with 64-character lines, which is what both parsers expect.
@@ -170,6 +235,9 @@ fn pem(label: &str, der: &[u8]) -> String {
 /// rcgen hands out the public key as SPKI PEM; an Ed25519 SPKI is a 12-byte
 /// prefix followed by the raw 32-byte key.
 fn raw_ed25519(key_pair: &KeyPair) -> Result<[u8; 32], CertError> {
+  if key_pair.algorithm() != &PKCS_ED25519 {
+    return Err(CertError::BadPublicKey);
+  }
   let spki = spki_der(&key_pair.public_key_pem())?;
   let tail = spki
     .get(spki.len().saturating_sub(32)..)
@@ -218,6 +286,49 @@ mod tests {
     assert!(cert.exists());
     let second = load_or_create(&cert, &key, "punch-1").unwrap();
     assert_eq!(first.public_key(), second.public_key());
+  }
+
+  #[test]
+  fn import_preserves_key_and_partial_identity_is_not_overwritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let original = PunchIdentity::generate("source").unwrap();
+    let source = dir.path().join("source.pem");
+    std::fs::write(&source, pem("PRIVATE KEY", &original.key_der)).unwrap();
+    let cert = dir.path().join("cert.pem");
+    let key = dir.path().join("key.pem");
+    let imported = initialize_from_key(&cert, &key, "punch-1", &source).unwrap();
+    assert_eq!(imported.public_key(), original.public_key());
+    assert_eq!(
+      load_existing(&cert, &key).unwrap().public_key(),
+      original.public_key()
+    );
+    assert!(initialize_from_key(&cert, &key, "punch-1", &source).is_err());
+    std::fs::remove_file(&cert).unwrap();
+    let before = std::fs::read(&key).unwrap();
+    assert!(load_or_create(&cert, &key, "punch-1").is_err());
+    assert_eq!(std::fs::read(&key).unwrap(), before);
+    assert!(!cert.exists());
+    #[cfg(unix)]
+    {
+      use std::os::unix::fs::PermissionsExt;
+      assert_eq!(
+        std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+        0o600
+      );
+    }
+  }
+
+  #[test]
+  fn mismatched_certificate_and_key_are_rejected() {
+    let a = PunchIdentity::generate("a").unwrap();
+    let b = PunchIdentity::generate("b").unwrap();
+    assert!(
+      PunchIdentity::from_pem(
+        &pem("CERTIFICATE", &a.cert_der),
+        &pem("PRIVATE KEY", &b.key_der)
+      )
+      .is_err()
+    );
   }
 
   #[test]

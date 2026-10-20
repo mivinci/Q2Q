@@ -23,11 +23,13 @@ const PAGES = process.argv.slice(2).length
   : [
       BASE,
       BASE + 'guide/what-is-q2q.html',
-      BASE + 'guide/deploy.html',
+      BASE + 'guide/deploy-single-node.html',
+      BASE + 'guide/deploy-cluster.html',
       BASE + 'guide/transport.html',
       BASE + 'zh/',
       BASE + 'zh/guide/what-is-q2q.html',
-      BASE + 'zh/guide/deploy.html',
+      BASE + 'zh/guide/deploy-single-node.html',
+      BASE + 'zh/guide/deploy-cluster.html',
       BASE + 'zh/guide/punch.html',
       BASE + 'zh/spec.html',
     ];
@@ -216,7 +218,7 @@ navigation.on('console', message => {
   if (message.type() === 'error') navigationErrors.push(message.text());
 });
 try {
-  await navigation.goto(base + BASE + 'guide/deploy.html');
+  await navigation.goto(base + BASE + 'guide/deploy-single-node.html');
   await navigation.waitForFunction(() => document.querySelector('.mermaid[data-theme="light"] svg'));
   await navigation.emulateMedia({ colorScheme: 'dark' });
   await navigation.locator(`.VPSidebar a[href="${BASE}guide/transport"]`).first().click();
@@ -227,11 +229,11 @@ try {
     return location.pathname.endsWith('/guide/transport') && blocks.length === 1
       && blocks.every(el => el.dataset.theme === 'dark' && el.querySelector('svg .node'));
   }, null, { timeout: 20000 });
-  await navigation.locator(`.VPSidebar a[href="${BASE}guide/deploy"]`).first().click();
+  await navigation.locator(`.VPSidebar a[href="${BASE}guide/deploy-single-node"]`).first().click();
   await navigation.emulateMedia({ colorScheme: 'light' });
   await navigation.waitForFunction(() => {
     const blocks = [...document.querySelectorAll('.mermaid')];
-    return blocks.length === 2 && blocks.every(el => el.dataset.theme === 'light' && el.querySelector('svg'));
+    return blocks.length === 1 && blocks.every(el => el.dataset.theme === 'light' && el.querySelector('svg'));
   }, null, { timeout: 20000 });
   if (navigationErrors.length) throw new Error(navigationErrors.join('\n'));
   console.log('✓ 页面切换及连续主题切换后图形正确，无控制台错误');

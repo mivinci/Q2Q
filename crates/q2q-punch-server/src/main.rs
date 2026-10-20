@@ -1,5 +1,6 @@
 mod cert;
 mod limits;
+mod registry;
 mod server;
 mod signalling;
 
@@ -23,6 +24,12 @@ struct Args {
   /// 配置文件路径（TOML）
   #[arg(default_value = "punch.toml")]
   config: PathBuf,
+  /// Initialize persistent identity, print its public key and exit without listening.
+  #[arg(long)]
+  init_identity: bool,
+  /// Import an existing Ed25519 PKCS#8 PEM private key during initialization.
+  #[arg(long, requires = "init_identity")]
+  identity_key: Option<PathBuf>,
   /// 日志级别
   #[arg(long, env = "RUST_LOG", default_value = "info")]
   log: String,
@@ -43,6 +50,7 @@ struct Config {
   /// A real deployment serves a real certificate. Omit it and a self-signed one
   /// is minted at startup — fine for tests and nothing else.
   identity: Option<IdentityConfig>,
+  registry: Option<registry::Config>,
 }
 
 /// Buckets live in memory, so a multi-instance deployment divides the quota
@@ -105,12 +113,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   tracing_subscriber::fmt()
     .with_env_filter(&args.log)
     .with_target(false)
+    .with_writer(std::io::stderr)
     .init();
 
   let config = Config::load(&args.config)?;
+  if args.init_identity {
+    let paths = config
+      .identity
+      .as_ref()
+      .ok_or("--init-identity requires [identity] certificate and key paths")?;
+    let identity = match args.identity_key {
+      Some(source) => {
+        cert::initialize_from_key(&paths.cert, &paths.key, &config.punch_id, &source)?
+      }
+      None => cert::load_or_create(&paths.cert, &paths.key, &config.punch_id)?,
+    };
+    println!("{}", B64.encode(identity.public_key()));
+    return Ok(());
+  }
+  let registry_token_configured =
+    config.registry.is_some() || std::env::var_os("Q2Q_REGISTRY_TOKEN").is_some();
+  if registry_token_configured && config.identity.is_none() {
+    return Err(
+      "Registry credentials require persistent [identity]; initialize it before starting".into(),
+    );
+  }
 
   let identity = match &config.identity {
     // kept on disk, so the key registered at Track stays valid across restarts
+    Some(id) if registry_token_configured => cert::load_existing(&id.cert, &id.key)?,
     Some(id) => cert::load_or_create(&id.cert, &id.key, &config.punch_id)?,
     None => {
       tracing::warn!(
@@ -119,6 +150,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       );
       cert::PunchIdentity::generate(&config.punch_id)?
     }
+  };
+
+  let registry_reporter = match &config.registry {
+    Some(registry) => {
+      let token = std::env::var("Q2Q_REGISTRY_TOKEN")
+        .map(Some)
+        .or_else(|error| {
+          if matches!(error, std::env::VarError::NotPresent) {
+            Ok(None)
+          } else {
+            Err("Q2Q_REGISTRY_TOKEN must be valid UTF-8")
+          }
+        })?;
+      Some(registry::Reporter::prepare(
+        registry,
+        &config.punch_id,
+        identity.public_key(),
+        token,
+      )?)
+    }
+    None if registry_token_configured => {
+      return Err("Q2Q_REGISTRY_TOKEN requires a [registry] section".into());
+    }
+    None => None,
   };
 
   // clients check this server's certificate against this key, so it is what
@@ -149,11 +204,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     punch_id: config.punch_id.clone(),
     ttl: config.ttl_secs,
     max_request_bytes: config.max_request_bytes,
+    quic_slots: Arc::new(tokio::sync::Semaphore::new(server::CONNECTION_LIMIT)),
+    websocket_slots: Arc::new(tokio::sync::Semaphore::new(server::CONNECTION_LIMIT)),
   });
 
   let sweep_state = state.clone();
   let sweep_every = config.sweep_secs.max(1);
-  tokio::spawn(async move {
+  let sweep_task = tokio::spawn(async move {
     loop {
       tokio::time::sleep(std::time::Duration::from_secs(sweep_every)).await;
       let dropped = sweep_state.bindings.sweep(now());
@@ -179,9 +236,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
   });
 
   let acceptor = TlsAcceptor::from(Arc::new(identity.tls_server_config()?));
-  tokio::spawn(server::serve(endpoint, state.clone()));
-  server::serve_websocket(websocket_listener, acceptor, state).await?;
+  let (registry_stop, stop) = tokio::sync::watch::channel(false);
+  let registry_task =
+    registry_reporter.map(|reporter| tokio::spawn(reporter.run(state.clone(), stop)));
+  let mut quic_task = tokio::spawn(server::serve(endpoint.clone(), state.clone()));
+  let result = tokio::select! {
+    result = server::serve_websocket(websocket_listener, acceptor, state) => result,
+    result = shutdown_signal() => result,
+    _ = &mut quic_task => Err(std::io::Error::other("QUIC listener stopped unexpectedly")),
+  };
+  let _ = registry_stop.send(true);
+  if let Some(task) = registry_task
+    && task.await.is_err()
+  {
+    tracing::error!("Registry reporting task exited unexpectedly");
+  }
+  sweep_task.abort();
+  endpoint.close(0u32.into(), b"server shutdown");
+  quic_task.abort();
+  result?;
   Ok(())
+}
+
+async fn shutdown_signal() -> std::io::Result<()> {
+  #[cfg(unix)]
+  {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! { result = tokio::signal::ctrl_c() => result, _ = terminate.recv() => Ok(()) }
+  }
+  #[cfg(not(unix))]
+  tokio::signal::ctrl_c().await
 }
 
 #[cfg(test)]

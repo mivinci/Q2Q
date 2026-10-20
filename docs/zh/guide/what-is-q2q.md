@@ -91,6 +91,6 @@ sequenceDiagram
 
 ## 接下来
 
-- [部署](./deploy)：运行 Track 和 Punch
+- [部署](./deploy-single-node)：运行 Track 和 Punch
 - [Track](./track)：来源发现服务
 - [Punch](./punch)：连接绑定与信令服务

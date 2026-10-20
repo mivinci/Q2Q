@@ -215,6 +215,17 @@ impl Bindings {
     Ok(b.clone())
   }
 
+  /// Unexpired standing bindings, including entries awaiting the next sweep.
+  pub fn live_count(&self, now: UnixSeconds) -> usize {
+    self
+      .table
+      .lock()
+      .by_peer
+      .values()
+      .filter(|binding| binding.expires_at > now)
+      .count()
+  }
+
   pub fn sweep(&self, now: UnixSeconds) -> usize {
     let mut table = self.table.lock();
     let before = table.by_peer.len();

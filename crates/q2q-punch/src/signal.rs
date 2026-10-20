@@ -356,6 +356,16 @@ impl Connections {
     self.map.lock().get(connection_id).cloned()
   }
 
+  /// Unexpired signalling records, not end-to-end WebRTC transfer sessions.
+  pub fn live_count(&self, now: UnixSeconds) -> usize {
+    self
+      .map
+      .lock()
+      .values()
+      .filter(|connection| connection.expires_at > now)
+      .count()
+  }
+
   pub fn sweep(&self, now: UnixSeconds) -> usize {
     let mut map = self.map.lock();
     let before = map.len();

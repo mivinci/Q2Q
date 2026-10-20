@@ -88,9 +88,9 @@ QUIC 与 WSS 握手独立并发处理，握手期限为 10 秒，每种传输最
 
 ## 运行服务
 
-部署步骤见[部署指南](./deploy)。Punch 需要：
+部署步骤见[部署指南](./deploy-single-node)。Punch 需要：
 
-- 与 Track 配置一致的 `punch_id`
+- 与 Registry token 一致的 `punch_id` 和持久身份公钥
 - 已持久化的身份密钥对
 - 在对外声明的同一端口上接收 **UDP 和 TCP**，分别用于 QUIC 与 WSS
 - 将 `cluster_size` 设为实例总数，以便拆分限流配额，而不是让每个实例都获得完整配额

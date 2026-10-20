@@ -1,0 +1,18 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "q2q-registry",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-20",
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "registry.q2q.app", "custom_domain": true }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "q2q-registry",
+      "database_id": "b0105b50-d7a5-4ee5-9f2d-706b1b2d8995",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
