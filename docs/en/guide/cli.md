@@ -18,6 +18,30 @@ cargo install --path crates/q2q --locked
 q2q --help
 ```
 
+## Connection diagnostics
+
+```sh
+q2q --verbose publish ./file.bin.q2q
+q2q --verbose download ./file.bin.q2q
+```
+
+The global `--verbose` flag writes diagnostics to stderr: TURN enablement, server
+endpoint and credential validity, ICE candidate gathering and exchange
+(host/srflx/relay, protocol and address), WebRTC connection states, channel opening,
+and handshake failures. Negotiation timeouts include connection and channel readiness.
+Correlate logs using peer and connection IDs. Logs contain public/private network
+addresses; review them before sharing. TURN passwords/usernames, signalling tickets
+and full SDP are excluded. A relay candidate does not prove the selected path uses
+TURN. Once channels open, `Selected ICE path at channel establishment` reports
+`path="turn"` if either selected candidate is relay, otherwise `path="direct"`,
+with both candidate types, protocols, addresses and ports. This is an establishment
+snapshot, not continuous path monitoring. Unavailable/failed lookups are reported
+without interrupting the transfer or guessing a direct path. TURN traffic statistics
+are not reported. Diagnostics suspend the shared progress renderer while writing,
+so live progress does not overwrite log lines.
+Diagnostics are off by default. `--quiet --verbose` hides progress while retaining
+diagnostics; stdout result formatting is unchanged.
+
 ## Build a seed offline
 
 ```sh
@@ -89,6 +113,13 @@ Create a Q2Q magnet URL locally from an existing seed:
 q2q magnet ./model.bin.q2q
 q2q download 'magnet:?xt=urn:sha256:<64-hex-info-hash>&tr=<percent-encoded-Track-URL>'
 ```
+
+A magnet `tr` may be a bare host such as `track.q2q.app`; omitted schemes default
+to HTTPS. Explicit `https://` and `http://` remain supported. Generated links omit
+the HTTPS scheme but retain HTTP. Values are percent-encoded once and decoded once;
+invalid or non-HTTP(S) hints are ignored. Examples: `tr=track.q2q.app` and
+`tr=http%3A%2F%2Flocalhost%3A8080`.
+
 
 Quote links in the shell because `&` separates commands. The format uses Q2Q info
 hashes, not BitTorrent `btih`/`btmh`. `magnet` prints one URL to stdout without
@@ -213,3 +244,7 @@ the command reports the error and exits with 1.
 
 This first version has no daemon mode, GUI, browser receiver, account service,
 or automatic background seeding.
+
+## Maintainer releases
+
+See [version preparation, approval, publishing and CI impact gating](./cli-release.md).

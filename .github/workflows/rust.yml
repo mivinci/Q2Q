@@ -12,7 +12,9 @@ on:
       - 'Cargo.lock'
       - 'rustfmt.toml'
       - '.github/workflows/rust.yml'
-      - '.github/workflows/cli-release.yml'
+      - '.github/workflows/cli-release*.yml'
+      - '.github/workflows/cli-prepare-release.yml'
+      - '.github/scripts/**'
   pull_request:
     branches: [main]
     paths:
@@ -21,7 +23,11 @@ on:
       - 'Cargo.lock'
       - 'rustfmt.toml'
       - '.github/workflows/rust.yml'
-      - '.github/workflows/cli-release.yml'
+      - '.github/workflows/cli-release*.yml'
+      - '.github/workflows/cli-prepare-release.yml'
+      - '.github/scripts/**'
+
+  workflow_dispatch:
 
 jobs:
   check:

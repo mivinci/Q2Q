@@ -17,6 +17,25 @@ cargo install --path crates/q2q --locked
 q2q --help
 ```
 
+## 连接诊断
+
+```sh
+q2q --verbose publish ./file.bin.q2q
+q2q --verbose download ./file.bin.q2q
+```
+
+`--verbose` 是全局参数，向 stderr 输出 TURN 是否启用、服务地址和凭据是否仍有效、
+ICE 候选收集与发送/接收（host/srflx/relay、协议和地址）、WebRTC 连接状态、
+数据通道打开及握手失败原因。协商超时会显示连接与两个数据通道的就绪状态。
+通过 peer ID 和 connection ID 关联两端日志；日志包含公网/私网地址，分享前注意隐私。
+不输出 TURN 密码、用户名、信令票据或完整 SDP。候选为 relay 只表示存在中继候选，
+不代表最终选中了中继路径。通道建立时输出 `Selected ICE path at channel establishment`，
+`path="turn"` 表示至少一侧选中了 relay；`path="direct"` 表示未使用 TURN。
+同时显示两侧选中候选的类型、协议、地址和端口。这是建连时的快照，不是持续路径监控；
+查询失败会显示 unavailable/failed，不影响传输，也不推断为直连。暂不提供 TURN 流量统计。
+详细日志与进度条共用终端渲染器，日志输出时暂停重绘，避免覆盖日志。
+默认不启用详细日志；`--quiet --verbose` 抑制进度但保留诊断，stdout 结果格式不变。
+
 ## 离线生成种子
 
 ```sh
@@ -76,6 +95,12 @@ q2q publish ./share.q2q --file ./renamed-file.bin --seed ./export.q2q
 q2q magnet ./model.bin.q2q
 q2q download 'magnet:?xt=urn:sha256:<64位info-hash>&tr=<百分号编码的Track地址>'
 ```
+
+磁力链中的 `tr` 可写 `track.q2q.app`，未指定协议时默认 HTTPS；也兼容完整
+`https://` 和 `http://` 地址。生成时省略 HTTPS 协议头，HTTP 保留完整协议头。
+参数按 URL 查询值做百分号编码一次，解析时解码一次；无效或非 HTTP(S) 的提示忽略。
+例如 `tr=track.q2q.app` 或 `tr=http%3A%2F%2Flocalhost%3A8080`。
+
 
 在 shell 中用引号包住链接，避免 `&` 被解释为命令分隔符。该格式使用 Q2Q 的 info hash，
 不支持 BitTorrent 的 `btih`/`btmh`。`magnet` 只向 stdout 输出一行链接，不创建身份或联网；
@@ -170,3 +195,7 @@ CLI 接受的种子文件最大 8 MiB。
 **130** 已处理的中断（包括 Unix SIGTERM）。帮助与版本正常退出；中断后的清理失败返回 1 并报告错误。
 
 第一版不提供后台服务、GUI、浏览器接收端、账号或自动后台做种。
+
+## 维护者发版
+
+[版本准备、审批、发布与 CI 影响判定](./cli-release.md)。

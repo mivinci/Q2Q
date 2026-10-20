@@ -3,39 +3,14 @@ name: Seed Processing Worker
 on:
   push:
     branches: [main]
-    paths:
-      - 'apps/seed-processing/**'
-      - 'packages/s3-storage/**'
-      - 'packages/seed-processing-contract/**'
-      - 'crates/q2q-primitives/**'
-      - 'crates/q2q-wasm/**'
-      - 'apps/platform/migrations/**'
-      - 'apps/platform/scripts/check-processing.mjs'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'tsconfig.base.json'
-      - '.node-version'
-      - '.github/workflows/seed-processing.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'apps/seed-processing/**'
-      - 'packages/s3-storage/**'
-      - 'packages/seed-processing-contract/**'
-      - 'crates/q2q-primitives/**'
-      - 'crates/q2q-wasm/**'
-      - 'apps/platform/migrations/**'
-      - 'apps/platform/scripts/check-processing.mjs'
-      - 'Cargo.lock'
-      - 'Cargo.toml'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'tsconfig.base.json'
-      - '.node-version'
-      - '.github/workflows/seed-processing.yml'
   workflow_dispatch:
+    inputs:
+      base_sha:
+        description: 'Optional comparison base for automated version PRs; empty forces a full run'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -49,23 +24,40 @@ jobs:
       WRANGLER_SEND_METRICS: 'false'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Determine application impact
+        id: impact
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
+        run: python3 .github/scripts/app-impact.py seed-processing
       - uses: actions/setup-node@v4
+        if: steps.impact.outputs.run == 'true'
         with:
           node-version-file: '.node-version'
           cache: npm
       - run: npm ci
+        if: steps.impact.outputs.run == 'true'
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.impact.outputs.run == 'true'
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+        if: steps.impact.outputs.run == 'true'
       - run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
+        if: steps.impact.outputs.run == 'true'
       - run: npm run seed-processing:build
+        if: steps.impact.outputs.run == 'true'
       - run: npm run seed-processing:check
+        if: steps.impact.outputs.run == 'true'
       - run: npm run platform:check:processing
+        if: steps.impact.outputs.run == 'true'
 
       # PR builds never receive Cloudflare credentials.
       - name: Verify Cloudflare deployment credentials
         if: >-
+          steps.impact.outputs.run == 'true' &&
           (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
           github.ref == 'refs/heads/main'
         env:
@@ -79,6 +71,7 @@ jobs:
 
       - name: Deploy seed processing Worker
         if: >-
+          steps.impact.outputs.run == 'true' &&
           (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
           github.ref == 'refs/heads/main'
         working-directory: apps/seed-processing

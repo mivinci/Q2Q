@@ -1,0 +1,33 @@
+name: Prepare CLI release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New stable CLI version (X.Y.Z, without v)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: cli-release-prepare
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Update CLI version and open PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: python3 .github/scripts/cli-release.py prepare

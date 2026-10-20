@@ -60,6 +60,7 @@ impl UploadPool {
             Ok(permit) => Arc::new(permit),
             Err(_) => { let _ = tokio::time::timeout(Duration::from_secs(2), request.reject(RejectReason::Busy)).await; continue; }
           };
+          let progress_id = request.connection_id().to_owned();
           let progress = self.progress.connection(request.connection_id().to_owned(), request.peer_id().clone());
           let context = UploadContext::managed(self.scope.clone(), permit, self.rate.clone(), Some(progress.clone())).cached(self.cache.clone());
           let source = source.clone();
@@ -69,7 +70,14 @@ impl UploadPool {
             let peer = match tokio::time::timeout(Duration::from_secs(45), request.accept()).await {
               Ok(Ok(peer)) => peer,
               // A failed handshake belongs to that requester, not the source.
-              _ => { progress.finish(Outcome::Failed); return Ok(()); },
+              Ok(Err(error)) => {
+                tracing::debug!(connection_id = %progress_id, %error, "Incoming peer handshake failed");
+                progress.finish(Outcome::Failed); return Ok(());
+              },
+              Err(_) => {
+                tracing::debug!(connection_id = %progress_id, "Incoming peer handshake exceeded 45 seconds");
+                progress.finish(Outcome::Failed); return Ok(());
+              },
             };
             progress.state(UploadConnectionState::Idle);
             let result = peer.serve_file_scoped(source, context).await;

@@ -6,9 +6,28 @@ use q2q_core::client::{
 };
 use std::{
   collections::BTreeMap,
-  io::{self, IsTerminal},
+  io::{self, IsTerminal, Write},
+  sync::OnceLock,
   time::{Duration, Instant},
 };
+
+// All live regions share one renderer so diagnostic writes can suspend drawing.
+fn render_group() -> MultiProgress {
+  static GROUP: OnceLock<MultiProgress> = OnceLock::new();
+  GROUP
+    .get_or_init(|| MultiProgress::with_draw_target(ProgressDrawTarget::stderr()))
+    .clone()
+}
+
+pub(crate) struct DiagnosticWriter;
+impl Write for DiagnosticWriter {
+  fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+    render_group().suspend(|| io::stderr().lock().write(bytes))
+  }
+  fn flush(&mut self) -> io::Result<()> {
+    io::stderr().lock().flush()
+  }
+}
 
 struct Rate {
   last: Instant,
@@ -22,7 +41,7 @@ impl MetadataDisplay {
       return Self(None);
     }
     if io::stderr().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb") {
-      let bar = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr());
+      let bar = render_group().add(ProgressBar::new_spinner());
       bar.set_style(ProgressStyle::with_template("{spinner} {msg}").expect("metadata template"));
       bar.set_message("Finding peers and fetching metadata...");
       bar.enable_steady_tick(Duration::from_millis(100));
@@ -37,6 +56,7 @@ impl Drop for MetadataDisplay {
   fn drop(&mut self) {
     if let Some(bar) = &self.0 {
       bar.finish_and_clear();
+      render_group().remove(bar);
     }
   }
 }
@@ -90,7 +110,7 @@ impl PreparationDisplay {
     let interactive =
       !quiet && io::stderr().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb");
     let terminal = interactive.then(|| {
-      let bar = ProgressBar::new_spinner();
+      let bar = render_group().add(ProgressBar::new_spinner());
       bar.set_style(preparation_style());
       bar.enable_steady_tick(Duration::from_millis(100));
       bar
@@ -174,6 +194,7 @@ impl PreparationDisplay {
       }
       if let Some(bar) = &self.terminal {
         bar.finish_and_clear();
+        render_group().remove(bar);
       }
     }
     self.finished = true;
@@ -191,7 +212,7 @@ impl Progress {
     let interactive =
       !quiet && io::stderr().is_terminal() && std::env::var("TERM").as_deref() != Ok("dumb");
     let terminal = interactive.then(|| {
-      let group = MultiProgress::with_draw_target(ProgressDrawTarget::stderr());
+      let group = render_group();
       // Add before drawing: MultiProgress must own every live line.
       let summary = group.add(ProgressBar::new_spinner());
       summary.set_style(upload_style());
@@ -386,7 +407,10 @@ impl Drop for Progress {
       for row in terminal.peers.values() {
         row.bar.finish_and_clear();
       }
-      let _ = terminal.group.clear();
+      terminal.group.remove(&terminal.summary);
+      for row in terminal.peers.values() {
+        terminal.group.remove(&row.bar);
+      }
     }
   }
 }
