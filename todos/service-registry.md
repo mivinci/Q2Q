@@ -242,6 +242,14 @@ Registry 必须检查签名、固定算法、已知 `kid`、签发方、受众�
 
 ## 当前问题与证据边界
 
+- 部署文件预生成流程（2026-10-21）：按用户确认重排中英文单机／集群指南。Rust、keygen 和身份初始化仅在管理机使用；先生成逐机运行目录中的证书、身份私钥、节点 token、TOML、Compose 与代理片段，确认文件清单后再分发。区分管理机初始化配置与容器内路径，Registry 签发私钥／claims／PEM 导入源不进入运行目录；服务器仅需 Docker Compose 和所选反向代理。集群示例明确两台业务主机各运行 Punch／Track，第一台沿用 TURN，所有变更先在管理机备齐，再在维护窗口逐步应用。中英文文档构建与 diff 检查通过，未执行实际密钥生成或部署操作。
+
+- 部署指南连贯性审查（2026-10-21）：合并重复入口说明，明确本指南的源码安装／首次验收路径、管理机与服务机分工；补齐初始化身份时尚无 token 的说明、claims 绝对保存位置与验收端 CLI 前提。真实文件传输置于可选 Platform 配置之前，Registry 自动发布移至后续维护；集群篇沿用原节点域名，将内存到 Redis 的会话重建／监听变更影响前置到维护计划，补齐新增主机目录和工具，明确 Track 2 先启动、Track 1 停止原进程后重启及随后切换入口。修正“Registry 状态页”为可选 Platform 状态页。中英文同步，文档构建与 diff 检查通过；未执行实际安装、迁移或服务器变更。
+
+- Introduction 新增 Security（2026-10-21）：新增中英文安全机制页面并接入介绍分组、指南菜单与两篇部署指南。按实际实现解释内容身份／Merkle 证明、Registry JWT 与权限／身份版本／租约、TLS 与 Punch 公钥匹配、Peer 自签票据与 DTLS 身份确认、会话 MAC、TURN 临时凭据以及各密钥的保存位置和边界。核对当前 Seed 格式无发布者签名，同步修正中英文概览的“签名种子”表述；明确可信内容入口、密钥分离、凭据续签及访问控制由应用另行定义。
+
+- 部署指南可读性修订（2026-10-21）：按用户反馈，中英文单机／集群文档统一先用 `cargo install --locked --path` 安装源码提供的工具和服务，再通过 PATH 中的程序名调用；说明管理机／服务机、工作目录、PATH 和服务管理器的绝对路径要求。先列出 Track／Registry／Punch／TURN 的公网入口与转发边界，再提供单机及集群的 Caddy／Nginx 示例，区分主动健康检查与 Nginx 被动失败处理。`npm run docs:build` 和 `git diff --check` 通过；未执行实际安装或修改服务器代理配置。
+
 - Platform 生产接入完成（2026-10-20）：按用户确认签发独立 `platform-1` 只读凭据（仅 `nodes:read:display`，到期 `2027-01-18 17:55:47 UTC`），以 Worker secret `REGISTRY_NODES_TOKEN` 配置；`REGISTRY_URL` 固定为 `https://registry.q2q.app` 并写入 Wrangler 配置，后续 CI 部署可保留该接线。完整 `platform:check`（0 错误／0 警告）和生产构建通过，使用 keep-vars 保留既有变量并发布 Platform，版本 `d0e3c531-5340-4734-a170-f8b46a5fb008`。实际使用该凭据访问 Registry 列表为 200（当前为空），访问发现接口为 403；远程绑定确认 URL 正确、凭据为 secret_text、原有 OAuth／认证／S3 secrets 均保留。公网 `/nodes` 匿名访问 303 到 `/login`，登录页 200；本轮没有用户浏览器登录会话，尚未实测已登录节点页或线上 Worker 到 Registry 的页面调用，不将配置成功等同于完整浏览器验收。凭据与签发密钥保存在仓库外，未写入页面或提交 Git；需到期前续签替换。尚未触发 GitHub CI 或接入生产 Punch／Track。
 
 - 生产初始化完成（2026-10-20）：用户补充 D1 权限后，在现有 Platform 同一 Cloudflare 账户创建独立的 `q2q-registry` D1（`b0105b50-d7a5-4ee5-9f2d-706b1b2d8995`），远程应用 `0001_nodes.sql`／`0002_report_limits.sql`。Registry 类型检查、Worker 打包 dry run 通过，首次部署至 `https://registry.q2q.app`，版本 `5a2266e0-5bbe-46b1-b2f6-4d754e758e93`。专用签发密钥在仓库外生成，Worker 只接收公共 JWKS，已确认 `REGISTRY_JWKS` 为 `secret_text`，私钥与 API Token 均未输出或提交。公网 HTTPS 验证 `/health` 200、匿名节点列表 401、五分钟临时只读凭据访问节点列表 200（空列表，真实 D1 查询）、该凭据访问发现接口 403，响应均 no-store；无 User-Agent 的请求也可达。默认 Python User-Agent 曾被 Cloudflare 边缘返回 1010，改用明确的验证客户端标识后通过，未修改防护规则。尚未接入生产 Punch／Track 或修改 Platform 凭据，未触发 GitHub CI；下方早期“未部署”记录属于当时的验证范围。

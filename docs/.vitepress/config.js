@@ -6,6 +6,7 @@ import { mermaidBlock } from './mermaid.js';
 // linked from either nav until it is translated.
 const guide = (prefix) => [
   { text: 'What is Q2Q?', link: `${prefix}guide/what-is-q2q` },
+  { text: 'Security', link: `${prefix}guide/security` },
   { text: 'Command-line client', link: `${prefix}guide/cli` },
   { text: 'Track', link: `${prefix}guide/track` },
   { text: 'Punch', link: `${prefix}guide/punch` },
@@ -24,6 +25,7 @@ const sidebar = (prefix, t) => [
     collapsed: false,
     items: [
       { text: t.overview, link: `${prefix}guide/what-is-q2q` },
+      { text: t.security, link: `${prefix}guide/security` },
       { text: t.cli, link: `${prefix}guide/cli` },
     ],
   },
@@ -59,6 +61,7 @@ const sidebar = (prefix, t) => [
 const en = {
   intro: 'Introduction',
   overview: 'What is Q2Q?',
+  security: 'Security',
   cli: 'Command-line client',
   planes: 'Control Plane',
   deploy: 'Deployment',
@@ -75,6 +78,7 @@ const en = {
 const zh = {
   intro: '介绍',
   overview: 'Q2Q 是什么？',
+  security: '安全机制',
   cli: '命令行客户端',
   planes: '控制面',
   deploy: '部署',
@@ -174,6 +178,7 @@ export default defineConfig({
             activeMatch: '/zh/guide/(?!deploy-)',
             items: [
               { text: 'Q2Q 是什么？', link: '/zh/guide/what-is-q2q' },
+              { text: '安全机制', link: '/zh/guide/security' },
               { text: '命令行客户端', link: '/zh/guide/cli' },
               { text: 'Track', link: '/zh/guide/track' },
               { text: 'Punch', link: '/zh/guide/punch' },

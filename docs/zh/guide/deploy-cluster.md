@@ -1,6 +1,8 @@
 # 集群部署
 
-本指南把一套 Registry 网络扩展到两个 Track 和两个 Punch。先完成[单机部署](./deploy-single-node)中的 Registry、签发工作环境与基础传输验证；下面复用同一套 Registry 和信任公钥，按共享状态、Punch、Track、入口的顺序扩容。
+本指南把单机网络扩展为两台业务服务器，每台运行一个 Punch 和一个 Track；TURN 沿用第一台服务，Redis 使用独立的共享主节点。先完成[单机部署](./deploy-single-node)，复用原 Registry、签发密钥和客户端 HTTPS 入口。
+
+所有新增身份、配置和凭据仍先在管理机准备完整，再按主机分发。服务器只运行 Docker 镜像。已有 Track 从内存切换到 Redis 时会丢失原 session，客户端需重新 announce；为第 4、5 步安排同一个维护窗口，并备份线上配置。各密钥的作用见[安全机制](./security)。
 
 ```mermaid
 flowchart TB
@@ -15,66 +17,85 @@ flowchart TB
   P2[Punch 2] -->|状态上报| R
   Peer -->|QUIC 或 WSS| P1
   Peer -->|QUIC 或 WSS| P2
-  Peer -.->|中继| TURN[coturn]
+  Peer -.->|中继| TURN[TURN]
   class Peer,LB,T1,T2 core
   class Redis,R,P1,P2,TURN support
 ```
 
-Track 副本共享会话、session key 和文件索引，因此可以位于 HTTPS 负载均衡入口之后。每个 Punch 保存自己的 Peer 绑定与信令状态，客户端直接连接被分配的实例地址；为各 Punch 提供独立、稳定的地址。
+## 1. 在管理机规划逐机部署目录
 
-## 1. 准备共享 Redis 与 TURN
-
-为两个 Track 准备同一个 Redis 主节点，启用认证，仅允许 Track 的私网地址访问。示例拓扑：
-
-| 组件 | 地址 |
+| 组件 | 地址／位置 |
 | --- | --- |
-| Redis 主节点 | `10.0.0.10:6379` |
-| Track 1 | `10.0.0.11:8080` |
-| Track 2 | `10.0.0.12:8080` |
-| Track 统一入口 | `https://track.example.com` |
-| Punch 1 | `quic://punch-1.example.com:4433` |
-| Punch 2 | `quic://punch-2.example.com:4433` |
-| TURN | `turn:turn.example.com:3478` |
+| Redis 主节点 | `10.0.0.10:6379`，仅允许两台 Track 私网访问 |
+| 第一台业务服务器 | 公网 `203.0.113.10`、私网 `10.0.0.11`，保留原 Punch、Track、TURN |
+| 第二台业务服务器 | 公网 `203.0.113.11`、私网 `10.0.0.12`，新增 Punch、Track |
+| Track 统一入口 | `https://track.example.com`，入口可在第一台或独立代理主机 |
+| Punch 1 | 保留 `quic://punch.example.com:4433` 和原身份 |
+| Punch 2 | `quic://punch-2.example.com:4433`，DNS 指向第二台公网 IP |
+| TURN | 复用 `turn:turn.example.com:3478` 和原共享 secret |
 
-若沿用单机中的 `punch.example.com`，保留这个地址即可，不必为了命名修改已有身份。本篇新增节点使用 `punch-2.example.com`。
+先准备可认证连接的 Redis 主节点，不使用 Redis Cluster；当前状态操作依赖同一主节点的多键原子操作。两台 Track 使用相同 Redis URL、TURN 地址与共享 secret。第二台服务器开放 Punch 的 UDP／TCP 4433；Track 的私网 8080 仅对统一入口开放。
 
-当前存储依赖单个 Redis 主节点上的多键原子操作，不使用 Redis Cluster。先确认两台 Track 主机均可认证连接这个主节点，再继续。Redis 凭据会出现在 Track 的配置 URL 中，限制配置文件的读取权限；密码中的特殊字符按 URL 规则编码。
+在管理机继续使用单机部署安装的工具，设置输出目录：
 
-复用已部署的 TURN 服务。所有 Track 必须使用同一个 TURN 地址和与 coturn 一致的共享 secret；Registry 节点 token 则为每个服务单独签发。
+```sh
+export Q2Q_CLUSTER_DIR="$HOME/.q2q-deploy/cluster"
+umask 077
+install -d -m 700 "$Q2Q_CLUSTER_DIR/node-1" \
+  "$Q2Q_CLUSTER_DIR/node-2/identity" "$Q2Q_CLUSTER_DIR/node-2/secrets" \
+  "$Q2Q_CLUSTER_DIR/entry"
+cp -Rp "$HOME/.q2q-deploy/single-node/." "$Q2Q_CLUSTER_DIR/node-1/"
+```
 
-## 2. 登记第二台 Punch
+`node-1` 从原部署目录复制，包含第一台自己的身份、凭据与 TURN 配置；若线上已更新过，先用当前线上文件更新管理机备份。`node-2` 只放第二台自己的文件，`entry` 保存统一入口配置。Registry 签发私钥始终留在 `$HOME/.q2q-signing`。
 
-在第二台 Punch 主机安装与现有节点相同版本的 `q2q-keygen`、`q2q-punch-server`，准备 `/srv/q2q/identity` 和 `/srv/q2q/secrets`。写入 `/srv/q2q/punch.toml`：
+## 2. 在管理机准备第二台 Punch 身份
+
+用新的初始化配置生成独立身份：
+
+```sh
+cat > "$HOME/.q2q-signing/punch-2.init.toml" <<EOF
+bind = "127.0.0.1:4433"
+punch_id = "punch-2"
+[identity]
+cert = "$Q2Q_CLUSTER_DIR/node-2/identity/cert.pem"
+key = "$Q2Q_CLUSTER_DIR/node-2/identity/key.pem"
+EOF
+
+q2q-keygen keypair --kid punch-2 --format pem \
+  --private-key "$HOME/.q2q-signing/punch-2.private.pem" \
+  --public-key "$HOME/.q2q-signing/punch-2.public.pem"
+q2q-punch-server "$HOME/.q2q-signing/punch-2.init.toml" --init-identity \
+  --identity-key "$HOME/.q2q-signing/punch-2.private.pem"
+```
+
+保留输出的 Base64 公钥，用于下一步签发。将以下运行配置写入 `$Q2Q_CLUSTER_DIR/node-2/punch.toml`；这里使用容器内路径：
 
 ```toml
 bind = "0.0.0.0:4433"
 punch_id = "punch-2"
 
 [identity]
-cert = "/srv/q2q/identity/cert.pem"
-key = "/srv/q2q/identity/key.pem"
+cert = "/etc/q2q/identity/cert.pem"
+key = "/etc/q2q/identity/key.pem"
 
 [limits]
 cluster_size = 2
 
 [registry]
 url = "https://registry.example.com"
-token_file = "/srv/q2q/secrets/punch-2.token"
+token_file = "/etc/q2q/secrets/punch-2.token"
 region = "cd"
 accepting_new_connections = true
 ```
 
-生成新节点自己的密钥并导入，保留标准输出中的 Base64 公钥：
+同时在 `node-1/punch.toml` 设置 `[limits].cluster_size = 2`；原文件没有 `[limits]` 时新增该段。此时只修改管理机文件，尚未变更线上进程。两台 Punch 使用各自身份和 token，不复制第一台的身份给第二台。
 
-```sh
-q2q-keygen keypair --kid punch-2 --format pem \
-  --private-key /srv/q2q/identity/punch-2.private.pem \
-  --public-key /srv/q2q/identity/punch-2.public.pem
-q2q-punch-server /srv/q2q/punch.toml --init-identity \
-  --identity-key /srv/q2q/identity/punch-2.private.pem
-```
+## 3. 在管理机完成凭据、配置和 Compose
 
-在管理机保存 `punch-2.claims.json`：
+### 签发新增节点的 token
+
+将 Punch 2 公钥填入 `$HOME/.q2q-signing/punch-2.claims.json`：
 
 ```json
 {
@@ -89,28 +110,7 @@ q2q-punch-server /srv/q2q/punch.toml --init-identity \
 }
 ```
 
-使用管理机现有签发密钥生成凭据：
-
-```sh
-target/release/q2q-keygen token \
-  --key "$HOME/.q2q-signing/signing-1.private.jwk.json" \
-  --claims "$HOME/.q2q-signing/punch-2.claims.json" \
-  --days 90 --output "$HOME/.q2q-signing/punch-2.token"
-```
-
-将 token 安装到第二台主机的 `/srv/q2q/secrets/punch-2.token`，设置为服务账户可读的 `0600` 权限，开放同一端口的 UDP 和 TCP 后启动服务：
-
-```sh
-q2q-punch-server /srv/q2q/punch.toml
-```
-
-在 Registry 状态页确认两个不同的节点 ID 均在线。两个 Punch 使用各自独立的身份文件；扩容时不复制第一台的身份或 token。
-
-将原 Punch 的 `[limits].cluster_size` 也调整为 `2`，安排重启。这个配置按实例数分摊各自的限流配额，不使用共享限流存储。
-
-## 3. 为 Track 副本准备凭据
-
-保留现有 `track-1` 的 token。在管理机为新增副本保存 `track-2.claims.json`：
+保存 `$HOME/.q2q-signing/track-2.claims.json`。Track 2 使用独立节点 ID，但对外地址与 Track 1 相同：
 
 ```json
 {
@@ -124,20 +124,24 @@ q2q-punch-server /srv/q2q/punch.toml
 }
 ```
 
-两个 Track 的 `sub` 不同，`advertise_url` 都填写面向客户端的统一 HTTPS 入口。
+使用原 Registry 签发密钥，将新 token 直接写入第二台的部署目录：
 
 ```sh
-target/release/q2q-keygen token \
+q2q-keygen token \
+  --key "$HOME/.q2q-signing/signing-1.private.jwk.json" \
+  --claims "$HOME/.q2q-signing/punch-2.claims.json" \
+  --days 90 --output "$Q2Q_CLUSTER_DIR/node-2/secrets/punch-2.token"
+q2q-keygen token \
   --key "$HOME/.q2q-signing/signing-1.private.jwk.json" \
   --claims "$HOME/.q2q-signing/track-2.claims.json" \
-  --days 90 --output "$HOME/.q2q-signing/track-2.token"
+  --days 90 --output "$Q2Q_CLUSTER_DIR/node-2/secrets/track-2.token"
 ```
 
-把新 token 安装到 Track 2 的 `/srv/q2q/secrets/track-2.token`。每台主机只安装自己的凭据；如果改变了已有 Track 对外声明的 URL，先提高它的 `identity_version` 并重新签发。
+第一台继续使用原有且未过期的 token。如果原地址／身份改变，先提高对应 `identity_version` 并重新签发，再把文件放入其部署目录。
 
-## 4. 将两个 Track 连接到共享状态
+### 配置共享状态与运行镜像
 
-在 Track 1 写入以下配置，替换 Redis 密码和 TURN secret：
+在管理机写入 `node-1/track.toml`：
 
 ```toml
 bind = "10.0.0.11:8080"
@@ -150,34 +154,41 @@ url = "redis://default:REPLACE_WITH_REDIS_PASSWORD@10.0.0.10:6379/"
 
 [registry]
 url = "https://registry.example.com"
-token_file = "/srv/q2q/secrets/track-1.token"
+token_file = "/etc/q2q/secrets/track-1.token"
 region = "hk"
 accepting_new_connections = true
 ```
 
-Track 2 使用相同的 Redis URL、TURN 配置和 Registry URL，将 `bind` 改为 `10.0.0.12:8080`，token 路径改为 `/srv/q2q/secrets/track-2.token`。两份配置都不添加 `[[punch]]`。
+复制为 `node-2/track.toml`，将 `bind` 改为 `10.0.0.12:8080`、token 路径改为 `/etc/q2q/secrets/track-2.token`；区域按实际设置。替换 Redis 密码并对 URL 中的特殊字符编码。两份配置均不包含 `[[punch]]`。
 
-限制配置和 token 文件权限后，启动两个实例：
+第一台保留原 `node-1/compose.yml` 和其他服务。为第二台写入 `node-2/compose.yml`：
 
-```sh
-chmod 600 /srv/q2q/track.toml /srv/q2q/secrets/track-*.token
-q2q-track-server /srv/q2q/track.toml
+```yaml
+services:
+  punch:
+    image: ghcr.io/mivinci/q2q-punch-server:v0.5.0
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./punch.toml:/etc/q2q/punch.toml:ro
+      - ./identity:/etc/q2q/identity:ro
+      - ./secrets/punch-2.token:/etc/q2q/secrets/punch-2.token:ro
+  track:
+    image: ghcr.io/mivinci/q2q-track-server:v0.5.0
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./track.toml:/etc/q2q/track.toml:ro
+      - ./secrets/track-2.token:/etc/q2q/secrets/track-2.token:ro
 ```
 
-将已有 Track 从内存切换到 Redis 时，原内存中的 session 不会迁移。安排切换窗口，让客户端重新 announce 并建立会话，然后确认两个 Track 的上报与发现任务均已正常运行。
+第二台部署目录现在应包含 `compose.yml`、`punch.toml`、`track.toml`、`identity/cert.pem`、`identity/key.pem`、`secrets/punch-2.token` 和 `secrets/track-2.token`。第一台目录保留其原文件并带上调整后的配置。
 
-每个 Track 独立拉取 Registry 快照，并按 Peer ID 与 Punch ID 做等权 Rendezvous 哈希。相同可用节点集合下，各副本的选择一致；刷新收敛期间，实例看到的集合可能暂时不同。当前没有容量加权或地理路由，Track 自身的请求限流仍按实例计算；同一代理出口的请求还会共享该实例按来源地址计算的配额。
+### 准备统一入口配置
 
-## 5. 接入统一 HTTPS 入口
+入口只代理 Track：公网 HTTPS 转发全部路径到两个私网 HTTP 上游，保留方法、路径、查询、正文和认证请求头。Punch 仍通过独立地址直连，Registry 仍由 Cloudflare 接入。
 
-先从入口主机确认两个私网健康接口均可访问：
-
-```sh
-curl --fail http://10.0.0.11:8080/health
-curl --fail http://10.0.0.12:8080/health
-```
-
-将 Caddy 的 Track 站点改为两个后端，并重载：
+在管理机选定一种代理，把配置保存到 `entry` 目录。Caddy 示例可保存为 `entry/track.Caddyfile`：
 
 ```text
 track.example.com {
@@ -189,18 +200,94 @@ track.example.com {
 }
 ```
 
+使用 Nginx 时，在准备的配置片段中把上游池放入 `http` 上下文：
+
+```nginx
+upstream q2q_tracks {
+    server 10.0.0.11:8080 max_fails=3 fail_timeout=10s;
+    server 10.0.0.12:8080 max_fails=3 fail_timeout=10s;
+}
+```
+
+对应 HTTPS `server` 块的转发片段为：
+
+```nginx
+location / {
+    proxy_pass http://q2q_tracks;
+    proxy_set_header Host $host;
+}
+```
+
+Nginx 的上述配置被动摘除失败后端；主动 `/health` 检查需要支持该能力的代理或模块。证书继续由所选代理管理，沿用客户端入口域名。
+
+至此两个节点和入口的文件均已备齐，再开始服务器操作。
+
+## 4. 分发文件并依次启动服务
+
+在维护窗口内，为第二台服务器按单机步骤准备 `/srv/q2q` 接收目录。先确认第一台备份完整，再从管理机分发：
+
 ```sh
-sudo systemctl reload caddy
+scp -rp "$Q2Q_CLUSTER_DIR/node-1/." deploy@203.0.113.10:/srv/q2q/
+scp -rp "$Q2Q_CLUSTER_DIR/node-2/." deploy@203.0.113.11:/srv/q2q/
+```
+
+先在第二台拉取镜像并启动 Punch：
+
+```sh
+cd /srv/q2q
+chmod 600 identity/*.pem secrets/*.token track.toml
+docker compose -f compose.yml config --quiet
+docker compose -f compose.yml pull punch track
+docker compose -f compose.yml up -d --no-deps punch
+docker compose -f compose.yml logs --tail=50 punch
+```
+
+出现 `Registry reporting active` 后，在第一台重启 Punch，让新的 `cluster_size` 生效；现有身份、端口和其他容器保持原配置：
+
+```sh
+cd /srv/q2q
+docker compose -f compose.yml restart punch
+docker compose -f compose.yml logs --tail=50 punch
+```
+
+两台恢复上报后，在第二台启动 Track：
+
+```sh
+cd /srv/q2q
+docker compose -f compose.yml up -d --no-deps track
+docker compose -f compose.yml logs --tail=50 track
+```
+
+确认新 Track 出现 `Registry Punch discovery refreshed` 和 `Registry Track reporting active`，再在第一台重启原 Track，使用共享 Redis 配置：
+
+```sh
+cd /srv/q2q
+docker compose -f compose.yml restart track
+docker compose -f compose.yml logs --tail=50 track
+```
+
+原内存 session 不迁移；第一台监听地址从回环改为私网后，旧代理上游也需要更新。两台都恢复上报与发现后，立即继续下一步切换入口，让客户端重新建立会话。
+
+## 5. 接入统一 HTTPS 入口
+
+从入口主机确认两个后端均可达：
+
+```sh
+curl --fail http://10.0.0.11:8080/health
+curl --fail http://10.0.0.12:8080/health
+```
+
+把管理机 `entry` 中选定的代理配置分发到入口主机，合并至原 `track.example.com` 站点，检查配置并重载。Caddy 例如使用 `sudo systemctl reload caddy`；Nginx 先检查语法再重载。保留有效证书，并关闭来自入口以外的后端端口访问。
+
+```sh
 curl --fail https://track.example.com/health
 ```
 
-保持种子和客户端使用 `https://track.example.com`，各 Track 的私网端口只对入口开放。`/health` 用于进程存活检查，不能替代服务发现和实际传输验证。
-
-每台 Punch 继续使用自己的直连域名，客户端从 Track 返回结果中获得具体实例地址。HTTPS 负载均衡入口只代理 Track。
+客户端和 Seed 继续使用同一 HTTPS 地址。`/health` 只检查进程存活，接着验证发现与文件传输。
 
 ## 6. 验证扩容与维护行为
 
-登录 Platform 的 `/nodes`，确认两个 Track、两个 Punch 分别显示为独立节点，再通过统一 Track 地址执行[发布与下载验证](./deploy-single-node#_7-查看状态并验证文件传输)。
+先通过统一 Track 地址执行[发布与下载验证](./deploy-single-node#_7-查看状态并验证文件传输)，确认扩容后仍能完成真实传输。若已接入 Platform，再登录 `/nodes` 确认两个 Track、两个 Punch 分别在线。
 
 按以下顺序检查部署：
 

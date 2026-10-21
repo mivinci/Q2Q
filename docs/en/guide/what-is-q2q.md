@@ -96,9 +96,11 @@ connection attempts in a large swarm are refused.
 peer that just joined can download the whole file from the CDN while
 simultaneously becoming a source for others.
 
-**Verification is end to end.** Content is addressed by a Merkle root signed into
-the seed. A peer that lies about a block fails its proof and is dropped, so
-neither a malicious peer nor a malicious Punch can corrupt a download.
+**Verification is end to end.** Content is determined by the Merkle root in the
+selected Seed. A tampered block fails its proof and cannot pass verification
+against that content identity. Obtain Seeds and magnet links through trusted
+channels: the current Seed format has no publisher signature. See [Security](./security)
+for the distinction between content verification, endpoint identity and service authorization.
 
 ## Terms
 

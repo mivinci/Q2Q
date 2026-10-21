@@ -1,6 +1,8 @@
-# Cluster
+# Cluster deployment
 
-Expand a Registry network to two Track replicas and two Punches. First complete Registry setup, the signing environment and a basic transfer in [Single node](./deploy-single-node). Reuse that Registry and its trusted public keys, then add shared state, Punch nodes, Track replicas and the frontend in dependency order.
+Expand the single-node network to two service hosts, each running one Punch and one Track. Keep TURN on the first host and provide a separate shared Redis primary. Complete [single-node deployment](./deploy-single-node) first and reuse its Registry, signing key and client HTTPS endpoint.
+
+Prepare every new identity, configuration and credential on the management machine before distribution. Servers run Docker images only. Moving Track from memory to Redis loses existing sessions and requires clients to announce again. Schedule steps 4 and 5 in one maintenance window and back up production configuration. See [Security](./security) for credential roles.
 
 ```mermaid
 flowchart TB
@@ -15,66 +17,85 @@ flowchart TB
   P2[Punch 2] -->|Reports| R
   Peer -->|QUIC or WSS| P1
   Peer -->|QUIC or WSS| P2
-  Peer -.->|Relay| TURN[coturn]
+  Peer -.->|Relay| TURN[TURN]
   class Peer,LB,T1,T2 core
   class Redis,R,P1,P2,TURN support
 ```
 
-Track replicas share sessions, session keys and the file index, allowing an HTTPS load balancer to distribute requests. Each Punch owns its Peer bindings and signalling state. Clients connect directly to the assigned instance; give each Punch a separate stable endpoint.
+## 1. Plan per-host runtime directories on the management machine
 
-## 1. Prepare shared Redis and TURN
-
-Provide one authenticated Redis primary reachable only from the Track hosts over the private network. Example topology:
-
-| Component | Endpoint |
+| Component | Endpoint or location |
 | --- | --- |
-| Redis primary | `10.0.0.10:6379` |
-| Track 1 | `10.0.0.11:8080` |
-| Track 2 | `10.0.0.12:8080` |
-| Shared Track endpoint | `https://track.example.com` |
-| Punch 1 | `quic://punch-1.example.com:4433` |
-| Punch 2 | `quic://punch-2.example.com:4433` |
-| TURN | `turn:turn.example.com:3478` |
+| Redis primary | `10.0.0.10:6379`, accessible only to both Tracks over the private network |
+| First service host | Public `203.0.113.10`, private `10.0.0.11`; retains Punch, Track and TURN |
+| Second service host | Public `203.0.113.11`, private `10.0.0.12`; adds Punch and Track |
+| Shared Track entry point | `https://track.example.com`; proxy on the first or a separate host |
+| Punch 1 | Keep `quic://punch.example.com:4433` and its original identity |
+| Punch 2 | `quic://punch-2.example.com:4433`, resolving to the second public IP |
+| TURN | Reuse `turn:turn.example.com:3478` and its shared secret |
 
-Keep `punch.example.com` if that is your existing single-node endpoint; there is no need to change its identity just to rename it. This guide uses `punch-2.example.com` for the new node.
+Prepare an authenticated Redis primary, not Redis Cluster: current state operations need multi-key atomic operations on one primary. Both Tracks use the same Redis URL, TURN endpoint and TURN secret. Open UDP/TCP 4433 on the second host for Punch; expose private Track port 8080 only to the frontend.
 
-Storage relies on multi-key atomic operations on one Redis primary; do not use Redis Cluster. Confirm both Track hosts can authenticate to that primary before continuing. Redis credentials appear in Track's configuration URL: restrict file access and URL-encode special characters in the password.
+Continue using the management tools installed in the single-node guide. Prepare output directories:
 
-Reuse the existing TURN service. Every Track must use the same TURN endpoint and shared secret as coturn, while each service receives its own Registry token.
+```sh
+export Q2Q_CLUSTER_DIR="$HOME/.q2q-deploy/cluster"
+umask 077
+install -d -m 700 "$Q2Q_CLUSTER_DIR/node-1" \
+  "$Q2Q_CLUSTER_DIR/node-2/identity" "$Q2Q_CLUSTER_DIR/node-2/secrets" \
+  "$Q2Q_CLUSTER_DIR/entry"
+cp -Rp "$HOME/.q2q-deploy/single-node/." "$Q2Q_CLUSTER_DIR/node-1/"
+```
 
-## 2. Register the second Punch
+`node-1` copies the existing runtime files, including that host's identity, credentials and TURN configuration. If production has changed, update the management backup from current production files first. `node-2` holds only the second host's files; `entry` holds proxy configuration. The Registry signing key stays in `$HOME/.q2q-signing`.
 
-Install the same versions of `q2q-keygen` and `q2q-punch-server` on the second host, and prepare `/srv/q2q/identity` and `/srv/q2q/secrets`. Write `/srv/q2q/punch.toml`:
+## 2. Prepare the second Punch identity on the management machine
+
+Generate a distinct identity using a new initialization configuration:
+
+```sh
+cat > "$HOME/.q2q-signing/punch-2.init.toml" <<EOF
+bind = "127.0.0.1:4433"
+punch_id = "punch-2"
+[identity]
+cert = "$Q2Q_CLUSTER_DIR/node-2/identity/cert.pem"
+key = "$Q2Q_CLUSTER_DIR/node-2/identity/key.pem"
+EOF
+
+q2q-keygen keypair --kid punch-2 --format pem \
+  --private-key "$HOME/.q2q-signing/punch-2.private.pem" \
+  --public-key "$HOME/.q2q-signing/punch-2.public.pem"
+q2q-punch-server "$HOME/.q2q-signing/punch-2.init.toml" --init-identity \
+  --identity-key "$HOME/.q2q-signing/punch-2.private.pem"
+```
+
+Keep the printed Base64 public key for token issuance. Write `$Q2Q_CLUSTER_DIR/node-2/punch.toml` with container runtime paths:
 
 ```toml
 bind = "0.0.0.0:4433"
 punch_id = "punch-2"
 
 [identity]
-cert = "/srv/q2q/identity/cert.pem"
-key = "/srv/q2q/identity/key.pem"
+cert = "/etc/q2q/identity/cert.pem"
+key = "/etc/q2q/identity/key.pem"
 
 [limits]
 cluster_size = 2
 
 [registry]
 url = "https://registry.example.com"
-token_file = "/srv/q2q/secrets/punch-2.token"
+token_file = "/etc/q2q/secrets/punch-2.token"
 region = "cd"
 accepting_new_connections = true
 ```
 
-Generate and import a new keypair for this node. Keep the Base64 public key printed to stdout:
+Also set `[limits].cluster_size = 2` in `node-1/punch.toml`, adding the `[limits]` section if absent. These are management-side edits; running services have not changed. Each Punch uses its own identity and token; do not copy the first identity to the second node.
 
-```sh
-q2q-keygen keypair --kid punch-2 --format pem \
-  --private-key /srv/q2q/identity/punch-2.private.pem \
-  --public-key /srv/q2q/identity/punch-2.public.pem
-q2q-punch-server /srv/q2q/punch.toml --init-identity \
-  --identity-key /srv/q2q/identity/punch-2.private.pem
-```
+## 3. Complete credentials, configurations and Compose locally
 
-Save `punch-2.claims.json` on the management machine:
+### Issue credentials for the new nodes
+
+Insert Punch 2's public key into `$HOME/.q2q-signing/punch-2.claims.json`:
 
 ```json
 {
@@ -89,28 +110,7 @@ Save `punch-2.claims.json` on the management machine:
 }
 ```
 
-Issue a token with your existing management signing key:
-
-```sh
-target/release/q2q-keygen token \
-  --key "$HOME/.q2q-signing/signing-1.private.jwk.json" \
-  --claims "$HOME/.q2q-signing/punch-2.claims.json" \
-  --days 90 --output "$HOME/.q2q-signing/punch-2.token"
-```
-
-Install it at `/srv/q2q/secrets/punch-2.token` on the second host with mode `0600`, readable by the service account. Open both UDP and TCP on its advertised port, then start:
-
-```sh
-q2q-punch-server /srv/q2q/punch.toml
-```
-
-Confirm both distinct node IDs are online in the Registry status page. Keep separate identities and tokens for each Punch; do not clone the first node's identity files or token.
-
-Set `[limits].cluster_size = 2` on the original Punch too and schedule its restart. This divides per-instance quotas by the instance count; it does not use shared rate-limit storage.
-
-## 3. Prepare Track replica credentials
-
-Retain the existing `track-1` token. On the management machine, save `track-2.claims.json` for the new replica:
+Save `$HOME/.q2q-signing/track-2.claims.json`. Track 2 has a distinct node ID but the same public endpoint as Track 1:
 
 ```json
 {
@@ -124,20 +124,24 @@ Retain the existing `track-1` token. On the management machine, save `track-2.cl
 }
 ```
 
-Each Track has a different `sub`, with both `advertise_url` values pointing to the shared client-facing HTTPS endpoint.
+Use the existing Registry signing key to write new tokens directly into the second host's runtime directory:
 
 ```sh
-target/release/q2q-keygen token \
+q2q-keygen token \
+  --key "$HOME/.q2q-signing/signing-1.private.jwk.json" \
+  --claims "$HOME/.q2q-signing/punch-2.claims.json" \
+  --days 90 --output "$Q2Q_CLUSTER_DIR/node-2/secrets/punch-2.token"
+q2q-keygen token \
   --key "$HOME/.q2q-signing/signing-1.private.jwk.json" \
   --claims "$HOME/.q2q-signing/track-2.claims.json" \
-  --days 90 --output "$HOME/.q2q-signing/track-2.token"
+  --days 90 --output "$Q2Q_CLUSTER_DIR/node-2/secrets/track-2.token"
 ```
 
-Install the new token at `/srv/q2q/secrets/track-2.token` on Track 2. Give each host only its own credential. If an existing Track's advertised endpoint changes, increase its `identity_version` and reissue its token first.
+The first host retains its unexpired tokens. If an existing address or identity changes, increase the corresponding `identity_version` and reissue before putting replacement files in its runtime directory.
 
-## 4. Connect both Tracks to shared state
+### Configure shared state and service images
 
-Write this configuration on Track 1, replacing the Redis password and TURN secret:
+On the management machine, write `node-1/track.toml`:
 
 ```toml
 bind = "10.0.0.11:8080"
@@ -150,34 +154,41 @@ url = "redis://default:REPLACE_WITH_REDIS_PASSWORD@10.0.0.10:6379/"
 
 [registry]
 url = "https://registry.example.com"
-token_file = "/srv/q2q/secrets/track-1.token"
+token_file = "/etc/q2q/secrets/track-1.token"
 region = "hk"
 accepting_new_connections = true
 ```
 
-Track 2 uses the same Redis URL, TURN settings and Registry endpoint. Change `bind` to `10.0.0.12:8080` and its token path to `/srv/q2q/secrets/track-2.token`. Do not add `[[punch]]` to either configuration.
+Copy it to `node-2/track.toml`, changing `bind` to `10.0.0.12:8080` and the token path to `/etc/q2q/secrets/track-2.token`. Set the region as appropriate. Replace the Redis password and URL-encode special characters. Neither configuration includes `[[punch]]`.
 
-Restrict configuration and token permissions, then start both replicas:
+The first host retains `node-1/compose.yml` and its other services. Write `node-2/compose.yml`:
 
-```sh
-chmod 600 /srv/q2q/track.toml /srv/q2q/secrets/track-*.token
-q2q-track-server /srv/q2q/track.toml
+```yaml
+services:
+  punch:
+    image: ghcr.io/mivinci/q2q-punch-server:v0.5.0
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./punch.toml:/etc/q2q/punch.toml:ro
+      - ./identity:/etc/q2q/identity:ro
+      - ./secrets/punch-2.token:/etc/q2q/secrets/punch-2.token:ro
+  track:
+    image: ghcr.io/mivinci/q2q-track-server:v0.5.0
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./track.toml:/etc/q2q/track.toml:ro
+      - ./secrets/track-2.token:/etc/q2q/secrets/track-2.token:ro
 ```
 
-When switching an existing Track from memory to Redis, its old in-memory sessions are not migrated. Schedule a transition window for clients to announce again and establish sessions. Confirm both replicas' reporting and discovery tasks are active before proceeding.
+The second host's directory now contains `compose.yml`, `punch.toml`, `track.toml`, `identity/cert.pem`, `identity/key.pem`, `secrets/punch-2.token` and `secrets/track-2.token`. The first retains its existing runtime files with the revised configurations.
 
-Each Track independently refreshes Registry snapshots and uses equal-weight Rendezvous hashing over Peer ID and Punch ID. The same eligible set gives the same selection across replicas; their sets may briefly differ while refreshes converge. Capacity weighting and geographic routing are not used, and Track request rate limits remain per instance. Requests from the same proxy egress also share that instance’s source-address quota.
+### Prepare the shared frontend configuration
 
-## 5. Connect the shared HTTPS frontend
+The frontend proxies only Track: public HTTPS forwards every path to two private HTTP upstreams, preserving methods, paths, query parameters, bodies and authentication headers. Punch remains directly reachable and Registry stays on Cloudflare.
 
-From the frontend host, first check both private health endpoints:
-
-```sh
-curl --fail http://10.0.0.11:8080/health
-curl --fail http://10.0.0.12:8080/health
-```
-
-Update the Caddy Track site to use both backends and reload:
+Choose a proxy and save its configuration under `entry` on the management machine. Save this Caddy example as `entry/track.Caddyfile`:
 
 ```text
 track.example.com {
@@ -189,18 +200,94 @@ track.example.com {
 }
 ```
 
+For Nginx, place the upstream pool in the `http` context of the prepared configuration:
+
+```nginx
+upstream q2q_tracks {
+    server 10.0.0.11:8080 max_fails=3 fail_timeout=10s;
+    server 10.0.0.12:8080 max_fails=3 fail_timeout=10s;
+}
+```
+
+The forwarding fragment inside the HTTPS `server` block is:
+
+```nginx
+location / {
+    proxy_pass http://q2q_tracks;
+    proxy_set_header Host $host;
+}
+```
+
+This Nginx configuration removes failed backends passively. Active `/health` checks require a supporting proxy or module. Let the chosen proxy manage certificates while retaining the client hostname.
+
+Both hosts' files and the frontend configuration are now ready. Begin server operations only after this preparation.
+
+## 4. Distribute files and start services in order
+
+During the maintenance window, prepare `/srv/q2q` on the second host using the single-node receiving-directory instructions. Confirm the first host is backed up, then distribute from the management machine:
+
 ```sh
-sudo systemctl reload caddy
+scp -rp "$Q2Q_CLUSTER_DIR/node-1/." deploy@203.0.113.10:/srv/q2q/
+scp -rp "$Q2Q_CLUSTER_DIR/node-2/." deploy@203.0.113.11:/srv/q2q/
+```
+
+On the second host, pull images and start Punch first:
+
+```sh
+cd /srv/q2q
+chmod 600 identity/*.pem secrets/*.token track.toml
+docker compose -f compose.yml config --quiet
+docker compose -f compose.yml pull punch track
+docker compose -f compose.yml up -d --no-deps punch
+docker compose -f compose.yml logs --tail=50 punch
+```
+
+Once it logs `Registry reporting active`, restart Punch on the first host to apply `cluster_size`. Its identity, ports and other containers retain their configuration:
+
+```sh
+cd /srv/q2q
+docker compose -f compose.yml restart punch
+docker compose -f compose.yml logs --tail=50 punch
+```
+
+After both resume reporting, start Track on the second host:
+
+```sh
+cd /srv/q2q
+docker compose -f compose.yml up -d --no-deps track
+docker compose -f compose.yml logs --tail=50 track
+```
+
+Confirm `Registry Punch discovery refreshed` and `Registry Track reporting active`, then restart the original Track on the first host with shared Redis:
+
+```sh
+cd /srv/q2q
+docker compose -f compose.yml restart track
+docker compose -f compose.yml logs --tail=50 track
+```
+
+Old in-memory sessions do not migrate. Changing the first listener from loopback to a private address also requires updating the old proxy upstream. Once both replicas report and discover, proceed directly to the next step and let clients establish new sessions.
+
+## 5. Connect the shared HTTPS frontend
+
+From the frontend host, confirm both backends are reachable:
+
+```sh
+curl --fail http://10.0.0.11:8080/health
+curl --fail http://10.0.0.12:8080/health
+```
+
+Distribute the chosen configuration from the management machine's `entry` directory to the frontend host. Merge it into the existing `track.example.com` site, validate and reload. For example, Caddy uses `sudo systemctl reload caddy`; validate Nginx syntax before reloading it. Keep a valid certificate and restrict backend access to the frontend.
+
+```sh
 curl --fail https://track.example.com/health
 ```
 
-Keep seeds and clients pointed at `https://track.example.com`. Restrict the private Track ports to the frontend. `/health` checks process liveness; verify service discovery and actual transfers separately.
-
-Each Punch keeps its direct endpoint. Clients obtain the concrete instance from Track's response; the HTTPS load balancer proxies Track only.
+Clients and Seeds keep the same HTTPS endpoint. `/health` establishes process liveness only; verify discovery and file transfers next.
 
 ## 6. Verify scaling and maintenance
 
-Log in to Platform's `/nodes` page and confirm both Tracks and both Punches appear separately. Then run [publish and download verification](./deploy-single-node#_7-inspect-state-and-transfer-a-file) through the shared Track endpoint.
+First run [publish and download verification](./deploy-single-node#_7-inspect-state-and-transfer-a-file) through the shared Track endpoint to confirm real transfers still work after expansion. If Platform is connected, also check `/nodes` for both Tracks and both Punches online.
 
 Check the deployment in this order:
 
