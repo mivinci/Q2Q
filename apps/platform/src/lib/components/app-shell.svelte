@@ -76,8 +76,8 @@
             aria-label={text[item.label]} title={compact ? text[item.label] : undefined}
             style={`width: ${compact ? '40px' : '100%'};`}
             class={active
-              ? `${compact ? 'mx-auto h-10 justify-center px-0' : 'h-11 justify-start gap-3 px-3.75'} bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent`
-              : `${compact ? 'mx-auto h-10 justify-center px-0' : 'h-11 justify-start gap-3 px-3.75'} text-muted-foreground`}>
+              ? `${compact ? 'mx-auto h-10 justify-center px-0' : 'h-10 justify-start gap-3 px-3.75'} bg-sidebar-accent text-sidebar-accent-foreground hover:bg-sidebar-accent`
+              : `${compact ? 'mx-auto h-10 justify-center px-0' : 'h-10 justify-start gap-3 px-3.75'} text-muted-foreground hover:bg-sidebar-accent/50 hover:text-foreground`}>
             <item.icon class="size-4.5 shrink-0" aria-hidden="true" /><span class={`sidebar-label text-sm ${compact ? 'hidden' : ''}`} aria-hidden="true">{text[item.label]}</span>
           </Button>
         {/each}
@@ -95,11 +95,11 @@
     <main class="min-w-0 pb-[env(safe-area-inset-bottom)]">
       <header class="sticky top-0 z-20 flex min-h-14 items-center gap-3 border-b bg-background/90 px-3 backdrop-blur-xl supports-backdrop-filter:bg-background/80 md:min-h-14 md:px-6 lg:px-7" style="padding-top: env(safe-area-inset-top);">
         <div class={pageBack
-          ? 'inline-flex h-10 shrink-0 items-center rounded-full border bg-card/80 p-1 shadow-sm'
-          : 'inline-flex size-8 shrink-0 items-center justify-center rounded-lg border bg-card/80 shadow-sm'}>
-          {#if pageBack}<Button href={pageBack.href} variant="ghost" size="icon-lg" class="size-8 rounded-lg" aria-label={pageBack.label}><ArrowLeft class="size-4.5" aria-hidden="true" /></Button><span class="mx-0.5 h-5 w-px bg-border" aria-hidden="true"></span>{/if}
-          <Button variant="ghost" size="icon-lg" class="size-8 rounded-lg md:hidden" aria-label={text.openNavigation} aria-expanded={drawerOpen} aria-haspopup="dialog" onclick={openDrawer}><PanelLeft class="size-4.5" aria-hidden="true" /></Button>
-          <Button variant="ghost" size="icon-lg" class="hidden size-8 rounded-lg md:inline-flex" aria-label={expanded ? text.collapseSidebar : text.expandSidebar} aria-expanded={expanded} onclick={() => sidebarChoice = !expanded}><PanelLeft class="size-4.5" aria-hidden="true" /></Button>
+          ? 'inline-flex h-10 shrink-0 items-center rounded-full border bg-card/80 p-1 shadow-xs'
+          : 'inline-flex size-8 shrink-0 items-center justify-center rounded-lg border bg-card/80 shadow-xs'}>
+          {#if pageBack}<Button href={pageBack.href} variant="ghost" size="icon-lg" class="size-8 rounded-full" aria-label={pageBack.label}><ArrowLeft class="size-4.5" aria-hidden="true" /></Button><span class="mx-0.5 h-5 w-px bg-border" aria-hidden="true"></span>{/if}
+          <Button variant="ghost" size="icon-lg" class={`size-8 ${pageBack ? 'rounded-full' : 'rounded-lg'} md:hidden`} aria-label={text.openNavigation} aria-expanded={drawerOpen} aria-haspopup="dialog" onclick={openDrawer}><PanelLeft class="size-4.5" aria-hidden="true" /></Button>
+          <Button variant="ghost" size="icon-lg" class={`hidden size-8 ${pageBack ? 'rounded-full' : 'rounded-lg'} md:inline-flex`} aria-label={expanded ? text.collapseSidebar : text.expandSidebar} aria-expanded={expanded} onclick={() => sidebarChoice = !expanded}><PanelLeft class="size-4.5" aria-hidden="true" /></Button>
         </div>
         <p class="flex min-w-0 items-center gap-2 text-[13px] text-muted-foreground">
           <span class="truncate">{currentProject.personalUserId ? text.personalProject : currentProject.name}</span>
