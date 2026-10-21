@@ -82,8 +82,8 @@
             <ResponsiveMetadata
               wrapperClass="mt-4 border-t pt-4 sm:grid-cols-2 sm:gap-3"
               items={[
-                { label: text.nodeLastSeen, value: `${dateFormat.format(node.last_seen * 1000)} UTC`, valueClass: 'min-w-0 text-[13px] tabular-nums' },
-                { label: text.nodeLeaseExpires, value: `${dateFormat.format(node.expires_at * 1000)} UTC`, valueClass: 'min-w-0 text-[13px] tabular-nums' }
+                { label: text.nodeLastSeen, value: `${dateFormat.format(node.last_seen * 1000)} UTC`, valueClass: 'min-w-0 tabular-nums' },
+                { label: text.nodeLeaseExpires, value: `${dateFormat.format(node.expires_at * 1000)} UTC`, valueClass: 'min-w-0 tabular-nums' }
               ]}
             />
 
