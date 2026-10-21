@@ -23,6 +23,7 @@
 ## crate 与协议归属
 
 - `q2q-core`：客户端 SDK，公共构建入口使用 **`q2q_core::client::builder()`**。
+- `q2q-http`：独立的通用 HTTP 下载库，提供流式 Executor 与校验/恢复文件的 Downloader，不依赖 Seed 或 P2P。core 的 CDN 内容和叶子表复用 Client 持有的 Executor，Merkle 校验、块租约和 Q2Q 检查点继续归 core；Track 控制请求使用独立客户端。设计与交付记录见 [general-cdn-download.md](../todos/general-cdn-download.md)。
 - `q2q-primitives`：内容身份、Seed、Merkle、块/文件基础能力及 Peer 数据面协议等双方共用的领域能力。
 - 增量种子构建放在 `q2q_primitives::seed_builder`，SDK 的本地文件准备复用它。`q2q-wasm` 同时提供 `@q2q/wasm` 工作区包；业务代码通过包导出使用绑定，不导入 Cargo target。S3 读取、平台队列任务和凭据不进入 primitives。平台后台处理已接线并完成本地验证，尚未上线，见 [种子处理方案](../todos/platform-seed-processing.md)。
 - `q2q`：命令行客户端包与可执行文件，依赖 `q2q-core` SDK。

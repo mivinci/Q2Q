@@ -41,6 +41,8 @@ building and transferring Q2Q seeds.
 
 - **Q2Q Platform** — manage projects, files, seed publications and storage
   settings in the hosted workspace.
+- **HTTP downloader (`q2q-http`)** — standalone streaming HTTP and verified, resumable
+  file downloads, without the P2P stack. See the [HTTP guide](docs/en/guide/http.md).
 - **Q2Q Core (`q2q-core`)** — build clients that publish and download files,
   verify content, and use peer-to-peer transfer with HTTP range fallback.
 - **Shared primitives (`q2q-primitives`)** — network-independent identity, seed,

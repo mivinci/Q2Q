@@ -1,0 +1,30 @@
+[package]
+name = "q2q-http"
+version = "0.1.0"
+edition = "2024"
+description = "Bounded HTTP transfers and verified, resumable file downloads"
+license = "MIT"
+autotests = false
+
+[dependencies]
+bytes = "1.12.1"
+httpdate = "1.0.3"
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+tempfile = "3.27.0"
+tokio = { version = "1.53.3", features = ["fs", "io-util", "macros", "rt", "sync", "time"] }
+url = "2.5.8"
+
+[dev-dependencies]
+tokio = { version = "1.53.3", features = ["net", "rt-multi-thread"] }
+
+[[test]]
+name = "executor"
+path = "tests/executor.rs"
+
+[[test]]
+name = "download"
+path = "tests/download.rs"

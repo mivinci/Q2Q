@@ -72,3 +72,9 @@ This is a lease handoff. Only a verified CDN leaf table permits interruption of 
 VOD permits up to max_download_peers workers for each source class, rather than one combined connection quota. Each block has one owner throughout fetching and disk submission.
 
 Track is queried once. A later window can reconnect known candidates but does not rediscover holders. After leaf-table loading fails, this reader does not reload that source; reopening can retry. See [Scheduling](./scheduling) for cancellation and window behavior.
+
+## Shared HTTP executor
+
+CDN bytes and proof tables use standalone [q2q-http](./http). A Client shares one connection pool and total HTTP budget: `client::builder().http_request_limit(16)` sets the cap (default 16), while max_download_peers still limits workers within each transfer. Concurrent transfers share the cap; separate Clients do not. The 20-second total request deadline includes admission. Track control requests retain a separate client.
+
+Core still owns Merkle verification, mirror policy, Q2Q checkpoints and verified progress. Its strict Range requests never silently fall back to ordinary whole-file downloads.

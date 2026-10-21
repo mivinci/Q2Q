@@ -2,7 +2,9 @@ use super::*;
 use crate::block_queue::WorkQueue;
 use crate::download_store::DownloadStore;
 use crate::test_destination::destination_complete;
+use reqwest::{Client, StatusCode};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use crate::test_http::*;
 
@@ -22,7 +24,9 @@ async fn grant_redirect_preserves_range_without_leaking_referer() {
   .await;
   seed.cdn_list = vec![format!("{}/content?secret=fixture-only", entry.url)];
   let progress = crate::progress::channel(&seed, &[]);
-  let source = Source::load(&seed, &progress, false).await.unwrap();
+  let source = Source::load(&seed, &progress, Executor::builder().build().unwrap())
+    .await
+    .unwrap();
   for index in 0..2 {
     let (received, _) = source.fetch(&seed, index, &progress).await.unwrap();
     let start = index * 262144;
@@ -72,7 +76,9 @@ async fn expired_signed_target_is_replaced_via_stable_entry_for_the_next_block()
   .await;
   seed.cdn_list = vec![format!("{}/content?secret=fixture-only", entry.url)];
   let progress = crate::progress::channel(&seed, &[]);
-  let source = Source::load(&seed, &progress, false).await.unwrap();
+  let source = Source::load(&seed, &progress, Executor::builder().build().unwrap())
+    .await
+    .unwrap();
   source.fetch(&seed, 0, &progress).await.unwrap();
   generation.store(1, Ordering::SeqCst);
   let expired = Client::new()
@@ -116,7 +122,7 @@ async fn invalid_range_status_encoding_and_body_lengths_are_rejected() {
     reply
   })
   .await;
-  let http = Client::builder()
+  let http = Executor::builder()
     .timeout(Duration::from_secs(2))
     .build()
     .unwrap();
@@ -215,9 +221,15 @@ async fn cdn_fills_only_missing_blocks_after_a_real_peer_fails() {
     ))
   ));
   assert_eq!(progress.borrow().verified_bytes, 262144);
-  download(seed, restored.clone(), 2, progress.clone(), false)
-    .await
-    .unwrap();
+  download(
+    seed,
+    restored.clone(),
+    2,
+    progress.clone(),
+    Executor::builder().build().unwrap(),
+  )
+  .await
+  .unwrap();
   assert_eq!(progress.borrow().verified_bytes, bytes.len() as u64);
   assert!(destination_complete(&restored).unwrap());
   assert_eq!(std::fs::read(path).unwrap(), bytes);
@@ -272,7 +284,14 @@ async fn fallback_waits_for_cancelled_workers_queued_disk_jobs() {
     let next_progress = progress.clone();
     let future = async move {
       scope.idle().await;
-      download(next_seed, next_store, 2, next_progress, false).await
+      download(
+        next_seed,
+        next_store,
+        2,
+        next_progress,
+        Executor::builder().build().unwrap(),
+      )
+      .await
     };
     tokio::pin!(future);
     assert!(
@@ -307,4 +326,70 @@ async fn fallback_waits_for_cancelled_workers_queued_disk_jobs() {
   })
   .await
   .unwrap();
+}
+
+#[tokio::test]
+async fn client_budget_is_shared_by_sources_proofs_and_cancelled_requests() {
+  let dir = tempfile::tempdir().unwrap();
+  let client = crate::client::builder()
+    .track_url("http://127.0.0.1:1")
+    .identity_file(dir.path().join("identity"))
+    .storage_dir(dir.path().join("state"))
+    .http_request_limit(1)
+    .build()
+    .await
+    .unwrap();
+  let bytes = vec![33; 128];
+  let mut seed = fixture(&bytes);
+  let leaves: Vec<u8> = seed
+    .leaf_hashes
+    .as_ref()
+    .unwrap()
+    .iter()
+    .flatten()
+    .copied()
+    .collect();
+  let server = Server::start(move |request| {
+    if request.path == "/proof" {
+      return Reply::body(leaves.clone());
+    }
+    let mut reply = range_reply(&request, &bytes);
+    if request.path == "/hang" {
+      reply.hang = true;
+    }
+    reply
+  })
+  .await;
+  seed.cdn_list = vec![format!("{}/hang", server.url)];
+  let progress = crate::progress::channel(&seed, &[]);
+  let source = Source::load(&seed, &progress, client.http()).await.unwrap();
+  let held_seed = seed.clone();
+  let held_progress = progress.clone();
+  let first = tokio::spawn(async move { source.fetch(&held_seed, 0, &held_progress).await });
+  tokio::time::timeout(Duration::from_secs(2), async {
+    while server.hanging.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+      tokio::task::yield_now().await;
+    }
+  })
+  .await
+  .unwrap();
+  seed.leaf_hashes = None;
+  seed.proof_list = vec![format!("{}/proof", server.url)];
+  seed.cdn_list = vec![format!("{}/data", server.url)];
+  let second = Source::load(&seed, &progress, client.http());
+  tokio::pin!(second);
+  assert!(
+    tokio::time::timeout(Duration::from_millis(20), &mut second)
+      .await
+      .is_err()
+  );
+  assert_eq!(server.requests.lock().unwrap().len(), 1);
+  first.abort();
+  assert!(first.await.unwrap_err().is_cancelled());
+  let source = second.await.unwrap();
+  assert_eq!(
+    source.fetch(&seed, 0, &progress).await.unwrap().0,
+    vec![33; 128]
+  );
+  assert_eq!(progress.borrow().active_cdn_requests, 0);
 }
