@@ -51,6 +51,20 @@ jobs:
       - name: 测试
         run: cargo test
 
+  http-platforms:
+    name: HTTP downloader (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Standalone HTTP transfers, locking and publication
+        run: cargo test --locked -p q2q-http
+
   windows-cli:
     name: Windows CLI behavior
     runs-on: windows-latest

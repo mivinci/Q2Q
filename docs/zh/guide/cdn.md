@@ -70,3 +70,9 @@ sequenceDiagram
 VOD 的 Peer 和 CDN 各自最多运行 max_download_peers 个 worker，不是二者共用一个总连接配额。每块同时只有一个持有者，网络获取和磁盘提交期间都持有租约。
 
 当前只查询一次 Track；窗口变化可以重连已有候选，但不会重新发现。证明表加载失败后，本读取句柄不会重新加载该来源；重新 open 可以重试。调度与取消细节见 [调度](./scheduling)。
+
+## 共享 HTTP 执行器
+
+CDN 内容和叶子表现在通过独立的 [q2q-http](./http) 执行。每个 Client 共享连接池及总 HTTP 预算，`client::builder().http_request_limit(16)` 设置上限（默认 16），`max_download_peers` 继续限制每个任务的 worker。多个任务同时下载时也受总额度约束；不同 Client 不共享预算。20 秒请求总期限包含额度等待。Track 控制请求使用独立客户端。
+
+Merkle 校验、镜像切换、Q2Q 检查点与已验证进度仍归 core，严格 Range 请求不会自动退化为普通文件下载。

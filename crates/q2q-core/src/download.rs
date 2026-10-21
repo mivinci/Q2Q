@@ -162,7 +162,7 @@ fn start_with_store_inner<'a>(
     let mut guard = crate::destination::DownloadGuard::new(store.clone());
     let peers = crate::download_progress::Progress::new();
     let peer_updates = peers.clone();
-    let accept_invalid_certs = client.accept_invalid_certs();
+    let http = client.http();
     Ok(Transfer::observed(progress, peers, async move {
       let activity = crate::scheduler::TaskScope::new();
       let p2p = match discovery {
@@ -198,14 +198,7 @@ fn start_with_store_inner<'a>(
         // Workers can be cancelled while blocking writes remain queued. Wait
         // for both before snapshotting state for a new source phase.
         activity.idle().await;
-        cdn_all(
-          seed,
-          store.clone(),
-          concurrency,
-          updates,
-          accept_invalid_certs,
-        )
-        .await?;
+        cdn_all(seed, store.clone(), concurrency, updates, http).await?;
       }
       store.finish().await?;
       guard.finish();
@@ -244,7 +237,7 @@ pub(crate) async fn open(
   let peer_id = client.peer_id().to_string();
   let query_limit = client.peer_query_limit();
   let task_queue = queue.clone();
-  let accept_invalid_certs = client.accept_invalid_certs();
+  let http = client.http();
   let destination = store.clone();
   let task_seed = seed.clone();
   let finishing = store.clone();
@@ -268,7 +261,7 @@ pub(crate) async fn open(
       });
       let q = task_queue.clone();
       tasks.spawn(async move {
-        cdn_window(task_seed, destination, q, concurrency, accept_invalid_certs).await;
+        cdn_window(task_seed, destination, q, concurrency, http).await;
       });
       while let Some(result) = tasks.join_next().await {
         if let Err(error) = result {
@@ -364,7 +357,7 @@ pub(crate) async fn cdn_window(
   store: Destination,
   queue: Arc<WorkQueue>,
   concurrency: usize,
-  accept_invalid_certs: bool,
+  http: q2q_http::Executor,
 ) {
   if queue.complete() {
     return;
@@ -379,7 +372,7 @@ pub(crate) async fn cdn_window(
   if queue.complete() {
     return;
   }
-  let source = match crate::cdn::Source::load(&seed, &queue.progress, accept_invalid_certs).await {
+  let source = match crate::cdn::Source::load(&seed, &queue.progress, http).await {
     Ok(source) => Arc::new(source),
     Err(error) => {
       queue.cdn_status(Err(error));
@@ -430,14 +423,14 @@ pub(crate) async fn cdn_all(
   store: Destination,
   concurrency: usize,
   progress: tokio::sync::watch::Sender<crate::progress::TransferProgress>,
-  accept_invalid_certs: bool,
+  http: q2q_http::Executor,
 ) -> Result<(), TransferError> {
   let bits = store.bitfield().await?;
   let queue = WorkQueue::new(&seed, &bits, progress.clone());
   if queue.complete() {
     return Ok(());
   }
-  let source = crate::cdn::Source::load(&seed, &progress, accept_invalid_certs).await?;
+  let source = crate::cdn::Source::load(&seed, &progress, http).await?;
   let seed = Arc::new(seed);
   let mut last = TransferError::Cdn("no usable CDN source".into());
   for mirror in source.mirrors() {

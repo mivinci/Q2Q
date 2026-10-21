@@ -103,6 +103,7 @@ pub struct Builder {
   identity_file: Option<PathBuf>,
   storage_dir: Option<PathBuf>,
   max_download_peers: Option<usize>,
+  http_request_limit: Option<usize>,
   peer_query_limit: Option<usize>,
   max_upload_peers: Option<usize>,
   max_upload_reads: Option<usize>,
@@ -143,6 +144,13 @@ impl Builder {
   /// Maximum concurrent peer connections or CDN block requests, 1–16 (default 4).
   pub fn max_download_peers(mut self, count: usize) -> Self {
     self.max_download_peers = Some(count);
+    self
+  }
+
+  /// Total HTTP content/proof requests shared by this Client (default 16).
+  /// Independent of peer connections and each transfer's block concurrency.
+  pub fn http_request_limit(mut self, count: usize) -> Self {
+    self.http_request_limit = Some(count);
     self
   }
 
@@ -223,6 +231,13 @@ impl Builder {
       .ok_or(BuildError::Missing("identity_file"))?;
     let storage_dir = self.storage_dir.ok_or(BuildError::Missing("storage_dir"))?;
 
+    let http = q2q_http::Executor::builder()
+      .max_requests(self.http_request_limit.unwrap_or(16))
+      .max_requests_per_host(self.http_request_limit.unwrap_or(16))
+      .danger_accept_invalid_certs(self.accept_invalid_certs)
+      .build()
+      .map_err(BuildError::Http)?;
+
     tokio::fs::create_dir_all(&storage_dir)
       .await
       .map_err(BuildError::Storage)?;
@@ -233,6 +248,7 @@ impl Builder {
 
     Ok(Client {
       track_url,
+      http,
       accept_invalid_certs: self.accept_invalid_certs,
       storage_dir,
       identity,
@@ -252,6 +268,7 @@ impl Builder {
 
 /// A local peer that can publish and download through a shared control session.
 pub struct Client {
+  http: q2q_http::Executor,
   track_url: Url,
   accept_invalid_certs: bool,
   storage_dir: PathBuf,
@@ -587,8 +604,8 @@ impl Client {
     self.identity.peer_id()
   }
 
-  pub(crate) fn accept_invalid_certs(&self) -> bool {
-    self.accept_invalid_certs
+  pub(crate) fn http(&self) -> q2q_http::Executor {
+    self.http.clone()
   }
 
   pub fn public_key(&self) -> [u8; 32] {
@@ -606,6 +623,7 @@ impl Client {
 
 #[derive(Debug)]
 pub enum BuildError {
+  Http(q2q_http::Error),
   Missing(&'static str),
   InvalidTrackUrl(url::ParseError),
   UnsupportedTrackUrl,
@@ -623,6 +641,7 @@ pub enum BuildError {
 impl fmt::Display for BuildError {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
+      Self::Http(e) => write!(f, "could not prepare HTTP executor: {e}"),
       Self::Missing(field) => write!(f, "missing client setting: {field}"),
       Self::InvalidTrackUrl(e) => write!(f, "invalid Track URL: {e}"),
       Self::InvalidUploadRate => f.write_str("upload_rate_limit must be greater than zero"),
@@ -642,6 +661,7 @@ impl fmt::Display for BuildError {
 impl std::error::Error for BuildError {
   fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
     match self {
+      Self::Http(e) => Some(e),
       Self::InvalidTrackUrl(e) => Some(e),
       Self::Storage(e) => Some(e),
       Self::Identity(e) => Some(e),

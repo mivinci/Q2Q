@@ -78,7 +78,7 @@ async fn healthy_p2p_window_does_not_fetch_cdn_metadata() {
     store.clone(),
     queue.clone(),
     2,
-    false,
+    q2q_http::Executor::builder().build().unwrap(),
   ));
   let peer_task = tokio::spawn({
     let queue = queue.clone();
@@ -181,7 +181,13 @@ async fn actual_peer_fallback_keeps_other_peer_alive() {
     let store = store.clone();
     async move { good_download.download_scheduled(&seed, store, queue).await }
   });
-  let http = tokio::spawn(cdn(Arc::new(seed), store, queue.clone(), 2, false));
+  let http = tokio::spawn(cdn(
+    Arc::new(seed),
+    store,
+    queue.clone(),
+    2,
+    q2q_http::Executor::builder().build().unwrap(),
+  ));
   tokio::time::timeout(Duration::from_secs(3), queue.verified(1))
     .await
     .unwrap()

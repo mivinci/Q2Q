@@ -1201,6 +1201,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls",
+ "rustls-native-certs",
  "tokio",
  "tokio-rustls",
  "tower-service",
@@ -1890,6 +1891,7 @@ dependencies = [
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.4.3",
+ "q2q-http",
  "q2q-primitives",
  "q2q-punch",
  "q2q-track",
@@ -1908,6 +1910,22 @@ dependencies = [
  "url",
  "webrtc",
  "x509-parser 0.18.1",
+]
+
+[[package]]
+name = "q2q-http"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "httpdate",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1 0.11.0",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -2284,6 +2302,7 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "serde",
  "serde_json",

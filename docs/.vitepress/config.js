@@ -14,6 +14,7 @@ const guide = (prefix) => [
   { text: 'Wire protocol', link: `${prefix}guide/wire` },
   { text: 'Scheduling', link: `${prefix}guide/scheduling` },
   { text: 'CDN fallback', link: `${prefix}guide/cdn` },
+  { text: 'HTTP downloader', link: `${prefix}guide/http` },
 ];
 
 // 侧边栏用数组而不是按路径 keyed，让整站共用一份目录，
@@ -53,6 +54,7 @@ const sidebar = (prefix, t) => [
       { text: t.wire, link: `${prefix}guide/wire` },
       { text: t.sched, link: `${prefix}guide/scheduling` },
       { text: t.cdn, link: `${prefix}guide/cdn` },
+      { text: t.http, link: `${prefix}guide/http` },
     ],
   },
   { text: t.api, link: `${prefix}api/` },
@@ -72,6 +74,7 @@ const en = {
   wire: 'Wire protocol',
   sched: 'Scheduling',
   cdn: 'CDN fallback',
+  http: 'HTTP downloader',
   api: 'API',
 };
 
@@ -89,6 +92,7 @@ const zh = {
   wire: '消息编码',
   sched: '调度',
   cdn: 'CDN 回退',
+  http: '通用 HTTP 下载',
   api: 'API 参考',
 };
 
