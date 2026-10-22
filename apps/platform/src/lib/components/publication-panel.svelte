@@ -61,7 +61,7 @@
     <div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t pt-4">
       <div class="min-w-0"><p class="text-sm">{text[({ creating: 'publicationCreating', published: 'publicationPublished', failed: 'publicationFailed', withdrawn: 'publicationWithdrawn' } as const)[version.status]]}</p><a href={`/seeds/${version.id}`} class="mt-1 block break-all font-mono text-xs text-primary underline-offset-4 hover:underline">{version.id}</a></div>
       {#if version.cleanupPending}<p class="text-[13px] text-muted-foreground">{text.publicationCleanup}</p>{/if}
-      {#if canManage && version.status === 'published'}<DownloadGrantPanel publicationId={version.id} name={version.name} />{/if}
+      {#if canManage && version.status === 'published'}<DownloadGrantPanel publicationId={version.id} name={version.name} infoHash={version.infoHash} networkMode={version.networkMode} trackUrl={version.trackUrl} />{/if}
       {#if canManage && (version.status !== 'withdrawn' || version.cleanupPending)}
         <div class="flex gap-2">{#if version.status === 'creating'}<Button variant="ghost" size="sm" disabled={busy} onclick={() => publish(version.id)}>{text.publicationRedispatch}</Button>{/if}<Button variant="outline" size="sm" disabled={busy} onclick={() => withdraw(version.id)}>{version.status === 'withdrawn' ? text.publicationRetryCleanup : text.withdrawVersion}</Button></div>
       {/if}
