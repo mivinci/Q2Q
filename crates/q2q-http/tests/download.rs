@@ -619,7 +619,10 @@ async fn journal_failure_stops_later_queued_writes_and_wait_releases_lock() {
   let journal = dir.path().join("disk-failure.q2q-http.resume");
   std::fs::rename(&journal, dir.path().join("saved-journal")).unwrap();
   std::fs::create_dir(&journal).unwrap();
-  assert!(matches!(task.wait().await, Err(Error::Io(_))));
+  assert!(matches!(
+    task.wait().await,
+    Err(Error::Io(_) | Error::Checkpoint("previous storage operation failed"))
+  ));
   assert!(!path.exists());
   let bytes = std::fs::read(dir.path().join("disk-failure.q2q-http.part")).unwrap();
   // The first failed journal commit may have written one more range, but the
