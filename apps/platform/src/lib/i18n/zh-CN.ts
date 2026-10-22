@@ -10,6 +10,7 @@ export const zh = {
   expandSidebar: '展开侧栏', collapseSidebar: '收起侧栏',
   platformInfo: '平台信息', buildCommit: '构建提交', buildCommitDescription: '用于确认当前运行的平台版本。',
   exportDownloadSeed: '导出下载种子', downloadGrantWarning: '持有此种子的人可下载此版本，直到授权被撤销或版本被撤回。已签发的链接最多仍有效 5 分钟。', revokeDownloadGrant: '撤销授权', downloadGrantRevoked: '已撤销',
+  magnetLink: '磁力链', copyMagnetLink: '复制磁力链', magnetCopied: '已复制', magnetCopyFailed: '自动复制失败，请手动选择并复制下方链接。', magnetAvailabilityNote: '磁力链使用 Track 查找在线 Peer；未指定自定义 Track 时使用接收端的默认 Track。链接不包含平台存储下载地址，也不受下载种子授权控制。至少需要一个在线 Peer 提供内容。要通过平台存储下载，请分享 .q2q 种子。',
   publicationCleanup: '等待产物清理', publicationRetryCleanup: '重试清理',
   publications: '发布版本', publishVersion: '发布新版本', withdrawVersion: '撤回', publicationCreating: '正在准备发布产物…', publicationPublished: '已发布', publicationFailed: '发布失败，请重新创建版本。', publicationWithdrawn: '已撤回', publicationDescription: '发布版本固定当时的文件内容和分发网络。发布后可导出下载种子，并随时撤销授权。', publicationWithdrawConfirm: '撤回此版本？撤回后需要创建新版本才能再次发布。', publicationRedispatch: '重新提交任务', publicationWaitActive: '当前版本正在准备中，请稍候。', publicationWithdrawForNew: '当前版本已发布；撤回后才能发布新版本。', publicationNeedsSeed: '完成种子生成后即可发布。',
   publicationNotFound: '发布版本不存在或无权访问。', publicationInvalid: '发布请求无效。', publicationConflict: '此发布请求已用于其他文件。', publicationActive: '此文件已有创建中或已发布的版本。', publicationNotReady: '请先完成文件上传和种子处理。', publicationInUse: '此文件仍被发布版本引用，请先撤回并等待下载授权到期、清理完成。',

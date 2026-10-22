@@ -21,6 +21,6 @@
     <div><dt class="text-[13px] text-muted-foreground">{text.fileCreatedAt}</dt><dd class="mt-2">{new Intl.DateTimeFormat(page.data.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(data.seed.createdAt)}</dd></div>
   </dl>
   <section class="mt-5 rounded-xl border bg-card p-5"><h2 class="text-sm font-medium">{text.network}</h2><p class="mt-2 text-sm">{data.seed.trackUrl ? data.seed.networkMode === 'custom' ? text.networkCustom : text.networkPlatform : text.networkNotConfigured}</p>{#if data.seed.trackUrl}<p class="mt-2 break-all font-mono text-xs text-muted-foreground">{data.seed.trackUrl}</p>{/if}<p class="mt-3 text-[13px] text-muted-foreground">{text.networkFuture}</p></section>
-  {#if data.canManage && data.seed.status === 'published'}<div class="mt-5"><DownloadGrantPanel publicationId={data.seed.id} name={data.seed.name} /></div>{/if}
+  {#if data.canManage && data.seed.status === 'published'}<div class="mt-5"><DownloadGrantPanel publicationId={data.seed.id} name={data.seed.name} infoHash={data.seed.infoHash} networkMode={data.seed.networkMode} trackUrl={data.seed.trackUrl} /></div>{/if}
   <div class="mt-5 rounded-xl border bg-card p-5 text-sm text-muted-foreground">{text.seedStatisticsPending}</div>
 </div>
