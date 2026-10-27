@@ -172,8 +172,8 @@ export async function handleCreemWebhook(env: Environment, request: Request): Pr
     return new Response(null, {status: stored?.bodyHash === bodyHash ? 200 : 400});
   }
 
-  // A checkout event owns the checkout row; later subscription events own their
-  // subscription row. Neither can rewrite the other project's state.
+  // Resolve every event to its checkout so initial payments, checkout resends
+  // and later subscription updates share the same reconciliation lock.
   let subscriptionId: string, checkout: Checkout | null = null, stored: Subscription | null = null;
   try {
     if (type === 'checkout.completed') {
@@ -204,18 +204,15 @@ export async function handleCreemWebhook(env: Environment, request: Request): Pr
     if (!billingEnabled(env)) throw new BillingError('billing disabled');
   } catch { return new Response(null, {status: 503}); }
 
+  const checkoutId = checkout ? checkout.id : stored!.checkoutId;
   const lock = crypto.randomUUID(), now = Date.now();
-  const claimed = type === 'checkout.completed'
-    ? await env.DB.prepare(`UPDATE billing_checkout SET reconcileToken=?, reconcileUntil=?
-        WHERE id=? AND status IN ('creating','open','unknown','paid') AND (reconcileUntil IS NULL OR reconcileUntil<?) RETURNING id`)
-        .bind(lock, now + 30000, checkout!.id, now).first()
-    : await env.DB.prepare(`UPDATE billing_subscription SET reconcileToken=?, reconcileUntil=?
-        WHERE subscriptionId=? AND (reconcileUntil IS NULL OR reconcileUntil<?) RETURNING subscriptionId`)
-        .bind(lock, now + 30000, subscriptionId, now).first();
+  const claimed = await env.DB.prepare(`UPDATE billing_checkout SET reconcileToken=?, reconcileUntil=?
+    WHERE id=? AND mode='test' AND status IN ('creating','open','unknown','paid')
+      AND (reconcileUntil IS NULL OR reconcileUntil<?) RETURNING id`)
+    .bind(lock, now + 30000, checkoutId, now).first();
   if (!claimed) return new Response(null, {status: 503});
-  const release = type === 'checkout.completed'
-    ? () => env.DB.prepare('UPDATE billing_checkout SET reconcileToken=NULL,reconcileUntil=NULL WHERE id=? AND reconcileToken=?').bind(checkout!.id, lock).run()
-    : () => env.DB.prepare('UPDATE billing_subscription SET reconcileToken=NULL,reconcileUntil=NULL WHERE subscriptionId=? AND reconcileToken=?').bind(subscriptionId, lock).run();
+  const release = () => env.DB.prepare('UPDATE billing_checkout SET reconcileToken=NULL,reconcileUntil=NULL WHERE id=? AND reconcileToken=?')
+    .bind(checkoutId, lock).run();
   try {
     const response = await fetch(`https://test-api.creem.io/v1/subscriptions?subscription_id=${encodeURIComponent(subscriptionId)}`, {
       headers: {'x-api-key': env.CREEM_API_KEY!}, signal: AbortSignal.timeout(10000)
@@ -235,9 +232,19 @@ export async function handleCreemWebhook(env: Environment, request: Request): Pr
     const marked = Date.now();
     const projectId = checkout ? checkout.projectId : stored!.projectId;
     const planId = checkout ? checkout.planId : stored!.planId;
-    const checkoutId = checkout ? checkout.id : stored!.checkoutId;
     const subCreatedAt = checkout ? checkout.createdAt : stored!.createdAt;
-    const guards = "EXISTS (SELECT 1 FROM billing_webhook_event e WHERE e.id=? AND e.bodyHash=? AND e.processedAt IS NULL)";
+    // Fence every business write, not only processedAt: an expired request must
+    // never overwrite a successor's state. For an initial payment/resend the
+    // owner check is repeated here, inside the atomic D1 batch after the API call.
+    // Existing subscription lifecycle events still reconcile after an ownership
+    // change so a cancellation or expiry is not blocked by the original payer.
+    const ownerGuard = checkout ? `AND EXISTS (SELECT 1 FROM project_member m JOIN user u ON u.id=m.userId
+      WHERE m.projectId=billing_checkout.projectId AND m.userId=billing_checkout.ownerId
+        AND m.role='owner' AND u.disabledAt IS NULL)` : '';
+    const fence = `EXISTS (SELECT 1 FROM billing_checkout WHERE id=? AND reconcileToken=? AND reconcileUntil>? ${ownerGuard})`;
+    const fenceValues = [checkoutId,lock,marked];
+    const guards = `EXISTS (SELECT 1 FROM billing_webhook_event e WHERE e.id=? AND e.bodyHash=? AND e.processedAt IS NULL) AND ${fence}`;
+    const guardValues = [id,bodyHash,...fenceValues];
     // A newer subscription always wins: only the newest row may drive
     // project_subscription, so a late event from a replaced subscription cannot
     // revoke the current one.
@@ -256,21 +263,21 @@ export async function handleCreemWebhook(env: Environment, request: Request): Pr
           periodStartAt=excluded.periodStartAt, periodEndAt=excluded.periodEndAt,
           cancelAtPeriodEnd=excluded.cancelAtPeriodEnd, updatedAt=excluded.updatedAt
         WHERE billing_subscription.checkoutId=excluded.checkoutId AND billing_subscription.projectId=excluded.projectId`)
-        .bind(subscriptionId,checkoutId,projectId,planId,productId,customerId,mapped,status,start,end,cancelAtPeriodEnd,subCreatedAt,marked,id,bodyHash));
+        .bind(subscriptionId,checkoutId,projectId,planId,productId,customerId,mapped,status,start,end,cancelAtPeriodEnd,subCreatedAt,marked,...guardValues));
       statements.push(env.DB.prepare(`UPDATE billing_checkout SET status='paid', checkoutId=COALESCE(checkoutId, ?), updatedAt=?
-        WHERE id=? AND reconcileToken=? AND reconcileUntil>? AND ${guards}`)
-        .bind(externalId(payload.id),marked,checkoutId,lock,marked,id,bodyHash));
+        WHERE id=? AND ${guards}`)
+        .bind(externalId(payload.id),marked,checkoutId,...guardValues));
     } else {
       statements.push(env.DB.prepare(`UPDATE billing_subscription SET status=?, providerStatus=?, periodStartAt=?,
           periodEndAt=?, cancelAtPeriodEnd=?, updatedAt=? WHERE subscriptionId=? AND ${guards}`)
-        .bind(mapped,status,start,end,cancelAtPeriodEnd,marked,subscriptionId,id,bodyHash));
+        .bind(mapped,status,start,end,cancelAtPeriodEnd,marked,subscriptionId,...guardValues));
     }
     statements.push(env.DB.prepare(`INSERT INTO project_subscription
         (projectId, planId, status, provider, providerSubscriptionId, periodStartAt, periodEndAt, cancelAtPeriodEnd, createdAt, updatedAt)
       SELECT ?, ?, ?, 'creem', ?, ?, ?, ?, ?, ?
       WHERE NOT EXISTS (SELECT 1 FROM project_subscription WHERE projectId=?)
         AND ${newest} AND ${guards}`)
-      .bind(projectId,planId,mapped,subscriptionId,start,end,cancelAtPeriodEnd,marked,marked,projectId,projectId,subCreatedAt,subCreatedAt,subscriptionId,id,bodyHash));
+      .bind(projectId,planId,mapped,subscriptionId,start,end,cancelAtPeriodEnd,marked,marked,projectId,projectId,subCreatedAt,subCreatedAt,subscriptionId,...guardValues));
     statements.push(env.DB.prepare(`UPDATE project_subscription
         SET planId=?, status=?, provider='creem', providerSubscriptionId=?, periodStartAt=?, periodEndAt=?,
           cancelAtPeriodEnd=?, updatedAt=?
@@ -279,12 +286,9 @@ export async function handleCreemWebhook(env: Environment, request: Request): Pr
           OR (planId='free' AND provider IS NULL)
           OR (provider='creem' AND NOT (${activeSubscriptionSql('project_subscription', String(marked))})))
         AND ${guards}`)
-      .bind(planId,mapped,subscriptionId,start,end,cancelAtPeriodEnd,marked,projectId,projectId,subCreatedAt,subCreatedAt,subscriptionId,subscriptionId,id,bodyHash));
-    const locked = type === 'checkout.completed'
-      ? `EXISTS (SELECT 1 FROM billing_checkout WHERE id=? AND reconcileToken=? AND reconcileUntil>?)`
-      : `EXISTS (SELECT 1 FROM billing_subscription WHERE subscriptionId=? AND reconcileToken=? AND reconcileUntil>?)`;
-    statements.push(env.DB.prepare(`UPDATE billing_webhook_event SET processedAt=? WHERE id=? AND bodyHash=? AND processedAt IS NULL AND ${locked}`)
-      .bind(marked,id,bodyHash,type === 'checkout.completed' ? checkoutId : subscriptionId,lock,marked));
+      .bind(planId,mapped,subscriptionId,start,end,cancelAtPeriodEnd,marked,projectId,projectId,subCreatedAt,subCreatedAt,subscriptionId,subscriptionId,...guardValues));
+    statements.push(env.DB.prepare(`UPDATE billing_webhook_event SET processedAt=? WHERE id=? AND bodyHash=? AND processedAt IS NULL AND ${fence}`)
+      .bind(marked,id,bodyHash,...fenceValues));
     await env.DB.batch(statements);
     const processed = await env.DB.prepare('SELECT bodyHash,processedAt FROM billing_webhook_event WHERE id=?').bind(id).first<{bodyHash:string; processedAt:number|null}>();
     if (!processed || processed.bodyHash !== bodyHash || processed.processedAt === null) throw new BillingError('not applied');
