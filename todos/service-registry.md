@@ -12,6 +12,10 @@
 
 ## 已确认的认证方案
 
+平台展示方向已调整为只展示和统计 Punch，原生 Track 的 Registry 记录及注册行为继续保留。该页面调整已实现并通过混合分页、离线状态、空列表与字段隔离测试，执行项及本轮验证记录见 [Workers Track 方案](track-workers.md#平台节点展示)，历史平台验收记录不表示已经完成本次筛选调整。
+
+后续 Workers Track 的内部发现提案见 [track-workers.md](track-workers.md#registry-通信与授权)：托管 Track 不注册自身，通过专用只读 Service Binding RPC 读取 Punch 列表，绑定配置承担内部授权，无需 Track JWT。该入口、共享契约、环境校验及 Track alarm 刷新已实现并通过本地 workerd/D1 验证，尚未部署；下述原生节点和公网 HTTP 的 JWT 方案继续保留，不因内部入口而放开匿名请求。
+
 使用 Ed25519 非对称签名 JWT，算法固定为 `EdDSA`。Registry 只保存受信任公钥，各服务只持有签发给自己的 token；签发私钥保留在可信的本地签发环境。
 
 ### 生成、签发和使用流程

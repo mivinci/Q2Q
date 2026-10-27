@@ -1,0 +1,154 @@
+{
+  "date": "2026-10-26T18:05:14.611Z",
+  "environment": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v26.12.0",
+    "logical_cpus": 10
+  },
+  "source_sha256": "d2aff2a3e08cf5d6ad6b63544fef4b871f3b3fd6e13968f574d7e957cd250be1",
+  "scope": "Local workerd only; DO eviction disabled and incarnations checked for measurement stability. Alarm-set and KV API calls counted separately from SQL cursors. Observer calls/SQL excluded; background alarms during sampling included. Harness CPU excludes workerd. No cloud CPU, GB-s or geographic scaling claim.",
+  "results": [
+    {
+      "profile": {
+        "peers": 1000,
+        "holdings": 32,
+        "layout": "hot",
+        "entries": 2,
+        "renewal_mode": "single"
+      },
+      "seed": {
+        "count": 1000,
+        "p50_ms": 65.6,
+        "p95_ms": 79.33,
+        "p99_ms": 94.72
+      },
+      "target_rps": 260,
+      "seconds": 240,
+      "actual_elapsed_ms": 240000,
+      "completed_rps": 260,
+      "maximum_in_flight": 32,
+      "request_latency": {
+        "count": 62400,
+        "p50_ms": 1.9,
+        "p95_ms": 48.9,
+        "p99_ms": 278.15
+      },
+      "scheduled_latency": {
+        "count": 62400,
+        "p50_ms": 2.05,
+        "p95_ms": 266.35,
+        "p99_ms": 1821.94
+      },
+      "methods": {
+        "announce": {
+          "count": 51168,
+          "p50_ms": 1.94,
+          "p95_ms": 50.32,
+          "p99_ms": 287.49
+        },
+        "heartbeat": {
+          "count": 8112,
+          "p50_ms": 1.25,
+          "p95_ms": 46.17,
+          "p99_ms": 224.73
+        },
+        "query": {
+          "count": 3120,
+          "p50_ms": 2.54,
+          "p95_ms": 31.49,
+          "p99_ms": 194.92
+        }
+      },
+      "sampling_valid": true,
+      "errors": 2733,
+      "error_examples": [
+        {
+          "kind": "announce",
+          "ok": false,
+          "status": 429,
+          "ms": 8.18774999998277,
+          "code": "rate_limited",
+          "scheduled_ms": 8.372034923086176
+        },
+        {
+          "kind": "announce",
+          "ok": false,
+          "status": 429,
+          "ms": 0.575749999989057,
+          "code": "rate_limited",
+          "scheduled_ms": 0.0476153846248053
+        },
+        {
+          "kind": "announce",
+          "ok": false,
+          "status": 429,
+          "ms": 4.202584000013303,
+          "code": "rate_limited",
+          "scheduled_ms": 2.862256076943595
+        }
+      ],
+      "storage": {
+        "PEERS": {
+          "objects": 1000,
+          "alarm_sets": 95909,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 3207954,
+          "rows_read": 12525513,
+          "rows_written": 446601,
+          "rpc": 93987,
+          "alarms": 47889,
+          "pending": 0,
+          "database_bytes": 36864000
+        },
+        "FILES": {
+          "objects": 32,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 203187,
+          "rows_read": 601312,
+          "rows_written": 145305,
+          "rpc": 51584,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 15265792
+        },
+        "DISCOVERY": {
+          "objects": 1,
+          "alarm_sets": 8,
+          "kv_gets": 8,
+          "kv_puts": 0,
+          "kv_deletes": 8,
+          "statements": 179073,
+          "rows_read": 477480,
+          "rows_written": 24,
+          "rpc": 59667,
+          "alarms": 8,
+          "pending": 0,
+          "database_bytes": 28672
+        },
+        "RATE_LIMIT": {
+          "objects": 1000,
+          "alarm_sets": 2000,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 189200,
+          "rows_read": 126800,
+          "rows_written": 124800,
+          "rpc": 62400,
+          "alarms": 2000,
+          "pending": 0,
+          "database_bytes": 16384000
+        }
+      },
+      "worker_cpu_ms": null,
+      "harness_cpu_ms": 25549.153,
+      "meets_local_gate": false
+    }
+  ]
+}

@@ -131,8 +131,8 @@ pub fn router_with<S: TrackState + 'static>(
 fn fail(code: &'static str, detail: Option<String>) -> (StatusCode, Json<ErrorBody>) {
   let status = match code {
     "malformed_ticket" | "bad_request" => StatusCode::BAD_REQUEST,
-    "bad_signature" | "key_not_issuer" | "expired" | "wrong_audience" | "bad_mac"
-    | "stale_timestamp" => StatusCode::UNAUTHORIZED,
+    "bad_signature" | "key_not_issuer" | "expired" | "lifetime_too_long" | "wrong_audience"
+    | "bad_mac" | "stale_timestamp" => StatusCode::UNAUTHORIZED,
     "unknown_session" => StatusCode::UNAUTHORIZED,
     "storage_unavailable" | "discovery_unavailable" | "no_available_punch" => {
       StatusCode::SERVICE_UNAVAILABLE
@@ -494,6 +494,10 @@ async fn query<S: TrackState>(
 
   Ok(Json(QueryResponse { peers, next_cursor }))
 }
+
+#[cfg(test)]
+#[path = "api_contract_tests.rs"]
+mod contract_tests;
 
 #[cfg(test)]
 mod tests {

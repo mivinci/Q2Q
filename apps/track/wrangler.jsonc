@@ -1,0 +1,67 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "q2q-track",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-26",
+  "workers_dev": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PEERS",
+        "class_name": "PeerState"
+      },
+      {
+        "name": "FILES",
+        "class_name": "FileIndex"
+      },
+      {
+        "name": "DISCOVERY",
+        "class_name": "DiscoveryState"
+      },
+      {
+        "name": "RATE_LIMIT",
+        "class_name": "RateLimiter"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "PeerState",
+        "FileIndex",
+        "DiscoveryState"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "RateLimiter"
+      ]
+    }
+  ],
+  "vars": {
+    "MAX_PEER_HOLDINGS": "4096",
+    "MAX_OUTBOX_EVENTS": "512",
+    "MAX_OUTBOX_BYTES": "524288",
+    "MAX_FILE_PEERS": "10000",
+    "MAX_ANNOUNCE_CHANGES": "128",
+    "DELIVERY_TIMEOUT_MS": "1000",
+    "REQUEST_TIMEOUT_MS": "5000",
+    "REGISTRY_ENVIRONMENT": "production"
+  },
+  "services": [
+    {
+      "binding": "REGISTRY",
+      "service": "q2q-registry",
+      "entrypoint": "PunchDiscovery"
+    }
+  ],
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "track.q2q.app",
+      "custom_domain": true
+    }
+  ]
+}

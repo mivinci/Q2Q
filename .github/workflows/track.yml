@@ -1,0 +1,111 @@
+name: Track
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: 'Optional comparison base; empty forces a full run'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Track protocol, RPC, SDK and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      run: ${{ steps.impact.outputs.run }}
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Test application impact rules
+        run: |
+          python3 .github/scripts/test-app-impact.py
+          python3 .github/scripts/test-wait-registry.py
+      - name: Determine application impact
+        id: impact
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
+        run: python3 .github/scripts/app-impact.py track
+      - uses: actions/setup-node@v4
+        if: steps.impact.outputs.run == 'true'
+        with:
+          node-version-file: '.node-version'
+          cache: npm
+      - run: npm ci --workspace @q2q/track --include-workspace-root=false
+        if: steps.impact.outputs.run == 'true'
+      - run: node apps/track/scripts/check-config.mjs
+        if: steps.impact.outputs.run == 'true'
+      - run: npm run check --workspace @q2q/track
+        if: steps.impact.outputs.run == 'true'
+      - run: npm test --workspace @q2q/track
+        if: steps.impact.outputs.run == 'true'
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.impact.outputs.run == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.impact.outputs.run == 'true'
+      - run: cargo fetch --locked --target x86_64-unknown-linux-gnu
+        if: steps.impact.outputs.run == 'true'
+      - run: cargo test --offline -p q2q-track --test contract --test selection
+        if: steps.impact.outputs.run == 'true'
+      - run: cargo test --offline -p q2q-track-server shared_http_contract
+        if: steps.impact.outputs.run == 'true'
+      - run: npm run test:sdk --workspace @q2q/track
+        if: steps.impact.outputs.run == 'true'
+      - run: npm run build --workspace @q2q/track
+        if: steps.impact.outputs.run == 'true'
+
+  deploy:
+    name: Deploy Track Worker
+    needs: check
+    if: >-
+      needs.check.outputs.run == 'true' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for Registry deployment on the same commit
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/wait-registry.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.node-version'
+          cache: npm
+      - run: npm ci --workspace @q2q/track --include-workspace-root=false
+      # This entire job is excluded from PRs; credentials stay in deployment steps.
+      - name: Verify deployment configuration
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [[ -z "$CLOUDFLARE_API_TOKEN" || -z "$CLOUDFLARE_ACCOUNT_ID" ]]; then
+            echo "::error::Missing Cloudflare deployment credentials. Provision Registry RPC and Worker TURN settings before deployment."
+            exit 1
+          fi
+      - name: Deploy Track Worker
+        working-directory: apps/track
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        # TURN_URL is managed in the Cloudflare dashboard; preserve it on updates.
+        # Worker secrets are retained automatically. No TURN secret is read from GitHub.
+        run: npx wrangler deploy --config wrangler.jsonc --keep-vars

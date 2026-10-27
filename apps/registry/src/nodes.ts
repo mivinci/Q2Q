@@ -1,19 +1,12 @@
 import type { Context } from 'hono';
 import { z } from 'zod';
-import { AuthError, ForbiddenError, nodeIdSchema, punchPublicKeySchema, punchUrlSchema } from './auth.ts';
+import { metricsSchema, discoveryNodeSchema, pageRequestSchema } from '@q2q/punch-discovery';
+export { metricsSchema } from '@q2q/punch-discovery';
+import { AuthError, ForbiddenError, nodeIdSchema } from './auth.ts';
 import type { RegistryEnv } from './auth.ts';
 
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const label = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/);
-export const metricsSchema = z.strictObject({
-  quic_connections: integer.nullable(),
-  quic_connection_capacity: integer.nullable(),
-  websocket_connections: integer.nullable(),
-  websocket_connection_capacity: integer.nullable(),
-  live_bindings: integer.nullable(),
-  signalling_sessions: integer.nullable(),
-  signalling_session_capacity: integer.nullable(),
-});
 const reportSchema = z.strictObject({
   version: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$/),
   region: label.nullable().optional().default(null),
@@ -35,11 +28,6 @@ const leaseSchema = z.object({ node_id: nodeIdSchema, last_seen: integer, expire
 const displayNode = z.object({
   node_id: nodeIdSchema, service_type: z.enum(['punch', 'track']), region: label.nullable(), online: z.boolean(),
   accepting_new_connections: z.boolean(), metrics: metricsSchema.nullable(), last_seen: integer, expires_at: integer,
-});
-const discoveryNode = z.object({
-  punch_id: nodeIdSchema, url: punchUrlSchema, public_key: punchPublicKeySchema, identity_version: integer.positive(),
-  region: label.nullable(), accepting_new_connections: z.boolean(), metrics: metricsSchema.nullable(),
-  last_seen: integer, expires_at: integer,
 });
 
 export class RegistryError extends Error {
@@ -204,13 +192,13 @@ function storedMetrics(row: z.infer<typeof rowSchema>) {
   } catch { unavailable(); }
 }
 
-async function rows(c: Context<RegistryEnv>, discovery: boolean, serverTime: number) {
-  const { limit, after } = pagination(c);
+async function rows(db: D1Database, parameters: {limit:number; after?:string}, discovery: boolean, serverTime: number) {
+  const { limit, after } = parameters;
   let result: D1Result<unknown>;
   try {
     const where = discovery ? "service_type = 'punch' AND expires_at > ? AND node_id > ?" : 'node_id > ?';
     const args = discovery ? [serverTime, after ?? '', limit + 1] : [after ?? '', limit + 1];
-    result = await c.env.DB.prepare(`SELECT * FROM nodes WHERE ${where} ORDER BY node_id COLLATE BINARY LIMIT ?`).bind(...args).all();
+    result = await db.prepare(`SELECT * FROM nodes WHERE ${where} ORDER BY node_id COLLATE BINARY LIMIT ?`).bind(...args).all();
     if (!result.success) unavailable();
   } catch { unavailable(); }
   const parsed = z.array(rowSchema).safeParse(result.results);
@@ -219,22 +207,28 @@ async function rows(c: Context<RegistryEnv>, discovery: boolean, serverTime: num
   return { page, next_cursor: parsed.data.length > limit ? page[page.length - 1].node_id : null };
 }
 
-export async function discover(c: Context<RegistryEnv>) {
+export async function discoverPage(db: D1Database, input: unknown) {
+  const request = pageRequestSchema.safeParse(input);
+  if (!request.success) invalid();
   const serverTime = Math.floor(Date.now() / 1000);
-  const { page, next_cursor } = await rows(c, true, serverTime);
-  const parsed = z.array(discoveryNode).safeParse(page.map(row => ({
+  const { page, next_cursor } = await rows(db, request.data, true, serverTime);
+  const parsed = z.array(discoveryNodeSchema).safeParse(page.map(row => ({
     punch_id: row.node_id, url: row.advertise_url, public_key: row.public_key,
     identity_version: row.identity_version, region: row.region,
     accepting_new_connections: Boolean(row.accepting_new_connections), metrics: storedMetrics(row),
     last_seen: row.last_seen, expires_at: row.expires_at,
   })));
   if (!parsed.success) unavailable();
-  return c.json({ server_time: serverTime, nodes: parsed.data, next_cursor });
+  return { server_time: serverTime, nodes: parsed.data, next_cursor };
+}
+
+export async function discover(c: Context<RegistryEnv>) {
+  return c.json(await discoverPage(c.env.DB, pagination(c)));
 }
 
 export async function display(c: Context<RegistryEnv>) {
   const serverTime = Math.floor(Date.now() / 1000);
-  const { page, next_cursor } = await rows(c, false, serverTime);
+  const { page, next_cursor } = await rows(c.env.DB, pagination(c), false, serverTime);
   // Explicitly build the display DTO. Never serialize a D1 row or JWT wholesale.
   const nodes = z.array(displayNode).parse(page.map(row => ({
     node_id: row.node_id, service_type: row.service_type, region: row.region,

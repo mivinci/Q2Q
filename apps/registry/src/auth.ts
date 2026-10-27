@@ -105,7 +105,7 @@ export function authorize(principal: Principal, scope: Permission, nodeId?: stri
 }
 
 export type RegistryEnv = {
-  Bindings: { REGISTRY_JWKS: string; DB: D1Database };
+  Bindings: { REGISTRY_JWKS: string; DB: D1Database; DISCOVERY_ENVIRONMENT?: string };
   Variables: { principal: Principal };
 };
 

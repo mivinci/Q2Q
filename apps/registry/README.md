@@ -156,3 +156,18 @@ Track 使用同一上报接口，正文包含程序版本、可选区域、接�
 正常超限时 Retry-After 为 1–6 秒，客户端至少等待指定时间后携带最新状态重试。D1 限流存储不可用时返回 503，不无条件放行。状态记录与限流记录分别保存，避免拒绝请求意外延长在线状态；第一版不自动清除已登记节点或其配额记录。
 
 已有本地或远程数据库需应用新增迁移后再使用此版本；本地用 `npm run db:migrate:local`，远程迁移由部署者按前述流程显式执行。没有为限流增加外部服务或新的 Worker 绑定。
+
+## Workers Track 的只读内部发现
+
+`src/worker.ts` 保留原有 Hono HTTP 默认入口，并导出具名 `PunchDiscovery` WorkerEntrypoint。
+它只提供 `getPunches({limit, after})`，复用 HTTP 发现的 D1 查询与字段投影；不提供上报、写节点或通用数据库方法。
+调用授权来自明确指向此入口的 Service Binding，不需要 JWT。公网 `/v1/*` 的 JWT 和权限要求继续保留，伪造内部 header 无效。
+
+RPC 返回 `version: 1`、`environment`、`server_time`、`expires_at`、`nodes` 和 `next_cursor`。
+每页最多 200 个节点，有效期不超过 60 秒及当前页最短节点租约；它仍是实时分页，不承诺跨页数据库快照。
+共享契约与 metrics schema 位于 `packages/punch-discovery`；内部请求无效、配置缺失或数据库失败只返回安全的发现不可用错误。
+
+Registry 的 `DISCOVERY_ENVIRONMENT` 与 Track 的 `REGISTRY_ENVIRONMENT` 必须相同，当前源配置为 `production`。
+先部署支持此具名入口的 Registry，再启用匹配环境的 Track binding；不会将托管 Track 注册为 Registry 节点。
+Registry 自身测试包含真实 workerd/D1 的无 JWT 只读调用、越权写拒绝、分页参数验证与公网认证隔离。
+Track 的发现刷新/退避与上线状态见 [Workers Track](../track/README.md)。已按授权手动部署新版 RPC，并经线上 SDK 控制面和 P2P 冒烟；这不代表云端容量或跨 NAT 验收完成。
