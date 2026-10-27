@@ -3,6 +3,7 @@ import { env } from 'cloudflare:workers';
 import { building } from '$app/env';
 import { svelteKitHandler } from 'better-auth/svelte-kit';
 import { error } from '@sveltejs/kit';
+import { authorizeAccountSession } from '@q2q/accounts';
 import { createAuth } from '#lib/server/auth.js';
 import { localeCookie, resolveLocale } from '#lib/i18n.js';
 
@@ -24,8 +25,10 @@ export const handle: Handle = async ({ event, resolve }) => {
   if (auth) {
     const session = await auth.api.getSession({ headers: event.request.headers });
     if (session) {
-      // Only expose the display identity; session tokens stay in the auth boundary.
-      event.locals.user = { id: session.user.id, name: session.user.name, image: session.user.image ?? null };
+      event.locals.user = await authorizeAccountSession(env.DB, session.session.id, session.user.id);
+      if (!event.locals.user && event.url.pathname.startsWith('/api/auth/') && event.url.pathname !== '/api/auth/sign-out') {
+        error(403, 'Account session unavailable');
+      }
     }
   } else if (event.url.pathname.startsWith('/api/auth/')) {
     error(503, 'Authentication is not configured');

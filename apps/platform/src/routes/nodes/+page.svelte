@@ -1,7 +1,7 @@
 <script lang="ts">
   import { messages } from '#lib/i18n.js';
-  import { Button } from '#lib/components/ui/button/index.js';
-  import ResponsiveMetadata from '#lib/components/responsive-metadata.svelte';
+  import { Button } from '@q2q/ui/button';
+  import ResponsiveMetadata from '@q2q/ui/responsive-metadata';
   import type { PageProps } from './$types';
   import type { NodeMetrics } from '#lib/server/registry-nodes.js';
 

@@ -17,7 +17,8 @@
     "hono": "^4.0.0",
     "jose": "^6.0.0",
     "zod": "^4.6.7",
-    "@q2q/punch-discovery": "*"
+    "@q2q/punch-discovery": "*",
+    "@q2q/punch-management": "*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

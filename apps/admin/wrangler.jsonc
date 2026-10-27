@@ -1,0 +1,42 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "q2q-admin",
+  "main": ".svelte-kit/cloudflare/_worker.js",
+  "compatibility_date": "2026-10-27",
+  "compatibility_flags": [
+    "nodejs_als"
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "admin.q2q.app",
+      "custom_domain": true
+    }
+  ],
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".svelte-kit/cloudflare"
+  },
+  "d1_databases": [
+    {
+      "binding": "PLATFORM_DB",
+      "database_name": "q2q-platform",
+      "database_id": "51440a97-9d98-4b3d-a2f9-77af80b5afe1"
+    }
+  ],
+  "services": [
+    {
+      "binding": "REGISTRY_ADMIN",
+      "service": "q2q-registry",
+      "entrypoint": "PunchManagement"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false
+    }
+  }
+}

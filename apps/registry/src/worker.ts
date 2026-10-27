@@ -1,3 +1,4 @@
+import * as management from './management.ts';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { environmentSchema } from '@q2q/punch-discovery';
 import { discoverPage } from './nodes.ts';
@@ -19,3 +20,14 @@ export class PunchDiscovery extends WorkerEntrypoint<RegistryEnv['Bindings']> {
 }
 
 export { default } from './index.ts';
+
+/** Only Admin's named Service Binding is configured for this authority. */
+export class PunchManagement extends WorkerEntrypoint<RegistryEnv['Bindings']> {
+  async listPunches(input:unknown){return this.#call(()=>management.listPunches(this.env.DB,input));}
+  async getPunch(input:unknown){return this.#call(()=>management.getPunch(this.env.DB,input));}
+  async setPolicy(input:unknown){return this.#call(()=>management.setPolicy(this.env.DB,input));}
+  async getOperation(input:unknown){return this.#call(()=>management.getOperation(this.env.DB,input));}
+  async #call<T>(operation:()=>Promise<T>):Promise<T>{
+    try{return await operation();}catch{throw new Error('management_unavailable');}
+  }
+}

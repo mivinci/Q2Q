@@ -4,8 +4,8 @@
   import { messages } from '#lib/i18n.js';
   import { uploadRequest } from '#lib/upload-client.js';
   import type { PublicationSummary } from '#lib/publication.js';
-  import { Button } from '#lib/components/ui/button/index.js';
-  import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
+  import { Button } from '@q2q/ui/button';
+  import ConfirmDialog from '@q2q/ui/confirm-dialog';
   import DownloadGrantPanel from './download-grant-panel.svelte';
   let { fileId, publications, ready, canManage }: { fileId: string; publications: PublicationSummary[]; ready: boolean; canManage: boolean } = $props();
   const text = $derived(messages[page.data.locale]);

@@ -22,7 +22,7 @@ type TestResponse = Omit<Response, 'json'> & { json(): Promise<TestJson> };
 function fixture(t: { after: (fn: () => void) => void }) {
   const sqlite = new DatabaseSync(':memory:');
   t.after(() => sqlite.close());
-  for (const name of ['0001_nodes.sql', '0002_report_limits.sql']) {
+  for (const name of ['0001_nodes.sql', '0002_report_limits.sql', '0003_punch_management.sql']) {
     sqlite.exec(readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8'));
   }
   let databaseTime = Math.floor(Date.now() / 1000);
@@ -209,4 +209,17 @@ test('report limiter storage errors fail closed without writing a node', async (
   });
   assert.equal(response.status,503);
   assert.deepEqual(await response.json(),{code:'registry_unavailable',detail:'Registry storage is unavailable'});
+});
+
+test('HTTP discovery respects management policy across heartbeat reports',async t=>{
+ const f=fixture(t);const punch=await token('punch','managed');const track=await token('track','reader');
+ assert.equal((await f.request('/v1/nodes/self',punch,'PUT',reportBody)).status,200);
+ f.sqlite.prepare("INSERT INTO punch_policy VALUES('managed',0,1,0)").run();
+ assert.equal((await (await f.request('/v1/discovery/punches',track)).json()).nodes[0].accepting_new_connections,false);
+ f.time+=6;
+ assert.equal((await f.request('/v1/nodes/self',punch,'PUT',reportBody)).status,200);
+ assert.equal(f.sqlite.prepare("SELECT enabled FROM punch_policy WHERE node_id='managed'").get()?.enabled,0);
+ assert.equal((await (await f.request('/v1/discovery/punches',track)).json()).nodes[0].accepting_new_connections,false);
+ f.sqlite.prepare("UPDATE punch_policy SET enabled=1,revision=2 WHERE node_id='managed'").run();
+ assert.equal((await (await f.request('/v1/discovery/punches',track)).json()).nodes.length,1);
 });

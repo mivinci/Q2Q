@@ -3,7 +3,7 @@
   import Sprout from '@lucide/svelte/icons/sprout';
   import { messages } from '#lib/i18n.js';
   import { formatBytes } from '#lib/upload.js';
-  import { Button } from '#lib/components/ui/button/index.js';
+  import { Button } from '@q2q/ui/button';
   import DownloadGrantPanel from '#lib/components/download-grant-panel.svelte';
   import type { PageProps } from './$types';
   let { data }: PageProps = $props();

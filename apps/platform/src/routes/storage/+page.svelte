@@ -4,10 +4,10 @@
   import HardDrive from '@lucide/svelte/icons/hard-drive';
   import Check from '@lucide/svelte/icons/check';
   import { messages } from '#lib/i18n.js';
-  import { Button } from '#lib/components/ui/button/index.js';
+  import { Button } from '@q2q/ui/button';
   import type { PageProps } from './$types';
   import StorageUsage from '#lib/components/storage-usage.svelte';
-  import ResponsiveMetadata from '#lib/components/responsive-metadata.svelte';
+  import ResponsiveMetadata from '@q2q/ui/responsive-metadata';
   let { data, form }: PageProps = $props();
   const text = $derived(messages[data.locale]);
   const enabledDate = $derived(data.storageConnection

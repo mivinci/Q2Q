@@ -1,10 +1,10 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import Brand from '#lib/components/brand.svelte';
+  import Brand from '@q2q/ui/brand';
   import { authClient } from '#lib/auth-client.js';
   import { messages } from '#lib/i18n.js';
-  import { Button } from '#lib/components/ui/button/index.js';
-  import ThemeToggle from '#lib/components/theme-toggle.svelte';
+  import { Button } from '@q2q/ui/button';
+  import ThemeToggle from '@q2q/ui/theme-toggle';
   import LanguageSelect from '#lib/components/language-select.svelte';
 
   const text = $derived(messages[page.data.locale]);
@@ -29,7 +29,7 @@
 
 <svelte:head><title>{text.signIn} · Q2Q</title></svelte:head>
 <div class="flex min-h-svh flex-col bg-background">
-  <header class="flex flex-wrap items-center justify-end gap-3 p-5"><div class="w-40"><LanguageSelect /></div><ThemeToggle /></header>
+  <header class="flex flex-wrap items-center justify-end gap-3 p-5"><div class="w-40"><LanguageSelect /></div><ThemeToggle labels={text} /></header>
   <main class="flex flex-1 items-center justify-center px-6 pb-24">
     <div class="w-full max-w-sm text-center">
       <Brand large class="mx-auto mb-6" />

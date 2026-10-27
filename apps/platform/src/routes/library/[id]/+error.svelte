@@ -1,7 +1,7 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { messages } from '#lib/i18n.js';
-  import { Button } from '#lib/components/ui/button/index.js';
+  import { Button } from '@q2q/ui/button';
   const text = $derived(messages[page.data.locale]);
 </script>
 

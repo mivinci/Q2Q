@@ -1,3 +1,4 @@
+import { effectivePlanIdSql } from '@q2q/plans';
 import type { ProjectRole } from '#lib/server/projects.js';
 
 export const pendingInviteCookie = 'q2q-pending-project-invite';
@@ -54,10 +55,10 @@ export async function createProjectInvitation(
     SELECT ?, ?, ?, ?, ?, ?
     WHERE EXISTS (SELECT 1 FROM project_member WHERE projectId = ? AND userId = ? AND role = 'owner')
       AND EXISTS (SELECT 1 FROM project WHERE id = ? AND personalUserId IS NULL)
-      AND EXISTS (SELECT 1 FROM project_subscription WHERE projectId = ? AND planId = 'team' AND status IN ('active', 'simulated'))
+      AND EXISTS (SELECT 1 FROM plan_catalog catalog WHERE catalog.id = ${effectivePlanIdSql('?', '?')} AND catalog.teamCollaboration = 1)
       AND (SELECT COUNT(*) FROM project_invitation WHERE projectId = ? AND acceptedAt IS NULL AND revokedAt IS NULL AND expiresAt > ?) < ?
     RETURNING id`).bind(id, projectId, tokenHash, ownerId, now, expiresAt,
-    projectId, ownerId, projectId, projectId, projectId, now, maxPendingInvitations).first<{ id: string }>();
+    projectId, ownerId, projectId, projectId, now, now, projectId, now, maxPendingInvitations).first<{ id: string }>();
   return row ? { id, token, expiresAt } : null;
 }
 
@@ -102,9 +103,9 @@ export async function acceptProjectInvitation(
   const results = await db.batch([
     db.prepare(`UPDATE project_invitation SET acceptedAt = ?, acceptedBy = ?
       WHERE tokenHash = ? AND acceptedAt IS NULL AND revokedAt IS NULL AND expiresAt > ?
-        AND EXISTS (SELECT 1 FROM project_subscription s WHERE s.projectId = project_invitation.projectId
-          AND s.planId = 'team' AND s.status IN ('active', 'simulated'))
-      RETURNING projectId`).bind(now, userId, tokenHash, now),
+        AND EXISTS (SELECT 1 FROM plan_catalog catalog
+          WHERE catalog.id = ${effectivePlanIdSql('project_invitation.projectId', '?')} AND catalog.teamCollaboration = 1)
+      RETURNING projectId`).bind(now, userId, tokenHash, now, now, now),
     db.prepare(`INSERT INTO project_member (projectId, userId, role, createdAt)
       SELECT projectId, ?, 'member', ? FROM project_invitation
       WHERE tokenHash = ? AND acceptedBy = ? AND acceptedAt = ?

@@ -21,7 +21,11 @@ class ImpactTests(unittest.TestCase):
     def decision(self, app, paths, npm_changed=False, cargo_changed=False):
         def npm(ref, name):
             workspaces = [f'apps/{name}']
-            if name in ('track', 'registry', 'platform'):
+            if name in ('admin', 'platform'):
+                workspaces += ['packages/ui','packages/plans','packages/accounts']
+            if name in ('admin','registry','track'):
+                workspaces.append('packages/punch-management')
+            if name in ('track', 'registry', 'platform', 'admin'):
                 workspaces.append('packages/punch-discovery')
             if name == 'track':
                 workspaces.append('apps/registry')  # Real RPC integration test dependency.
@@ -64,6 +68,12 @@ class ImpactTests(unittest.TestCase):
         self.assertTrue(self.decision('track', ['.github/scripts/test-wait-registry.py']))
         self.assertTrue(self.decision('track', ['.github/scripts/test-app-impact.py']))
 
+    def test_admin_inputs(self):
+        self.assertTrue(self.decision('admin',['packages/ui/src/button/button.svelte']))
+        self.assertTrue(self.decision('admin',['packages/punch-management/index.ts']))
+        self.assertTrue(self.decision('admin',['apps/platform/migrations/0020.sql']))
+        self.assertFalse(self.decision('platform',['apps/admin/src/routes/+page.svelte']))
+
     def test_lock_changes_compare_resolved_closures(self):
         self.assertFalse(self.decision('track', ['package-lock.json']))
         self.assertTrue(self.decision('track', ['package-lock.json'], npm_changed=True))
@@ -71,7 +81,7 @@ class ImpactTests(unittest.TestCase):
         self.assertTrue(self.decision('track', ['Cargo.lock'], cargo_changed=True))
 
     def test_existing_platform_and_seed_specific_inputs(self):
-        self.assertTrue(self.decision('platform', ['docs/public/logo-light.svg']))
+        self.assertTrue(self.decision('platform', ['packages/ui/src/assets/logo-light.svg']))
         self.assertTrue(self.decision('seed-processing', ['apps/platform/migrations/0001.sql']))
         self.assertFalse(self.decision('registry', ['docs/en/guide/track.md']))
 

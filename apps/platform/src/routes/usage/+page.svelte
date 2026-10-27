@@ -1,11 +1,11 @@
 <script lang="ts">
   import { messages } from '#lib/i18n.js';
-  import { Button } from '#lib/components/ui/button/index.js';
+  import { Button } from '@q2q/ui/button';
   import type { PageProps } from './$types';
   import type { PlanId } from '#lib/server/plans.js';
   import { formatBytes } from '#lib/upload.js';
   import StorageUsage from '#lib/components/storage-usage.svelte';
-  import ResponsiveMetadata from '#lib/components/responsive-metadata.svelte';
+  import ResponsiveMetadata from '@q2q/ui/responsive-metadata';
 
   let { data, form }: PageProps = $props();
   const text = $derived(messages[data.locale]);

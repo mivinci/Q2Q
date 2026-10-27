@@ -110,6 +110,8 @@ q2q publish ./video.mp4.q2q
 
 原文件已经移动或重命名时，通过 `--file` 指定它：
 
+如果提示 `source file not found`，错误中显示的是 CLI 实际查找的原文件路径。种子只包含元数据，不包含原文件内容；请确认原文件存在，或用 `--file` 指定它的实际位置。
+
 ```sh
 q2q publish ./share.q2q --file ./archive/renamed.mp4
 ```

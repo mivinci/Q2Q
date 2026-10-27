@@ -110,6 +110,8 @@ q2q publish ./video.mp4.q2q
 
 If it has moved or been renamed, select it with `--file`:
 
+If you see `source file not found`, the error shows the source path the CLI tried to use. A seed contains metadata, not the original file contents; make sure the source exists or use `--file` to select its actual location.
+
 ```sh
 q2q publish ./share.q2q --file ./archive/renamed.mp4
 ```

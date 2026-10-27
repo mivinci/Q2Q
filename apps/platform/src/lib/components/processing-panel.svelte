@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import Download from '@lucide/svelte/icons/download';
   import { messages } from '#lib/i18n.js';
-  import { Button } from '#lib/components/ui/button/index.js';
+  import { Button } from '@q2q/ui/button';
   import { uploadRequest } from '#lib/upload-client.js';
   import { formatBytes } from '#lib/upload.js';
   import type { ProcessingSummary } from '#lib/processing.js';

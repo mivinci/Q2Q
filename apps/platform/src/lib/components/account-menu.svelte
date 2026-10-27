@@ -8,8 +8,8 @@
   import { messages } from '#lib/i18n.js';
   import { authClient } from '#lib/auth-client.js';
   import type { PlanId } from '#lib/server/plans.js';
-  import * as Avatar from '#lib/components/ui/avatar/index.js';
-  import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
+  import * as Avatar from '@q2q/ui/avatar';
+  import * as DropdownMenu from '@q2q/ui/dropdown-menu';
 
   let { user, planId, compact = false, onNavigate }: { user: { name: string; image: string | null }; planId: PlanId; compact?: boolean; onNavigate?: () => void } = $props();
   const text = $derived(messages[page.data.locale]);

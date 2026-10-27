@@ -1,5 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { defineConfig } from 'vitepress';
 import { mermaidBlock } from './mermaid.js';
+
+const require = createRequire(import.meta.url);
+// Embed shared assets so config loading works in Node as well as Vite.
+const logoUrl = (name) => `data:image/svg+xml;base64,${readFileSync(require.resolve(`@q2q/ui/assets/${name}`)).toString('base64')}`;
 
 // English is the root locale; Simplified Chinese lives under /zh/. The design
 // document is still Chinese-only, so it sits in the Chinese locale and is not
@@ -120,8 +126,8 @@ export default defineConfig({
   themeConfig: {
     // 深浅两套：描边跟随主题，不用固定品牌色，免得某一边对比度不够
     logo: {
-      light: '/logo-light.svg',
-      dark: '/logo-dark.svg',
+      light: logoUrl('logo-light.svg'),
+      dark: logoUrl('logo-dark.svg'),
       alt: 'Q2Q',
     },
 

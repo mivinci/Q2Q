@@ -7,12 +7,12 @@
   import { messages } from '#lib/i18n.js';
   import { formatBytes } from '#lib/upload.js';
   import { uploadRequest } from '#lib/upload-client.js';
-  import { Button } from '#lib/components/ui/button/index.js';
+  import { Button } from '@q2q/ui/button';
   import UploadPanel from '#lib/components/upload-panel.svelte';
-  import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
+  import ConfirmDialog from '@q2q/ui/confirm-dialog';
   import ProcessingPanel from '#lib/components/processing-panel.svelte';
   import PublicationPanel from '#lib/components/publication-panel.svelte';
-  import ResponsiveMetadata from '#lib/components/responsive-metadata.svelte';
+  import ResponsiveMetadata from '@q2q/ui/responsive-metadata';
   import type { PageProps } from './$types';
   let { data }: PageProps = $props();
   const text = $derived(messages[page.data.locale]);

@@ -22,7 +22,7 @@ const { listProjectMembers, renameProject, removeProjectMember } =
 
 function fixture() {
   const sql = new DatabaseSync(':memory:');
-  for (const migration of ['0001_auth.sql', '0002_projects.sql', '0015_project_subscriptions.sql', '0016_project_invitations.sql']) {
+  for (const migration of ['0001_auth.sql', '0002_projects.sql', '0015_project_subscriptions.sql', '0016_project_invitations.sql', '0017_plan_catalog.sql']) {
     sql.exec(readFileSync(new URL(`../migrations/${migration}`, import.meta.url), 'utf8'));
   }
 
@@ -179,6 +179,19 @@ await check('owners can rename and remove members while non-owners cannot', asyn
   assert.deepEqual((await listProjectMembers(db, 'team-project')).map(({ userId, role }) => ({ userId, role })), [
     { userId: 'owner', role: 'owner' }
   ]);
+});
+
+
+await check('catalog collaboration edits and expired subscriptions block invite writes', async ({ sql, db }) => {
+    const invite = await createProjectInvitation(db, 'team-project', 'owner');
+    assert.ok(invite);
+    sql.exec("UPDATE plan_catalog SET teamCollaboration = 0 WHERE id = 'team'");
+    assert.equal(await createProjectInvitation(db, 'team-project', 'owner'), null);
+    assert.equal(await acceptProjectInvitation(db, await hashProjectInviteToken(invite.token), 'other'), null);
+    sql.exec("UPDATE plan_catalog SET teamCollaboration = 1 WHERE id = 'team'");
+    sql.exec("UPDATE project_subscription SET periodEndAt = 0 WHERE projectId = 'team-project'");
+    assert.equal(await createProjectInvitation(db, 'team-project', 'owner'), null);
+    assert.equal(await acceptProjectInvitation(db, await hashProjectInviteToken(invite.token), 'other'), null);
 });
 
 console.log(`\n${checks.length} project invitation checks passed.`);

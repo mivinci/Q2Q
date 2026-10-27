@@ -2,7 +2,7 @@ import { env } from 'cloudflare:workers';
 import { redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { listFiles } from '#lib/server/files.js';
-import { planCatalog } from '#lib/server/plans.js';
+import { planMetadata } from '#lib/server/plans.js';
 import { getPlatformStorage } from '#lib/server/storage.js';
 import { getStorageUsage } from '#lib/server/storage-quota.js';
 import { uploadTransport } from '#lib/server/upload-storage.js';
@@ -24,7 +24,7 @@ export const load: PageServerLoad = async ({ locals, parent }) => {
   return {
     currentProject,
     entitlements,
-    planNameKey: planCatalog[entitlements.planId].nameKey,
+    planNameKey: planMetadata[entitlements.planId].nameKey,
     fileCount: fileCount?.count ?? 0,
     recentFiles: files.slice(0, 5),
     storageUsage,

@@ -5,8 +5,8 @@
   import Check from '@lucide/svelte/icons/check';
   import Copy from '@lucide/svelte/icons/copy';
   import { uploadRequest } from '#lib/upload-client.js';
-  import { Button } from '#lib/components/ui/button/index.js';
-  import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
+  import { Button } from '@q2q/ui/button';
+  import ConfirmDialog from '@q2q/ui/confirm-dialog';
   let { publicationId, name, infoHash, networkMode, trackUrl }: {
     publicationId: string; name: string; infoHash: string; networkMode: 'platform' | 'custom' | 'unconfigured'; trackUrl: string | null;
   } = $props();

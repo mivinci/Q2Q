@@ -28,7 +28,7 @@ async function setup(binding: 'correct' | 'wrong' | 'missing' = 'correct', envir
   }}], host: '127.0.0.1', port: 0, log: new Log(LogLevel.ERROR), telemetry: {enabled: false}, unsafeInspectDurableObjects: true});
   const db = await mf.getD1Database('DB', 'discovery-registry').catch(async error => {await mf.dispose(); throw error;});
   try {
-    for (const migration of ['0001_nodes.sql', '0002_report_limits.sql']) {
+    for (const migration of ['0001_nodes.sql', '0002_report_limits.sql', '0003_punch_management.sql']) {
       const sql = (await readFile(new URL(`../../registry/migrations/${migration}`, import.meta.url), 'utf8')).replace(/^\s*--.*$/gm, '');
       for (const statement of sql.split(';').map(value => value.trim()).filter(Boolean)) await db.prepare(statement).run();
     }
@@ -99,11 +99,12 @@ test('failed/incomplete RPC refresh never publishes partial pages or extends old
   } finally {await mf.dispose();}
 });
 
-test('identity watermarks survive retirement and eviction; paused Punches remain discoverable', {timeout: 30000}, async () => {
+test('identity watermarks survive retirement and eviction; managed pauses remain known', {timeout: 30000}, async () => {
   const {mf, db, seed, snapshot, operation} = await setup();
   try {
     await seed(1); await snapshot();
-    await db.prepare("UPDATE nodes SET identity_version=2, advertise_url='quic://moved.invalid:443', accepting_new_connections=0 WHERE node_id='p0000'").run();
+    await db.prepare("UPDATE nodes SET identity_version=2, advertise_url='quic://moved.invalid:443' WHERE node_id='p0000'").run();
+    await db.prepare("INSERT INTO punch_policy VALUES('p0000',0,1,0)").run();
     await operation('refresh');
     const moved = await (await snapshot()).json() as Snapshot;
     assert.equal(moved.nodes[0]!.url, 'quic://moved.invalid:443');

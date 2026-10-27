@@ -1,3 +1,5 @@
+import { APIError } from 'better-auth/api';
+import { prepareAccountSession, AccountAccessError } from '@q2q/accounts';
 import { betterAuth } from 'better-auth';
 import { sveltekitCookies } from 'better-auth/svelte-kit';
 import { getRequestEvent } from '$app/server';
@@ -35,7 +37,18 @@ export function createAuth(env: Parameters<typeof authConfigured>[0]) {
         : {})
     },
     account: { encryptOAuthTokens: true, accountLinking: { enabled: false } },
-    session: { expiresIn: 60 * 60 * 24 * 7, updateAge: 60 * 60 * 24 },
+    session: {
+      expiresIn: 60 * 60 * 24 * 7, updateAge: 60 * 60 * 24,
+      cookieCache: { enabled: false },
+      additionalFields: { authVersion: { type: 'number', required: true, defaultValue: 1, input: false, returned: false } }
+    },
+    databaseHooks: { session: { create: { before: async session => {
+      try { return await prepareAccountSession(env.DB, session); }
+      catch (cause) {
+        if (cause instanceof AccountAccessError) throw new APIError('FORBIDDEN', { message: 'Account unavailable' });
+        throw cause;
+      }
+    } } } },
     rateLimit: { enabled: true, storage: 'database', window: 60, max: 60 },
     advanced: { ipAddress: { ipAddressHeaders: ['cf-connecting-ip'] } },
     telemetry: { enabled: false },
