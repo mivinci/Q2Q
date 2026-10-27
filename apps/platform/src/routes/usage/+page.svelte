@@ -83,11 +83,13 @@
             {/if}
           </ul>
           <div class="mt-5 border-t pt-4">
-            {#if data.simulationEnabled && data.currentProject.role === 'owner'}
+            {#if selected}
+              <Button type="button" variant="outline" class="w-full" disabled>{text.currentPlan}</Button>
+            {:else if data.simulationEnabled && data.currentProject.role === 'owner'}
               <form method="POST" action="?/simulate">
                 <input type="hidden" name="projectId" value={data.currentProject.id} />
                 <input type="hidden" name="planId" value={planId} />
-                <Button type="submit" variant={selected ? 'outline' : 'default'} class="w-full" disabled={selected}>{selected ? text.currentPlanBadge : text.simulatePlan}</Button>
+                <Button type="submit" class="w-full">{text.simulatePlan}</Button>
               </form>
             {:else if data.currentProject.role !== 'owner'}
               <p class="text-[13px] text-muted-foreground">{text.billingOwnerOnly}</p>
