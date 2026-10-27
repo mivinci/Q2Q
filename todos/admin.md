@@ -206,6 +206,8 @@ flowchart LR
 
 ## Access 配置最终调整：GitHub 注入
 
-- 用户确认改为 GitHub Repository variables `ADMIN_ACCESS_TEAM_DOMAIN` / `ADMIN_ACCESS_AUD`，Admin CI 在部署前检查非空和团队域名格式，使用 `--var` 注入对应 Worker 变量。
+- 用户确认改为 GitHub Repository variables `CLOUDFLARE_ACCESS_TEAM_DOMAIN` / `CLOUDFLARE_ACCESS_AUD`，Admin CI 在部署前检查非空和团队域名格式，使用 `--var` 注入对应 Worker 变量。
 - 仅移除 Admin 的 `--keep-vars`；服务端 JWT 验签、既有入口限制、其他 Worker 的变量管理方式保持现有实现。
 - 本节替代上一节的 Worker 控制台维护方式；部署说明已同步更新。
+
+- GitHub 变量名按用户要求统一为 `CLOUDFLARE_ACCESS_TEAM_DOMAIN` / `CLOUDFLARE_ACCESS_AUD`；Worker 内仍使用 `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD`。

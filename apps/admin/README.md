@@ -29,8 +29,8 @@ npm run admin:build
 
 | 类型 | 名称 | 用途 |
 | --- | --- | --- |
-| Variable | `ADMIN_ACCESS_TEAM_DOMAIN` | Access 团队域名，例如 `mivinci.cloudflareaccess.com`，不带 `https://` 或路径 |
-| Variable | `ADMIN_ACCESS_AUD` | 保护 `admin.q2q.app` 的 Access 应用 AUD |
+| Variable | `CLOUDFLARE_ACCESS_TEAM_DOMAIN` | Access 团队域名，例如 `mivinci.cloudflareaccess.com`，不带 `https://` 或路径 |
+| Variable | `CLOUDFLARE_ACCESS_AUD` | 保护 `admin.q2q.app` 的 Access 应用 AUD |
 | Variable | `CLOUDFLARE_ACCOUNT_ID` | 目标 Cloudflare 账户 |
 | Secret | `CLOUDFLARE_API_TOKEN` | 复用现有部署 token；需能发布 Worker、查询 D1 和配置目标自定义域名 |
 

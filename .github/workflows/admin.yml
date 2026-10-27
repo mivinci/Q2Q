@@ -57,19 +57,19 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACCESS_TEAM_DOMAIN: ${{ vars.ADMIN_ACCESS_TEAM_DOMAIN }}
-          ACCESS_AUD: ${{ vars.ADMIN_ACCESS_AUD }}
+          ACCESS_TEAM_DOMAIN: ${{ vars.CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
+          ACCESS_AUD: ${{ vars.CLOUDFLARE_ACCESS_AUD }}
         run: |
           if [[ -z "$CLOUDFLARE_API_TOKEN" || -z "$CLOUDFLARE_ACCOUNT_ID" || -z "$ACCESS_TEAM_DOMAIN" || -z "$ACCESS_AUD" ]]; then
-            echo "::error::Missing Cloudflare credentials or ADMIN_ACCESS_TEAM_DOMAIN / ADMIN_ACCESS_AUD repository variables."
+            echo "::error::Missing Cloudflare credentials or CLOUDFLARE_ACCESS_TEAM_DOMAIN / CLOUDFLARE_ACCESS_AUD repository variables."
             exit 1
           fi
           if [[ ! "$ACCESS_TEAM_DOMAIN" =~ ^[a-z0-9][a-z0-9-]*\.cloudflareaccess\.com$ ]]; then
-            echo "::error::ADMIN_ACCESS_TEAM_DOMAIN must be a team.cloudflareaccess.com hostname without a scheme or path."
+            echo "::error::CLOUDFLARE_ACCESS_TEAM_DOMAIN must be a team.cloudflareaccess.com hostname without a scheme or path."
             exit 1
           fi
           if [[ -z "${ACCESS_AUD//[[:space:]]/}" ]]; then
-            echo "::error::ADMIN_ACCESS_AUD must not be blank."
+            echo "::error::CLOUDFLARE_ACCESS_AUD must not be blank."
             exit 1
           fi
 
@@ -99,6 +99,6 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACCESS_TEAM_DOMAIN: ${{ vars.ADMIN_ACCESS_TEAM_DOMAIN }}
-          ACCESS_AUD: ${{ vars.ADMIN_ACCESS_AUD }}
+          ACCESS_TEAM_DOMAIN: ${{ vars.CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
+          ACCESS_AUD: ${{ vars.CLOUDFLARE_ACCESS_AUD }}
         run: npx wrangler deploy --config wrangler.jsonc --var "ACCESS_TEAM_DOMAIN:$ACCESS_TEAM_DOMAIN" --var "ACCESS_AUD:$ACCESS_AUD"
