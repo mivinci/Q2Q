@@ -203,3 +203,11 @@ flowchart LR
 - 团队域和 AUD 改在 Cloudflare Worker 配置 `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`，不要求 GitHub `ADMIN_ACCESS_*` 变量；Admin CI 使用 `--keep-vars` 保留运行时配置。
 - 首次部署后缺少变量时返回 503，维护者配置并发布 Worker 变量后再访问。数据库迁移和实际 Access 策略验收仍须先后完成。
 - 本地网关邮箱鉴权改动已撤回，未推送；验签代码与原验证测试保留。
+
+## Access 配置最终调整：GitHub 注入
+
+- 用户确认改为 GitHub Repository variables `CLOUDFLARE_ACCESS_TEAM_DOMAIN` / `CLOUDFLARE_ACCESS_AUD`，Admin CI 在部署前检查非空和团队域名格式，使用 `--var` 注入对应 Worker 变量。
+- 仅移除 Admin 的 `--keep-vars`；服务端 JWT 验签、既有入口限制、其他 Worker 的变量管理方式保持现有实现。
+- 本节替代上一节的 Worker 控制台维护方式；部署说明已同步更新。
+
+- GitHub 变量名按用户要求统一为 `CLOUDFLARE_ACCESS_TEAM_DOMAIN` / `CLOUDFLARE_ACCESS_AUD`；Worker 内仍使用 `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD`。
