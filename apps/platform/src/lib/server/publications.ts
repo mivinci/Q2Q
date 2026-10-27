@@ -3,6 +3,7 @@ import { error } from '@sveltejs/kit';
 import { requireFile } from './files.js';
 import type { PublicationSummary } from '../publication.js';
 import { platformTrack } from './network.js';
+import { effectivePlanIdSql } from '@q2q/plans';
 import type { PublicationProcessingMessage, PublicationCleanupMessage } from '@q2q/seed-processing-contract';
 
 // Never serialize provider object keys, storage identity or pending artifact references.
@@ -57,10 +58,12 @@ export async function createPublication(fileId: string, userId: string, input: R
     preparedSeedKey, preparedProofKey, seedDigest, seedSize, createdAt, updatedAt, networkMode, trackUrl)
     SELECT ?, f.projectId, f.id, u.id, ?, 'creating', f.name, f.size, s.infoHash,
       u.objectKey, u.objectVersion, u.objectEtag, u.transport, u.bucketIdentity,
-      s.seedKey, s.proofKey, s.seedDigest, s.seedSize, ?, ?, COALESCE(n.mode, 'platform'),
-      CASE WHEN n.mode = 'custom' THEN n.trackUrl ELSE ? END
+      s.seedKey, s.proofKey, s.seedDigest, s.seedSize, ?, ?,
+      CASE WHEN n.mode = 'custom' AND networkPlan.customTrack = 1 THEN 'custom' ELSE 'platform' END,
+      CASE WHEN n.mode = 'custom' AND networkPlan.customTrack = 1 THEN n.trackUrl ELSE ? END
     FROM file_record f JOIN seed_task s ON s.fileId = f.id JOIN upload_task u ON u.id = s.uploadId
     JOIN project_member m ON m.projectId = f.projectId AND m.userId = ?
+    JOIN plan_catalog networkPlan ON networkPlan.id = ${effectivePlanIdSql('f.projectId', String(now))}
     LEFT JOIN project_network n ON n.projectId = f.projectId
     WHERE f.id = ? AND f.status = 'uploaded' AND s.status = 'ready' AND u.status = 'uploaded'
       AND (f.createdBy = ? OR m.role = 'owner') AND u.objectEtag IS NOT NULL

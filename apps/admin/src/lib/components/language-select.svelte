@@ -32,14 +32,13 @@
  <input bind:this={input} type="hidden" name="locale" value={page.data.locale} />
 </form>
 <Dropdown.Sub>
- <Dropdown.SubTrigger class="min-h-10 gap-3 px-2.5"><Languages class="size-4" aria-hidden="true" />{text.language}</Dropdown.SubTrigger>
- <Dropdown.SubContent sideOffset={8} class="min-w-44 p-1.5" aria-busy={pending}>
-  <Dropdown.Label class="px-2.5 py-1.5 text-xs text-muted-foreground">{text.language}</Dropdown.Label>
-  <Dropdown.RadioGroup value={page.data.locale}>
+ <Dropdown.SubTrigger class="min-h-9 gap-2 px-2.5 [&>svg:last-child]:size-3.5 [&>svg:last-child]:text-muted-foreground"><Languages class="size-4" aria-hidden="true" />{text.language}</Dropdown.SubTrigger>
+ <Dropdown.SubContent sideOffset={6} class="min-w-40 p-1" aria-busy={pending}>
+  <Dropdown.RadioGroup value={page.data.locale} aria-label={text.language}>
    {#each [{value:'zh-CN',label:'简体中文'},{value:'en',label:'English'}] as locale}
-    <Dropdown.RadioItem value={locale.value} lang={locale.value} disabled={pending} onSelect={()=>changeLocale(locale.value)} class="min-h-10 pl-2.5">{locale.label}</Dropdown.RadioItem>
+    <Dropdown.RadioItem value={locale.value} lang={locale.value} disabled={pending} onSelect={()=>changeLocale(locale.value)} class="min-h-9 pl-2.5 pr-8">{locale.label}</Dropdown.RadioItem>
    {/each}
   </Dropdown.RadioGroup>
-  {#if failed}<p role="alert" class="px-2.5 py-2 text-sm text-destructive">{text.unavailable}</p>{/if}
+  {#if failed}<p role="alert" class="px-2.5 py-2 text-[13px] text-destructive">{text.unavailable}</p>{/if}
  </Dropdown.SubContent>
 </Dropdown.Sub>

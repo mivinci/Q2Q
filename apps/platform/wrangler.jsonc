@@ -16,6 +16,9 @@
     "AUTH_ORIGIN": "https://platform.q2q.app",
     "PLATFORM_TRACK_URL": "https://track.q2q.app",
     "REGISTRY_URL": "https://registry.q2q.app",
+    "CREEM_MODE": "test",
+    "CREEM_CREATOR_PRODUCT_ID": "prod_2sTBd5CNWMpt3AdbUqNX9u",
+    "CREEM_TEAM_PRODUCT_ID": "prod_12AAvzjq4OnPnVyxPjXsh1",
     "S3_ENDPOINT": "https://8f1f7af05a63e463c0cda7659ee830ab.r2.cloudflarestorage.com",
     "S3_REGION": "auto",
     "S3_BUCKET": "q2q-platform-storage"

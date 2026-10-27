@@ -96,3 +96,12 @@ initializing/uploading/completing 占用预留额度，uploaded 转为已用；f
 ## Admin 基础改造进度
 
 migration `0017_plan_catalog.sql` 初始化现有套餐定义并保留旧订阅。服务端读取和上传/团队邀请条件写统一判断订阅状态与时间区间；到期后使用数据库中的 Free 定义。上传预留继续在 SQL 中原子校验功能、单文件上限和剩余空间，避免套餐修改与并发上传绕过配额。后台套餐编辑、人工调套餐、审计与幂等通过 migration `0018_admin_operations.sql` 及 Admin 同库事务接入，见 [Admin 实施记录](admin.md)。远端迁移和上线尚未执行。
+
+## 套餐定义的维护方式（2026-10-28）
+
+`plan_catalog` 是运行期配置，由 Admin 套餐页编辑并记录 revision、操作人和原因；迁移只创建表并提供初始种子，不再用数据迁移修正已有定义。`0017_plan_catalog.sql` 的种子允许 Free 使用自定义分发网络，因此“Free 不提供自定义网络”需要在新环境、本地库和线上各配置一次：
+
+- Admin 套餐页关闭 Free 的「自定义分发网络」并填写原因；Admin 尚不可用时执行等价 SQL：
+  `UPDATE plan_catalog SET customTrack = 0 WHERE id = 'free';`（`plan_catalog_revision` 触发器会增加 revision）。
+- 在该步骤完成前，服务端的网络保存、读取和发布快照会按数据库中的 `customTrack=1` 允许 Free 使用自定义网络。
+- 测试不依赖迁移种子：`platform:check:storage` 与 Admin 的套餐查询测试显式设置所需目录状态。

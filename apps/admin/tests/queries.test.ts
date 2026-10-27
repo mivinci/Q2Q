@@ -50,7 +50,7 @@ test('reject invalid pages and missing records',async()=>{
  }finally{sql.close();}
 });
 
-test('catalog migration preserves existing subscriptions and seeds the current limits', async () => {
+test('catalog migration preserves existing subscriptions and reads the configured plan features', async () => {
  const {sql,db}=fixture(sql=>sql.exec(`
   INSERT INTO user (id,name,email,createdAt,updatedAt) VALUES ('legacy-user','Legacy','legacy@example.test',0,0);
   INSERT INTO project (id,name,createdAt) VALUES ('legacy','Legacy',0);
@@ -60,10 +60,15 @@ test('catalog migration preserves existing subscriptions and seeds the current l
  try {
   const subscription=sql.prepare("SELECT planId,status,provider,periodStartAt,periodEndAt,updatedAt FROM project_subscription WHERE projectId='legacy'").get();
   assert.deepEqual({...subscription},{planId:'creator',status:'simulated',provider:'local',periodStartAt:0,periodEndAt:null,updatedAt:2});
+  // 套餐定义由 Admin 维护；显式设置 Free 的预期配置，不依赖迁移种子。
+  sql.exec("UPDATE plan_catalog SET customTrack=0 WHERE id='free'");
   const catalog=await plans(db);
   assert.deepEqual(catalog.map(plan=>[plan.id,plan.maxFileSizeBytes,plan.storageBytes]),[
    ['free',2*1024**2,100*1024**2],['creator',8*1024**3,100*1024**3],['team',8*1024**3,1024**4]
   ]);
+  assert.equal(catalog.find(plan=>plan.id==='free')?.features.includes('customTrack'),false);
+  assert.equal(catalog.find(plan=>plan.id==='creator')?.features.includes('customTrack'),true);
+  assert.equal(catalog.find(plan=>plan.id==='team')?.features.includes('customTrack'),true);
   assert.equal((await details(db,'projects','legacy',new URL('https://admin.test/projects/legacy'))).record.effectivePlan,'creator');
  } finally {sql.close();}
 });

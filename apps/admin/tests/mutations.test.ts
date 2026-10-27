@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { database as fixture } from './database.ts';
+import { database } from './database.ts';
 import { updatePlan, setSubscription, MutationError } from '../src/lib/server/mutations.ts';
 import { listAudit, getAudit } from '../src/lib/server/audit.ts';
 
 const actor = { id: 'https://test.cloudflareaccess.com#operator', email: 'operator@example.test' };
+
+function fixture() {
+  const result = database();
+  // Exercise editor concurrency from a known revision, independent of seed updates.
+  result.sql.exec('UPDATE plan_catalog SET revision=1 WHERE revision<>1');
+  return result;
+}
 
 function plan(values: Record<string,string> = {}) {
   const form = new FormData();

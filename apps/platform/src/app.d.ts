@@ -26,6 +26,11 @@ declare global {
       GOOGLE_CLIENT_ID?: string;
       GOOGLE_CLIENT_SECRET?: string;
       BILLING_SIMULATION?: string;
+      CREEM_MODE?: string;
+      CREEM_API_KEY?: string;
+      CREEM_WEBHOOK_SECRET?: string;
+      CREEM_CREATOR_PRODUCT_ID?: string;
+      CREEM_TEAM_PRODUCT_ID?: string;
     }
   }
 
