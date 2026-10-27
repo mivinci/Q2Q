@@ -144,3 +144,11 @@ npx wrangler d1 execute q2q-platform --remote --command "DELETE FROM project_sub
 ```
 
 `d1_migrations` 已将 `0021_billing.sql` 记为已应用，因此重建使用 `--file` 直接执行，不新增迁移文件。
+
+### Webhook 并发与权限窗口修复（2026-10-28，仅本地）
+
+- 修复复现的两处问题：不同事件 ID 的结账重投与取消事件使用不同锁，旧 active 快照可能覆盖新取消状态；首次付款校验 owner 后等待 Creem API，账号禁用/owner 移除仍可能在落库前发生。
+- 所有关联事件统一争用 `billing_checkout` 上的现有 reconciliation token；订阅事件通过保存的 checkoutId 找到同一锁。锁冲突返回 503，留待 Creem 重试并重新获取权威状态。
+- 对 billing_subscription、billing_checkout、project_subscription 和事件 processedAt 的所有状态写入都使用相同的 token/lease 条件。过期请求被新 token 取代后无法写入或清除后继请求的锁。初次付款/结账重投还在同一 D1 批次内重新检查 owner 成员关系及账号启用状态；现有订阅的取消/到期回调仍能在原 payer 权限变化后处理。
+- 新增 5 个确定性交错回归：API 返回前禁用账号、移除 owner、结账重投与取消争锁，以及两种事件的租约超时/后继写入。修复前现有 8 项通过、新增 5 项失败；修复后 13 项全部通过，拒绝的事件可在授权恢复或重新获取权威状态后重试成功。
+- 本地 Platform 类型检查 0 错误、0 警告，生产构建通过。只改代码和测试，无新增迁移、无线上数据库修改或部署。

@@ -164,6 +164,88 @@ test('revoked owner cannot complete checkout or apply a paid event', async t => 
   assert.equal(sql.prepare('SELECT processedAt FROM billing_webhook_event').get()?.processedAt ?? null,null);
 });
 
+function checkoutCompleted(provider, id='evt_initial') {
+  return {id,eventType:'checkout.completed',object:{id:'ch_123',mode:'test',product:'prod_creator',
+    metadata:{q2q_checkout_id:provider.checkout.request_id},order:{status:'paid'},subscription:'sub_123'}};
+}
+
+// Capture the provider response before yielding so a later event can observe a
+// newer state while this request still holds its old snapshot.
+function holdSubscriptionLookup(provider) {
+  const arrived=Promise.withResolvers(),released=Promise.withResolvers();
+  let held=false;
+  return {arrived:arrived.promise,release:released.resolve,async fetch(...args) {
+    const response=await provider.fetch(...args);
+    if (!held && String(args[0]).includes('/v1/subscriptions?')) {
+      held=true;arrived.resolve();await released.promise;
+    }
+    return response;
+  }};
+}
+
+for (const revoke of ['disable','remove']) test(`owner ${revoke} during provider lookup prevents all payment writes`, async t => {
+  const {sql,env}=fixture(),provider=mockProvider(),original=globalThis.fetch;
+  globalThis.fetch=provider.fetch;t.after(()=>{globalThis.fetch=original;sql.close();});
+  await createCheckout(env,'p','owner','creator','https://platform.example');
+  globalThis.fetch=async(...args)=>{
+    const response=await provider.fetch(...args);
+    sql.exec(revoke==='disable' ? "UPDATE user SET disabledAt=1 WHERE id='owner'" : "DELETE FROM project_member WHERE userId='owner' AND projectId='p'");
+    return response;
+  };
+  assert.equal((await handleCreemWebhook(env,await signed(env,checkoutCompleted(provider)))).status,503);
+  assert.equal(sql.prepare('SELECT count(*) n FROM billing_subscription').get().n,0);
+  assert.equal(sql.prepare('SELECT count(*) n FROM project_subscription').get().n,0);
+  const checkout=sql.prepare('SELECT status,reconcileToken FROM billing_checkout').get();
+  assert.equal(checkout.status,'open');assert.equal(checkout.reconcileToken,null);
+  assert.equal(sql.prepare('SELECT processedAt FROM billing_webhook_event').get().processedAt,null);
+  // A rejected attempt must remain retryable once authorization is restored.
+  sql.exec(revoke==='disable' ? "UPDATE user SET disabledAt=NULL WHERE id='owner'" : "INSERT INTO project_member VALUES('p','owner','owner')");
+  globalThis.fetch=provider.fetch;
+  assert.equal((await handleCreemWebhook(env,await signed(env,checkoutCompleted(provider)))).status,200);
+});
+
+test('checkout resend and cancellation share one reconciliation lock', async t => {
+  const {sql,env}=fixture(),provider=mockProvider(),original=globalThis.fetch;
+  globalThis.fetch=provider.fetch;t.after(()=>{globalThis.fetch=original;sql.close();});
+  await createCheckout(env,'p','owner','creator','https://platform.example');
+  assert.equal((await handleCreemWebhook(env,await signed(env,checkoutCompleted(provider)))).status,200);
+  const held=holdSubscriptionLookup(provider);t.after(held.release);globalThis.fetch=held.fetch;
+  const replay=handleCreemWebhook(env,await signed(env,checkoutCompleted(provider,'evt_resend')));
+  await held.arrived;provider.status='canceled';
+  const cancellation={id:'evt_cancel',eventType:'subscription.canceled',object:{id:'sub_123'}};
+  const overlap=await handleCreemWebhook(env,await signed(env,cancellation));
+  held.release();assert.equal((await replay).status,200);
+  assert.equal(overlap.status,503);
+  assert.equal(sql.prepare("SELECT count(*) n FROM billing_webhook_event WHERE id='evt_cancel'").get().n,0);
+  assert.equal((await handleCreemWebhook(env,await signed(env,cancellation))).status,200);
+  assert.equal(sql.prepare('SELECT status FROM project_subscription').get().status,'cancelled');
+  assert.equal(sql.prepare('SELECT providerStatus FROM billing_subscription').get().providerStatus,'canceled');
+});
+
+for (const type of ['checkout.completed','subscription.update']) test(`expired ${type} lock cannot overwrite its successor`, async t => {
+  const {sql,env}=fixture(),provider=mockProvider(),original=globalThis.fetch,originalNow=Date.now;
+  globalThis.fetch=provider.fetch;t.after(()=>{globalThis.fetch=original;Date.now=originalNow;sql.close();});
+  await createCheckout(env,'p','owner','creator','https://platform.example');
+  assert.equal((await handleCreemWebhook(env,await signed(env,checkoutCompleted(provider)))).status,200);
+  const held=holdSubscriptionLookup(provider);t.after(held.release);globalThis.fetch=held.fetch;
+  const staleEvent=type==='checkout.completed' ? checkoutCompleted(provider,'evt_stale') : {id:'evt_stale',eventType:type,object:{id:'sub_123'}};
+  const stale=handleCreemWebhook(env,await signed(env,staleEvent));
+  await held.arrived;
+  const later=originalNow()+31000;Date.now=()=>later;provider.status='canceled';
+  const cancellation={id:'evt_newer_cancel',eventType:'subscription.canceled',object:{id:'sub_123'}};
+  const fresh=await handleCreemWebhook(env,await signed(env,cancellation));
+  held.release();const staleResult=await stale;
+  assert.equal(fresh.status,200);assert.equal(staleResult.status,503);
+  assert.equal(sql.prepare('SELECT status FROM project_subscription').get().status,'cancelled');
+  assert.equal(sql.prepare('SELECT providerStatus FROM billing_subscription').get().providerStatus,'canceled');
+  assert.equal(sql.prepare("SELECT processedAt FROM billing_webhook_event WHERE id='evt_stale'").get().processedAt,null);
+  assert.equal(sql.prepare('SELECT reconcileToken FROM billing_checkout').get().reconcileToken,null);
+  // Retrying must fetch the current provider state rather than acknowledge the
+  // discarded stale snapshot as successfully processed.
+  assert.equal((await handleCreemWebhook(env,await signed(env,staleEvent))).status,200);
+  assert.equal(sql.prepare('SELECT status FROM project_subscription').get().status,'cancelled');
+});
+
 function repurchaseProvider() {
   const subscriptions=new Map(); let checkouts=0;
   return {
