@@ -196,3 +196,10 @@ flowchart LR
 - 部署步骤统一在 [Admin README](../apps/admin/README.md)：Access 白名单与 audience、GitHub 配置、绑定核对、备份和兼容迁移、发布顺序、失败恢复及部署后验收。无独立 Admin D1，无管理 JWT。
 - 部署前先完成数据库迁移；新 Platform 发布成功前不开放后台写操作，以免旧平台尚未执行账号访问控制。CI 不自动应用迁移。
 - 本轮进行代码 review 和 Svelte 静态检查，未新增或重跑测试套件，未执行远端迁移、Access 修改或部署；浏览器截图、线上身份及业务验收仍待维护者在可用环境完成。因此阶段 7 不标记为全部完成。
+
+## Access 配置归属调整
+
+- 用户最终确认保留服务端 JWT 验签；邮箱仅来自验证后的 JWT，审计继续使用 issuer + subject。
+- 团队域和 AUD 改在 Cloudflare Worker 配置 `ACCESS_TEAM_DOMAIN`、`ACCESS_AUD`，不要求 GitHub `ADMIN_ACCESS_*` 变量；Admin CI 使用 `--keep-vars` 保留运行时配置。
+- 首次部署后缺少变量时返回 503，维护者配置并发布 Worker 变量后再访问。数据库迁移和实际 Access 策略验收仍须先后完成。
+- 本地网关邮箱鉴权改动已撤回，未推送；验签代码与原验证测试保留。

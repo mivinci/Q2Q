@@ -57,11 +57,9 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACCESS_TEAM_DOMAIN: ${{ vars.ADMIN_ACCESS_TEAM_DOMAIN }}
-          ACCESS_AUD: ${{ vars.ADMIN_ACCESS_AUD }}
         run: |
-          if [[ -z "$CLOUDFLARE_API_TOKEN" || -z "$CLOUDFLARE_ACCOUNT_ID" || -z "$ACCESS_TEAM_DOMAIN" || -z "$ACCESS_AUD" ]]; then
-            echo "::error::Missing Cloudflare credentials or Admin Access configuration."
+          if [[ -z "$CLOUDFLARE_API_TOKEN" || -z "$CLOUDFLARE_ACCOUNT_ID" ]]; then
+            echo "::error::Missing Cloudflare deployment credentials."
             exit 1
           fi
 
@@ -74,8 +72,6 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACCESS_TEAM_DOMAIN: ${{ vars.ADMIN_ACCESS_TEAM_DOMAIN }}
-          ACCESS_AUD: ${{ vars.ADMIN_ACCESS_AUD }}
         run: npx wrangler d1 execute PLATFORM_DB --remote --command "SELECT id, maxFileSizeBytes, storageBytes, revision FROM plan_catalog ORDER BY id; SELECT requestId FROM admin_operation LIMIT 0; SELECT revision FROM project_subscription LIMIT 0; SELECT disabledAt, accessRevision, authVersion FROM user LIMIT 0; SELECT authVersion FROM session LIMIT 0; SELECT requestId FROM registry_request LIMIT 0;"
 
       - name: Wait for Registry deployment on the same commit
@@ -93,6 +89,3 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACCESS_TEAM_DOMAIN: ${{ vars.ADMIN_ACCESS_TEAM_DOMAIN }}
-          ACCESS_AUD: ${{ vars.ADMIN_ACCESS_AUD }}
-        run: npx wrangler deploy --config wrangler.jsonc --var "ACCESS_TEAM_DOMAIN:$ACCESS_TEAM_DOMAIN" --var "ACCESS_AUD:$ACCESS_AUD"

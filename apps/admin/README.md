@@ -25,12 +25,17 @@ npm run admin:build
 
 在 Cloudflare Zero Trust → Access → Applications 创建 Self-hosted 应用，域名设为 `admin.q2q.app`，保护整个域名，不留未保护路径。Allow 策略只包含明确的管理员身份，不配置公开 Bypass 或 Service Auth 策略。首版所有管理员具有相同权限。
 
-记录团队域名（例如 `<team>.cloudflareaccess.com`，不带协议或路径）和此应用的 Application Audience (AUD)。在 GitHub 仓库 Settings → Secrets and variables → Actions 配置：
+记录团队域名（例如 `<team>.cloudflareaccess.com`，不带协议或路径）和此应用的 Application Audience (AUD)。在 Cloudflare 的 `q2q-admin` Worker → Settings → Variables and Secrets 配置两个普通文本变量：
+
+- `ACCESS_TEAM_DOMAIN`：完整团队域名，不带 `https://` 或路径。
+- `ACCESS_AUD`：保护 `admin.q2q.app` 的 Access 应用 AUD。
+
+应用保留服务端 JWT 验签；CI 使用 `--keep-vars` 保留这两个生产变量，不需要 GitHub 的 `ADMIN_ACCESS_*` 变量。首次部署尚无变量时返回 503，配置并发布变量后才可正常访问。
+
+GitHub 仓库 Settings → Secrets and variables → Actions 复用以下配置：
 
 | 类型 | 名称 | 用途 |
 | --- | --- | --- |
-| Variable | `ADMIN_ACCESS_TEAM_DOMAIN` | Access 团队域名 |
-| Variable | `ADMIN_ACCESS_AUD` | Admin 应用 audience |
 | Variable | `CLOUDFLARE_ACCOUNT_ID` | 目标 Cloudflare 账户 |
 | Secret | `CLOUDFLARE_API_TOKEN` | 复用现有部署 token；需能发布 Worker、查询 D1 和配置目标自定义域名 |
 
@@ -59,7 +64,7 @@ npm exec --workspace @q2q/registry -- wrangler d1 migrations apply DB --remote
 
 准备完成后合并 PR。Registry CI 检查和部署成功后，Admin CI 才部署对应 main 提交；Platform CI 独立发布并检查所需平台表。检查三个工作流的实际结果，不能只依据合并状态判断已上线。
 
-手动重跑使用 main 上的 workflow_dispatch：先确认 Registry 的目标版本已成功发布，再运行 Admin 工作流。手动触发不自动等待同提交 Registry。Access 配置缺失或迁移未完成会阻止 Admin 部署。
+手动重跑使用 main 上的 workflow_dispatch：先确认 Registry 的目标版本已成功发布，再运行 Admin 工作流。手动触发不自动等待同提交 Registry。迁移未完成会阻止部署；Worker 缺少 Access 变量时应用拒绝访问，CI 不检查这两个运行时变量。
 
 若发布失败，保留已应用的兼容迁移，修复配置或代码后重跑对应工作流。不要通过删除审计表或回退数据库结构恢复服务；账号禁用依赖新 Platform 版本执行，因此在新 Platform 发布成功前不开放后台写操作。需要回退 Platform 时，同样先暂停后台写操作，核对账号访问控制行为。
 
