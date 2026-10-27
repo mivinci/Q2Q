@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { enhance } from '$app/forms';
   import MutationNotice from '#lib/components/mutation-notice.svelte';
   import { page } from '$app/state';
   import { messages } from '#lib/messages.js';
@@ -33,19 +34,19 @@
   }
 </script>
 <svelte:head><title>{text.auditDetails} · Q2Q Admin</title></svelte:head>
-<div class="mx-auto w-full max-w-5xl px-4 pt-6 pb-8 sm:px-7">
+<div class="mx-auto w-full max-w-5xl px-4 pt-5 pb-7 sm:px-7">
   <h1 class="text-2xl font-medium tracking-tight">{text.auditDetails}</h1>
   {#if data.record.status!=='applied'}<p role="status" class="mt-5 rounded-xl border bg-card p-4 text-sm">{data.record.status==='pending'?text.registryPending:text.registryRejected}</p>{/if}
   {#if data.record.status!=='applied'||form?.saved}<MutationNotice {form} />{/if}
-  {#if data.canRetry}<form method="POST" action="?/retry" class="mt-4"><input type="hidden" name="requestId" value={data.record.requestId} /><Button type="submit" variant="outline">{text.retryOriginal}</Button></form>{/if}
-  <section class="mt-6 rounded-xl border bg-card p-5"><ResponsiveMetadata {items} wrapperClass="sm:grid-cols-2 sm:gap-6" /></section>
-  <section class="mt-5 rounded-xl border bg-card p-5"><h2 class="text-sm font-medium">{text.reason}</h2><p class="mt-2 whitespace-pre-wrap break-words text-sm text-muted-foreground">{data.record.reason}</p></section>
+  {#if data.canRetry}<form method="POST" action="?/retry" use:enhance class="mt-4"><input type="hidden" name="requestId" value={data.record.requestId} /><Button type="submit" variant="outline">{text.retryOriginal}</Button></form>{/if}
+  <section class="mt-6 rounded-xl border bg-card p-4"><ResponsiveMetadata {items} dense wrapperClass="md:grid-cols-2 md:gap-x-6" /></section>
+  <section class="mt-5 rounded-xl border bg-card p-4"><h2 class="text-sm font-medium">{text.reason}</h2><p class="mt-2 whitespace-pre-wrap break-words text-sm text-muted-foreground">{data.record.reason}</p></section>
   {#if data.record.status==='applied'}
   <div class="mt-5 overflow-x-auto rounded-xl border bg-card"><table class="w-full text-left text-sm">
-    <thead class="border-b bg-muted/40"><tr><th scope="col" class="px-4 py-3 font-medium">{text.name}</th><th scope="col" class="px-4 py-3 font-medium">{text.before}</th><th scope="col" class="px-4 py-3 font-medium">{text.after}</th></tr></thead>
-    <tbody>{#each keys as key}<tr class="border-b last:border-0"><th scope="row" class="px-4 py-3 font-medium">{key==='enabled'?text.policyStatus:label(key, page.data.locale)}</th><td class="px-4 py-3">{display(before?.[key], key)}</td><td class="px-4 py-3">{display(after[key], key)}</td></tr>{/each}</tbody>
+    <thead class="border-b bg-muted/40"><tr><th scope="col" class="px-4 py-2.5 font-medium">{text.name}</th><th scope="col" class="px-4 py-2.5 font-medium">{text.before}</th><th scope="col" class="px-4 py-2.5 font-medium">{text.after}</th></tr></thead>
+    <tbody>{#each keys as key}<tr class="border-b last:border-0"><th scope="row" class="px-4 py-2.5 font-medium">{key==='enabled'?text.policyStatus:label(key, page.data.locale)}</th><td class="max-w-72 px-4 py-2.5 [overflow-wrap:anywhere]">{display(before?.[key], key)}</td><td class="max-w-72 px-4 py-2.5 [overflow-wrap:anywhere]">{display(after[key], key)}</td></tr>{/each}</tbody>
   </table></div>
-  {#if after.planSnapshot}<details class="mt-5 rounded-xl border bg-card p-5"><summary class="cursor-pointer text-sm font-medium">{text.planSnapshot}</summary><pre class="mt-3 overflow-x-auto text-xs">{JSON.stringify(after.planSnapshot, null, 2)}</pre></details>{/if}
+  {#if after.planSnapshot}<details class="mt-5 rounded-xl border bg-card p-4"><summary class="cursor-pointer text-sm font-medium">{text.planSnapshot}</summary><pre class="mt-3 overflow-x-auto text-xs">{JSON.stringify(after.planSnapshot, null, 2)}</pre></details>{/if}
   {/if}
   <div class="mt-5"><Button variant="outline" href={`/${data.record.action === 'punch.policy' ? 'nodes' : data.record.action.startsWith('user.') ? 'users' : data.record.action === 'plan.update' ? 'plans' : 'projects'}/${encodeURIComponent(data.record.targetId)}`}>{text.details}</Button></div>
 </div>

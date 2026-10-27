@@ -1,4 +1,5 @@
 <script lang="ts">
+ import { Textarea } from '@q2q/ui/textarea';
   import { page } from '$app/state';
   import { messages } from '#lib/messages.js';
   import type { ActionState } from '#lib/server/mutation-action.js';
@@ -20,28 +21,28 @@
     return `${title}. ${description} ${text.ownerProjects}: ${record.ownerProjects}. ${text.ownerImpact} ${text.reason}: ${input.get('reason')}.`;
   }
 </script>
-<section class="mt-8">
+<section class="mt-6">
   <h2 class="text-base font-medium">{text.userAccess}</h2>
   <MutationNotice {form} />
   <div class="mt-4 grid gap-4 lg:grid-cols-2">
-    <article class="rounded-xl border bg-card p-5">
+    <article class="rounded-xl border bg-card p-4">
       <h3 class="text-sm font-medium">{title}</h3>
-      <p class="mt-2 mb-5 text-sm leading-relaxed text-muted-foreground">{description}</p>
+      <p class="mt-2 mb-4 text-sm leading-relaxed text-muted-foreground">{description}</p>
       <MutationForm {review} {title} destructive={mode === 'disable'}>
         <input type="hidden" name="mode" value={mode} />
         <input type="hidden" name="requestId" value={accessValues.requestId ?? requestId} />
         <input type="hidden" name="revision" value={accessValues.revision ?? record.accessRevision} />
-        <label class="block text-sm font-medium">{text.reason}<textarea name="reason" required maxlength="1000" placeholder={text.reasonHint} value={accessValues.reason ?? ''} class="mt-2 min-h-24 w-full rounded-lg border bg-background p-3 outline-none focus-visible:ring-2 focus-visible:ring-ring"></textarea></label>
+        <label class="block text-sm font-medium">{text.reason}<Textarea name="reason" required maxlength={1000} placeholder={text.reasonHint} value={accessValues.reason ?? ''} class="mt-1.5 min-h-20 resize-y bg-background text-sm"></Textarea></label>
       </MutationForm>
     </article>
-    <article class="rounded-xl border bg-card p-5">
+    <article class="rounded-xl border bg-card p-4">
       <h3 class="text-sm font-medium">{text.revokeSessions}</h3>
-      <p class="mt-2 mb-5 text-sm leading-relaxed text-muted-foreground">{text.revokeNotice}</p>
+      <p class="mt-2 mb-4 text-sm leading-relaxed text-muted-foreground">{text.revokeNotice}</p>
       <MutationForm title={text.revokeSessions} destructive review={input => `${text.revokeNotice} ${text.activeSessions}: ${record.activeSessions}. ${text.reason}: ${input.get('reason')}.`}>
         <input type="hidden" name="mode" value="revoke" />
         <input type="hidden" name="requestId" value={revokeValues.requestId ?? revokeRequestId} />
         <input type="hidden" name="revision" value={revokeValues.revision ?? record.accessRevision} />
-        <label class="block text-sm font-medium">{text.reason}<textarea name="reason" required maxlength="1000" placeholder={text.reasonHint} value={revokeValues.reason ?? ''} class="mt-2 min-h-24 w-full rounded-lg border bg-background p-3 outline-none focus-visible:ring-2 focus-visible:ring-ring"></textarea></label>
+        <label class="block text-sm font-medium">{text.reason}<Textarea name="reason" required maxlength={1000} placeholder={text.reasonHint} value={revokeValues.reason ?? ''} class="mt-1.5 min-h-20 resize-y bg-background text-sm"></Textarea></label>
       </MutationForm>
     </article>
   </div>

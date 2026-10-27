@@ -36,3 +36,5 @@ Add shared components here and export an explicit package subpath. Use relative 
 `@q2q/ui/app-shell` is the common platform/admin layout. Pass `labels` for navigation and sidebar controls, `navigationKey` from the consuming router, `sidebar(compact, onNavigate)` and `breadcrumb()` snippets, content children, and optional `pageBack`. The shell owns viewport adaptation, the mobile drawer, sidebar width and keyboard focus restoration. Each app supplies its own navigation, account UI and business state. Sidebar links call `onNavigate` to close the drawer.
 
 `@q2q/ui/language-select` renders the common locale dropdown. Supply `value`, `options: { value, label }[]`, translated `labels: { language, languageDescription }`, and `onChange(value)`. Locale storage and form submission remain in each application.
+
+筛选表单可复用 `input`、`select`、`calendar`、`popover` 与 `date-picker`。基础组件采用 shadcn-svelte Nova 注册表实现；日期选择器以日历日期字符串 `YYYY-MM-DD` 提交，不进行本地时区换算，语言与清除文案由消费方传入。

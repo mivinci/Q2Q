@@ -1,4 +1,5 @@
 <script lang="ts">
+ import { Textarea } from '@q2q/ui/textarea';
  import {page} from '$app/state';
  import {messages} from '#lib/messages.js';
  import {date} from '#lib/format.js';
@@ -24,20 +25,20 @@
  ]:[]);
 </script>
 <svelte:head><title>{data.nodeId} · Q2Q Admin</title></svelte:head>
-<div class="mx-auto w-full max-w-5xl px-4 pt-6 pb-8 sm:px-7">
+<div class="mx-auto w-full max-w-5xl px-4 pt-5 pb-7 sm:px-7">
  <h1 class="break-words text-2xl font-medium tracking-tight">{data.nodeId}</h1><p class="mt-1 text-sm text-muted-foreground">Punch</p>
  <MutationNotice {form} />
  {#if data.node}
- <section class="mt-6 rounded-xl border bg-card p-5"><ResponsiveMetadata {items} wrapperClass="sm:grid-cols-2 sm:gap-6" /></section>
- <section class="mt-6 rounded-xl border bg-card p-5">
-  <h2 class="text-base font-medium">{title}</h2><p class="mt-2 mb-5 text-sm leading-relaxed text-muted-foreground">{text.discoveryScope}</p>
+ <section class="mt-6 rounded-xl border bg-card p-4"><ResponsiveMetadata {items} dense wrapperClass="md:grid-cols-2 md:gap-x-6" /></section>
+ <section class="mt-6 rounded-xl border bg-card p-4">
+  <h2 class="text-base font-medium">{title}</h2><p class="mt-2 mb-4 text-sm leading-relaxed text-muted-foreground">{text.discoveryScope}</p>
   <MutationForm {title} destructive={enabled==='0'} review={input=>`${title}: ${data.nodeId}. ${text.reason}: ${input.get('reason')}. ${text.discoveryScope}`}>
    <input type="hidden" name="requestId" value={values.requestId??data.requestId} />
    <input type="hidden" name="revision" value={values.revision??data.node.revision} />
    <input type="hidden" name="enabled" value={enabled} />
-   <label class="block text-sm font-medium">{text.reason}<textarea name="reason" required maxlength="1000" placeholder={text.reasonHint} value={values.reason??''} class="mt-2 min-h-24 w-full rounded-lg border bg-background p-3 outline-none focus-visible:ring-2 focus-visible:ring-ring"></textarea></label>
+   <label class="block text-sm font-medium">{text.reason}<Textarea name="reason" required maxlength={1000} placeholder={text.reasonHint} value={values.reason??''} class="mt-1.5 min-h-20 resize-y bg-background text-sm"></Textarea></label>
   </MutationForm>
  </section>
- {:else}<p role="status" class="mt-6 rounded-xl border bg-card p-5 text-sm">{text.unavailable}</p>{/if}
+ {:else}<p role="status" class="mt-6 rounded-xl border bg-card p-4 text-sm">{text.unavailable}</p>{/if}
  <p class="mt-6 text-xs text-muted-foreground">{text.observedAt} · {date(data.observedAt,page.data.locale)}</p>
 </div>

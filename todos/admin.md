@@ -211,3 +211,26 @@ flowchart LR
 - 本节替代上一节的 Worker 控制台维护方式；部署说明已同步更新。
 
 - GitHub 变量名按用户要求统一为 `CLOUDFLARE_ACCESS_TEAM_DOMAIN` / `CLOUDFLARE_ACCESS_AUD`；Worker 内仍使用 `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD`。
+
+## Admin 原生表单 CSRF 修复
+
+- 对照 Platform #66/#67：生产 canonical origin 与严格可信来源配置保留；页面继续使用 no-referrer。
+- 原生导航 POST 在部分浏览器中可能产生 Origin: null。所有 Admin 写表单已核对：语言切换改为同源 fetch；套餐、订阅、账号、Punch 共用的确认表单改为 SvelteKit enhance，确认前 cancel，确认后才提交；审计重试同样增强提交。
+- 不放宽服务端同源检查，不信任 null Origin，不关闭 CSRF。GET 搜索和分页无需修改。
+- 按用户要求不进行云环境浏览器交互；实际浏览器行为仍待部署后验证。
+
+## UI 收尾调整（本地待提交）
+
+- 品牌区将管理后台文字改为 Q2Q 标题旁的 badge，折叠时隐藏。
+- 左下角账号菜单按用户参考图组织：身份信息、外观/语言子菜单和独立退出项；不增加无实际能力的账号切换菜单。
+- 操作记录筛选区统一标签与 40px 控件高度，自适应单列/双列/宽屏单行；日期改为日历弹层，操作类型改为 Select。
+- 共享 UI 补充 shadcn-svelte Nova 的 Input / Select / Calendar / Popover / Separator，日期选择封装供其他页面复用；UTC 日期筛选继续提交 YYYY-MM-DD，不做时区偏移。
+- 按用户要求暂不提交或创建 PR，不做云环境浏览器交互。
+
+## 全页面密度 review（本地待提交）
+
+- 核对概览、用户/项目列表与详情、套餐列表与编辑、节点详情和审计列表/详情；统一卡片 16px 内边距、主要分区间距、输入与文本域样式，概览统计卡移除过大的最小高度。
+- 详情信息卡使用共享 Metadata 的可选 dense 行布局，标签与值同行，两列展示并处理长 ID、邮箱、公钥换行；默认布局保留，平台现有页面不受该选项影响。
+- 套餐卡将名称和编辑入口放在同一行，额度使用分隔行，功能列表统一图标；编辑卡表单间距收紧，保留清晰的原因和影响说明。
+- 用户/项目搜索与编辑数字输入采用共享 Input，原因使用 Textarea，套餐功能使用 Checkbox，人工订阅使用 Select；订阅 UTC 时刻保留 datetime-local 的秒/毫秒精度，不改为只选日期。
+- 表格统一紧凑行距和长字段换行；只做代码层布局检查，按约定未做浏览器交互/截图，尚未提交或发 PR。
