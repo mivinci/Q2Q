@@ -64,6 +64,9 @@ fn map_ticket_err(e: TicketError) -> AuthError {
   match e {
     TicketError::KeyDoesNotMatchIssuer => AuthError::KeyNotIssuer,
     TicketError::BadSignature => AuthError::BadSignature,
+    // A structurally valid but invalid curve point is a cryptographic rejection.
+    // Web Crypto may report it as verify(false), rather than a key import error.
+    TicketError::BadKey => AuthError::BadSignature,
     TicketError::Expired => AuthError::Expired,
     TicketError::LifetimeTooLong => AuthError::LifetimeTooLong,
     TicketError::WrongAudience => AuthError::WrongAudience,
@@ -71,7 +74,6 @@ fn map_ticket_err(e: TicketError) -> AuthError {
     TicketError::Malformed(d) => AuthError::MalformedTicket(d),
     // 版本不对、有效期窗口自相矛盾：都是票本身签错了，不是身份或授权的问题
     TicketError::MalformedPeerId
-    | TicketError::BadKey
     | TicketError::UnsupportedVersion(_)
     | TicketError::BadValidityWindow => AuthError::MalformedTicket(e.to_string()),
   }
@@ -104,7 +106,11 @@ pub fn verify_session_request(
   if timestamp.abs_diff(now) > CLOCK_TOLERANCE {
     return Err(AuthError::StaleTimestamp);
   }
-  if seq + SEQ_REORDER_WINDOW <= last_seq {
+  // Compare the distance without overflowing when an untrusted seq is near u64::MAX.
+  if last_seq
+    .checked_sub(seq)
+    .is_some_and(|gap| gap >= SEQ_REORDER_WINDOW)
+  {
     return Err(AuthError::BadMac);
   }
 

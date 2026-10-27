@@ -1,0 +1,30 @@
+{
+  "name": "@q2q/track",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "types": "wrangler types",
+    "check": "npm run types && tsc --project tsconfig.json",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "dev": "wrangler dev --local --ip localhost --port 8791",
+    "build": "wrangler deploy --dry-run --outdir .wrangler/build",
+    "test:sdk": "node --experimental-strip-types --test tests/sdk.integration.ts",
+    "benchmark": "node --experimental-strip-types tests/benchmark.ts"
+  },
+  "dependencies": {
+    "hono": "^4.0.0",
+    "lossless-json": "^4.3.0",
+    "zod": "^4.6.7",
+    "@q2q/punch-discovery": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "0.21.5",
+    "miniflare": "5.20261019.0-beta",
+    "typescript": "^6.0.3",
+    "wrangler": "^4.151.2",
+    "@q2q/registry": "*",
+    "jose": "^6.0.0"
+  }
+}

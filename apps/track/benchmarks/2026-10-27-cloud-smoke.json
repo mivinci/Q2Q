@@ -1,0 +1,41 @@
+{
+  "date": "2026-10-27",
+  "track_url": "https://track.q2q.app",
+  "registry_version": "ab0e062f-52d4-45a3-8828-a8f6cb56b6ab",
+  "registry_rollback_version": "6fdfc843-6ed5-451b-9c16-a66e842350ce",
+  "track_version": "f5b3b99a-e1d8-4a66-8d44-61bac5c13ca8",
+  "deployment": "Manual local checkout via Wrangler, not remote CI",
+  "track_health_status": 200,
+  "registry_health_status": 200,
+  "registry_unauthenticated_nodes_status": 401,
+  "turn_url": "turn:turn-hk-1.q2q.app:3478",
+  "turn_secret_binding_present": true,
+  "control_plane_test": {
+    "result": "passed",
+    "seconds": 17.97,
+    "covers": [
+      "announce",
+      "heartbeat",
+      "pagination",
+      "withdrawal"
+    ],
+    "session_expiry_injection": false
+  },
+  "p2p_test": {
+    "result": "passed",
+    "seconds": 31.24,
+    "bytes": 8388731,
+    "sha256": "26c629edd55f2459e48fdfaf91b4a95733aadc15e95ceb299ec92441f753402a",
+    "cdn": false,
+    "peers": "Two local SDK clients; live Workers Track/Registry/native Punch",
+    "withdrawal_and_empty_query_verified": true
+  },
+  "not_verified": [
+    "cross-NAT",
+    "IPv4/IPv6 coverage",
+    "forced TURN relay or secret interoperability",
+    "cloud sustained capacity/CPU/GB-s",
+    "remote CI"
+  ],
+  "automatic_track_deployment": false
+}

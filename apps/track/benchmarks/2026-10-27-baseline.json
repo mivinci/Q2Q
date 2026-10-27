@@ -1,0 +1,243 @@
+{
+  "date": "2026-10-26T17:45:22.493Z",
+  "environment": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v26.12.0",
+    "logical_cpus": 10
+  },
+  "source_sha256": "6dc0b9cab5fe43fccb8e897096efd101f7dba1f2f9c23bfea869bf1df6860cbf",
+  "scope": "Local workerd only; DO eviction disabled and incarnations checked for measurement stability. Alarm-set and KV API calls counted separately from SQL cursors. Observer calls/SQL excluded; background alarms during sampling included. Harness CPU excludes workerd. No cloud CPU, GB-s or geographic scaling claim.",
+  "results": [
+    {
+      "profile": {
+        "peers": 1000,
+        "holdings": 1,
+        "layout": "hot",
+        "entries": 2
+      },
+      "seed": {
+        "count": 1000,
+        "p50_ms": 21.12,
+        "p95_ms": 25.48,
+        "p99_ms": 27.13
+      },
+      "target_rps": 50,
+      "seconds": 10,
+      "actual_elapsed_ms": 10002,
+      "completed_rps": 49.99,
+      "maximum_in_flight": 1,
+      "request_latency": {
+        "count": 500,
+        "p50_ms": 4.33,
+        "p95_ms": 7.51,
+        "p99_ms": 12.49
+      },
+      "scheduled_latency": {
+        "count": 500,
+        "p50_ms": 5.99,
+        "p95_ms": 9.8,
+        "p99_ms": 14.52
+      },
+      "methods": {
+        "announce": {
+          "count": 25,
+          "p50_ms": 4.42,
+          "p95_ms": 6.4,
+          "p99_ms": 14.48
+        },
+        "heartbeat": {
+          "count": 350,
+          "p50_ms": 3.79,
+          "p95_ms": 5.78,
+          "p99_ms": 10.62
+        },
+        "query": {
+          "count": 125,
+          "p50_ms": 6.52,
+          "p95_ms": 9.45,
+          "p99_ms": 15.79
+        }
+      },
+      "sampling_valid": true,
+      "errors": 0,
+      "error_examples": [],
+      "storage": {
+        "PEERS": {
+          "objects": 1000,
+          "alarm_sets": 720,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 16775,
+          "rows_read": 49885,
+          "rows_written": 1020,
+          "rpc": 1875,
+          "alarms": 345,
+          "pending": 0,
+          "database_bytes": 36864000
+        },
+        "FILES": {
+          "objects": 1,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 478,
+          "rows_read": 190196,
+          "rows_written": 75,
+          "rpc": 151,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 458752
+        },
+        "DISCOVERY": {
+          "objects": 1,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 1500,
+          "rows_read": 4000,
+          "rows_written": 0,
+          "rpc": 500,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 28672
+        },
+        "RATE_LIMIT": {
+          "objects": 1000,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 1500,
+          "rows_read": 50,
+          "rows_written": 1000,
+          "rpc": 500,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 16384000
+        }
+      },
+      "worker_cpu_ms": null,
+      "harness_cpu_ms": 798.461,
+      "meets_local_gate": true
+    },
+    {
+      "profile": {
+        "peers": 1000,
+        "holdings": 32,
+        "layout": "hot",
+        "entries": 2
+      },
+      "seed": {
+        "count": 1000,
+        "p50_ms": 65.88,
+        "p95_ms": 80.62,
+        "p99_ms": 100.09
+      },
+      "target_rps": 50,
+      "seconds": 10,
+      "actual_elapsed_ms": 10001,
+      "completed_rps": 50,
+      "maximum_in_flight": 2,
+      "request_latency": {
+        "count": 500,
+        "p50_ms": 4.02,
+        "p95_ms": 13.84,
+        "p99_ms": 16.88
+      },
+      "scheduled_latency": {
+        "count": 500,
+        "p50_ms": 5.72,
+        "p95_ms": 14.84,
+        "p99_ms": 18.54
+      },
+      "methods": {
+        "announce": {
+          "count": 25,
+          "p50_ms": 14.46,
+          "p95_ms": 18.66,
+          "p99_ms": 18.92
+        },
+        "heartbeat": {
+          "count": 350,
+          "p50_ms": 3.46,
+          "p95_ms": 5.73,
+          "p99_ms": 13.85
+        },
+        "query": {
+          "count": 125,
+          "p50_ms": 6.42,
+          "p95_ms": 8.84,
+          "p99_ms": 10.08
+        }
+      },
+      "sampling_valid": true,
+      "errors": 0,
+      "error_examples": [],
+      "storage": {
+        "PEERS": {
+          "objects": 1000,
+          "alarm_sets": 720,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 22200,
+          "rows_read": 72980,
+          "rows_written": 5670,
+          "rpc": 1875,
+          "alarms": 345,
+          "pending": 0,
+          "database_bytes": 36864000
+        },
+        "FILES": {
+          "objects": 32,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 3575,
+          "rows_read": 191846,
+          "rows_written": 2400,
+          "rpc": 925,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 14778368
+        },
+        "DISCOVERY": {
+          "objects": 1,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 1500,
+          "rows_read": 4000,
+          "rows_written": 0,
+          "rpc": 500,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 28672
+        },
+        "RATE_LIMIT": {
+          "objects": 1000,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 1500,
+          "rows_read": 50,
+          "rows_written": 1000,
+          "rpc": 500,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 16384000
+        }
+      },
+      "worker_cpu_ms": null,
+      "harness_cpu_ms": 696.949,
+      "meets_local_gate": true
+    }
+  ]
+}

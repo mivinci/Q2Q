@@ -55,3 +55,21 @@ coalesced byte notifications, cancellation/terminal cleanup, durable attribution
 and exclusion of failed proof/checkpoint, CDN and resumed data. The real WebRTC
 piece retry/corruption test checks receive versus verified counts; local upload
 regression also checks public VOD Peer snapshots and cleanup.
+
+## Workers Track control-plane acceptance
+
+`track_workers.rs` uses only the public SDK. Run its isolated service harness with
+`npm run test:sdk --workspace @q2q/track`. It builds temporary native Track/Punch and
+workerd services, runs the same announce/heartbeat/pagination/withdrawal scenario against
+both implementations, and injects a Workers session expiry to test explicit reannounce
+recovery on the same Client. Heartbeat/query do not automatically recover unknown sessions.
+The runner cleans up local listeners and test identities; no deployed service is required.
+A separate fresh scenario downloads 8 MiB with no CDN sources, checks verified bytes and
+publisher sends, and compares full-file SHA-256. Both Peers are local; public cross-NAT
+and TURN fallback remain deployment acceptance work.
+
+The same runner also executes an isolated private control-session regression from
+`query.rs`: 32 concurrent/stale renewal calls share their updated leases, preserve remote
+partial/complete state and serialize withdrawal. Forced local scheduler deadlines avoid
+a 150-second sleep; remote clocks and protocol remain real. Real 429 responses verify
+that failed renewal cannot extend a lease and failed withdrawal stops local renewal intent.

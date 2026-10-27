@@ -70,7 +70,7 @@
                   <h2 class="break-all text-base font-medium tracking-tight">{node.node_id}</h2>
                   <span class="rounded-full px-2 py-1 text-xs font-medium {node.online ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300' : 'bg-muted text-muted-foreground'}">{node.online ? text.nodeOnline : text.nodeOffline}</span>
                 </div>
-                <p class="mt-1 text-[13px] text-muted-foreground">{node.service_type === 'punch' ? text.nodePunch : text.nodeTrack}{node.region ? ` · ${node.region}` : ''}</p>
+                <p class="mt-1 text-[13px] text-muted-foreground">{text.nodePunch}{node.region ? ` · ${node.region}` : ''}</p>
               </div>
               <span class="rounded-full border px-2 py-1 text-xs text-muted-foreground">{node.accepting_new_connections ? text.nodeAccepting : text.nodeNotAccepting}</span>
             </div>

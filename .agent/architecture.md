@@ -13,12 +13,18 @@
 
 - 平台代码放在 `apps/platform`，前端统一使用 TypeScript。跨项目公共编译选项放在根目录 `tsconfig.base.json`，各项目 extends；框架生成配置、路径和运行时类型保留在项目侧。
 - 种子处理消费者放在独立的 `apps/seed-processing`；两个 Workers 共用的 S3 适配器和处理契约放在 `packages/`。CI 按应用目录分别部署，共享包变更同时触发双方。
-- 开放平台使用 SvelteKit，部署到 Cloudflare Workers，优先使用 Cloudflare 配套服务；Track、Punch、STUN/TURN 等保留为独立的原生集群部署。
+- 开放平台使用 SvelteKit，部署到 Cloudflare Workers；保留原生 Track、Punch、STUN/TURN 部署。Workers Track 使用 TypeScript + Hono + Zod 和 SQLite Durable Objects，服务端按 Peer ID / info_hash 定位状态，SDK 不维护入口实例哈希环。以共同协议样例和行为测试约束 Rust/Workers 一致性，首版不引入业务 Wasm；跨对象索引采用持久 outbox 最终收敛。设计、验收边界和进度见 [track-workers.md](../todos/track-workers.md)。Punch、STUN/TURN 的 Workers 迁移不在本轮范围。
 - 桌面端使用 Tauri，Rust 应用层复用 q2q SDK，界面使用 Svelte。移动端框架待定，可以后续单独使用 Flutter；不因跨端 UI 而假设 SDK、文件访问和后台做种已跨端。
 - 平台 Web 与桌面 Svelte 界面统一采用 shadcn-svelte 和 Lucide；视觉尽量贴近 Apple 原生，主题支持浅色、深色及跟随系统，保存用户偏好，默认跟随系统。
 - 平台支持国际化，当前提供简体中文和英文；文案集中维护，语言切换保存偏好，服务端首屏与客户端使用一致语言。
 - 用户已确认平台界面原型，基准保存在 [apps/platform/design/README.md](../apps/platform/design/README.md)。实现须对照浅色、深色与窄屏版本；整体布局或视觉调整先与用户确认并同步基准。
 - 大致方案与待细化边界见 [platform-technical-plan.md](../todos/platform-technical-plan.md)。平台工程已初始化，GitHub 登录及 D1 项目基础已接线（需配置 OAuth App）；项目存储与分片上传已接线（已通过 R2 的 S3 接口与真实浏览器上传验证，其他供应商待验证）；内容发布和桌面 GUI 尚未实现；不提前固定所有服务、目录和桥接接口。
+
+- Workers Track 通过专用只读 Service Binding RPC 发现 Punch，绑定配置承担内部调用授权；不注册 Track 节点，也不为其配置 Registry JWT。原生服务公网 HTTP/JWT 鉴权保留。共享发现契约在 `packages/punch-discovery`；平台服务节点页只展示和统计 Punch。
+
+
+- Workers Track 和 Registry RPC 已按授权手动部署，线上控制面与无 CDN 全文件哈希 P2P 冒烟通过；两端 SDK 在本地，跨 NAT、强制 TURN 与云端容量仍待验收。运行时 TURN 配置由 Cloudflare 直接管理，CI 使用 `--keep-vars` 保留，不保存 GitHub TURN 副本。
+- Track 不设独立部署开关：与其他 Worker 一样，相关改动合入 main、检查通过后自动部署；PR 不注入部署凭据。main push 的 Track 部署等待同提交 Registry 工作流成功，避免新 RPC 入口尚未就绪；手动 main 部署应先确认 Registry 已就绪。
 
 ## crate 与协议归属
 

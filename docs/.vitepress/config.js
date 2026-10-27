@@ -151,6 +151,7 @@ export default defineConfig({
             activeMatch: '/guide/deploy-',
             items: [
               { text: 'Single node', link: '/guide/deploy-single-node' },
+              { text: 'Workers Track', link: '/guide/deploy-workers-track' },
               { text: 'Cluster', link: '/guide/deploy-cluster' },
             ],
           },
@@ -197,6 +198,7 @@ export default defineConfig({
             activeMatch: '/zh/guide/deploy-',
             items: [
               { text: '单机部署', link: '/zh/guide/deploy-single-node' },
+              { text: 'Workers Track', link: '/zh/guide/deploy-workers-track' },
               { text: '集群部署', link: '/zh/guide/deploy-cluster' },
             ],
           },

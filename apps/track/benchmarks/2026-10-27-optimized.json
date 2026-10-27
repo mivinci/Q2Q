@@ -1,0 +1,593 @@
+{
+  "date": "2026-10-26T18:21:37.228Z",
+  "environment": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "node": "v26.12.0",
+    "logical_cpus": 10
+  },
+  "source_sha256": "2ea8fafda75e41808f992752af82150322f4c484d9589ce1304045d5bcf5009d",
+  "scope": "Local workerd only; DO eviction disabled and incarnations checked for measurement stability. Alarm-set and KV API calls counted separately from SQL cursors. Observer calls/SQL excluded; background alarms during sampling included. Harness CPU excludes workerd. No cloud CPU, GB-s or geographic scaling claim.",
+  "results": [
+    {
+      "profile": {
+        "peers": 100,
+        "holdings": 1,
+        "layout": "distributed",
+        "entries": 1
+      },
+      "seed": {
+        "count": 100,
+        "p50_ms": 26.86,
+        "p95_ms": 38.37,
+        "p99_ms": 46.55
+      },
+      "target_rps": 50,
+      "seconds": 20,
+      "actual_elapsed_ms": 20000,
+      "completed_rps": 50,
+      "maximum_in_flight": 1,
+      "request_latency": {
+        "count": 1000,
+        "p50_ms": 4.35,
+        "p95_ms": 6.28,
+        "p99_ms": 8.86
+      },
+      "scheduled_latency": {
+        "count": 1000,
+        "p50_ms": 6.21,
+        "p95_ms": 8.62,
+        "p99_ms": 10.91
+      },
+      "methods": {
+        "announce": {
+          "count": 50,
+          "p50_ms": 5.81,
+          "p95_ms": 7.74,
+          "p99_ms": 8.08
+        },
+        "heartbeat": {
+          "count": 700,
+          "p50_ms": 4.22,
+          "p95_ms": 5.93,
+          "p99_ms": 7.28
+        },
+        "query": {
+          "count": 250,
+          "p50_ms": 4.51,
+          "p95_ms": 7.05,
+          "p99_ms": 10.02
+        }
+      },
+      "sampling_valid": true,
+      "errors": 0,
+      "errors_by_status": {},
+      "error_examples": [],
+      "storage": {
+        "PEERS": {
+          "objects": 100,
+          "alarm_sets": 100,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 10050,
+          "rows_read": 29800,
+          "rows_written": 1350,
+          "rpc": 1250,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 3686400
+        },
+        "FILES": {
+          "objects": 100,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 1700,
+          "rows_read": 3900,
+          "rows_written": 150,
+          "rpc": 550,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 2457600
+        },
+        "DISCOVERY": {
+          "objects": 1,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 3000,
+          "rows_read": 8000,
+          "rows_written": 0,
+          "rpc": 1000,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 28672
+        },
+        "RATE_LIMIT": {
+          "objects": 100,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 3000,
+          "rows_read": 1800,
+          "rows_written": 2000,
+          "rpc": 1000,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 1638400
+        }
+      },
+      "worker_cpu_ms": null,
+      "harness_cpu_ms": 1743.856,
+      "meets_local_gate": true
+    },
+    {
+      "profile": {
+        "peers": 1000,
+        "holdings": 1,
+        "layout": "distributed",
+        "entries": 1
+      },
+      "seed": {
+        "count": 1000,
+        "p50_ms": 26.79,
+        "p95_ms": 36.28,
+        "p99_ms": 57.29
+      },
+      "target_rps": 50,
+      "seconds": 20,
+      "actual_elapsed_ms": 20002,
+      "completed_rps": 50,
+      "maximum_in_flight": 4,
+      "request_latency": {
+        "count": 1000,
+        "p50_ms": 4.16,
+        "p95_ms": 5.82,
+        "p99_ms": 14.81
+      },
+      "scheduled_latency": {
+        "count": 1000,
+        "p50_ms": 5.88,
+        "p95_ms": 7.99,
+        "p99_ms": 16.79
+      },
+      "methods": {
+        "announce": {
+          "count": 50,
+          "p50_ms": 5.07,
+          "p95_ms": 7.32,
+          "p99_ms": 15.86
+        },
+        "heartbeat": {
+          "count": 700,
+          "p50_ms": 3.92,
+          "p95_ms": 5.64,
+          "p99_ms": 16.25
+        },
+        "query": {
+          "count": 250,
+          "p50_ms": 4.42,
+          "p95_ms": 5.97,
+          "p99_ms": 10.15
+        }
+      },
+      "sampling_valid": true,
+      "errors": 0,
+      "errors_by_status": {},
+      "error_examples": [],
+      "storage": {
+        "PEERS": {
+          "objects": 1000,
+          "alarm_sets": 100,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 10050,
+          "rows_read": 29800,
+          "rows_written": 1350,
+          "rpc": 1250,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 36864000
+        },
+        "FILES": {
+          "objects": 1000,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 1700,
+          "rows_read": 3900,
+          "rows_written": 150,
+          "rpc": 550,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 24576000
+        },
+        "DISCOVERY": {
+          "objects": 1,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 3000,
+          "rows_read": 8000,
+          "rows_written": 0,
+          "rpc": 1000,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 28672
+        },
+        "RATE_LIMIT": {
+          "objects": 1000,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 3000,
+          "rows_read": 100,
+          "rows_written": 2000,
+          "rpc": 1000,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 16384000
+        }
+      },
+      "worker_cpu_ms": null,
+      "harness_cpu_ms": 1685.993,
+      "meets_local_gate": true
+    },
+    {
+      "profile": {
+        "peers": 1000,
+        "holdings": 1,
+        "layout": "hot",
+        "entries": 1
+      },
+      "seed": {
+        "count": 1000,
+        "p50_ms": 20.12,
+        "p95_ms": 25.02,
+        "p99_ms": 30.12
+      },
+      "target_rps": 50,
+      "seconds": 20,
+      "actual_elapsed_ms": 20001,
+      "completed_rps": 50,
+      "maximum_in_flight": 4,
+      "request_latency": {
+        "count": 1000,
+        "p50_ms": 4.58,
+        "p95_ms": 6.66,
+        "p99_ms": 13.14
+      },
+      "scheduled_latency": {
+        "count": 1000,
+        "p50_ms": 6.18,
+        "p95_ms": 8.82,
+        "p99_ms": 14.94
+      },
+      "methods": {
+        "announce": {
+          "count": 50,
+          "p50_ms": 5.43,
+          "p95_ms": 6.21,
+          "p99_ms": 11.68
+        },
+        "heartbeat": {
+          "count": 700,
+          "p50_ms": 4.02,
+          "p95_ms": 5.94,
+          "p99_ms": 7.86
+        },
+        "query": {
+          "count": 250,
+          "p50_ms": 5.46,
+          "p95_ms": 7.73,
+          "p99_ms": 22.31
+        }
+      },
+      "sampling_valid": true,
+      "errors": 0,
+      "errors_by_status": {},
+      "error_examples": [],
+      "storage": {
+        "PEERS": {
+          "objects": 1000,
+          "alarm_sets": 100,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 20050,
+          "rows_read": 57300,
+          "rows_written": 1350,
+          "rpc": 3750,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 36864000
+        },
+        "FILES": {
+          "objects": 1,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 953,
+          "rows_read": 17544,
+          "rows_written": 150,
+          "rpc": 301,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 471040
+        },
+        "DISCOVERY": {
+          "objects": 1,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 3000,
+          "rows_read": 8000,
+          "rows_written": 0,
+          "rpc": 1000,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 28672
+        },
+        "RATE_LIMIT": {
+          "objects": 1000,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 3000,
+          "rows_read": 100,
+          "rows_written": 2000,
+          "rpc": 1000,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 16384000
+        }
+      },
+      "worker_cpu_ms": null,
+      "harness_cpu_ms": 1568.969,
+      "meets_local_gate": true
+    },
+    {
+      "profile": {
+        "peers": 1000,
+        "holdings": 1,
+        "layout": "hot",
+        "entries": 2
+      },
+      "seed": {
+        "count": 1000,
+        "p50_ms": 20.99,
+        "p95_ms": 26.19,
+        "p99_ms": 29.95
+      },
+      "target_rps": 50,
+      "seconds": 20,
+      "actual_elapsed_ms": 20000,
+      "completed_rps": 50,
+      "maximum_in_flight": 2,
+      "request_latency": {
+        "count": 1000,
+        "p50_ms": 4.57,
+        "p95_ms": 6.51,
+        "p99_ms": 10.78
+      },
+      "scheduled_latency": {
+        "count": 1000,
+        "p50_ms": 6.22,
+        "p95_ms": 8.8,
+        "p99_ms": 12.45
+      },
+      "methods": {
+        "announce": {
+          "count": 50,
+          "p50_ms": 5.57,
+          "p95_ms": 8.22,
+          "p99_ms": 8.83
+        },
+        "heartbeat": {
+          "count": 700,
+          "p50_ms": 4.05,
+          "p95_ms": 5.94,
+          "p99_ms": 8.45
+        },
+        "query": {
+          "count": 250,
+          "p50_ms": 5.33,
+          "p95_ms": 7.62,
+          "p99_ms": 15.49
+        }
+      },
+      "sampling_valid": true,
+      "errors": 0,
+      "errors_by_status": {},
+      "error_examples": [],
+      "storage": {
+        "PEERS": {
+          "objects": 1000,
+          "alarm_sets": 100,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 20050,
+          "rows_read": 57300,
+          "rows_written": 1350,
+          "rpc": 3750,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 36864000
+        },
+        "FILES": {
+          "objects": 1,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 959,
+          "rows_read": 17545,
+          "rows_written": 150,
+          "rpc": 303,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 475136
+        },
+        "DISCOVERY": {
+          "objects": 1,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 3000,
+          "rows_read": 8000,
+          "rows_written": 0,
+          "rpc": 1000,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 28672
+        },
+        "RATE_LIMIT": {
+          "objects": 1000,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 3000,
+          "rows_read": 100,
+          "rows_written": 2000,
+          "rpc": 1000,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 16384000
+        }
+      },
+      "worker_cpu_ms": null,
+      "harness_cpu_ms": 1571.905,
+      "meets_local_gate": true
+    },
+    {
+      "profile": {
+        "peers": 1000,
+        "holdings": 32,
+        "layout": "hot",
+        "entries": 2
+      },
+      "seed": {
+        "count": 1000,
+        "p50_ms": 64.83,
+        "p95_ms": 77.09,
+        "p99_ms": 84.7
+      },
+      "target_rps": 50,
+      "seconds": 20,
+      "actual_elapsed_ms": 20001,
+      "completed_rps": 50,
+      "maximum_in_flight": 2,
+      "request_latency": {
+        "count": 1000,
+        "p50_ms": 4.27,
+        "p95_ms": 14.3,
+        "p99_ms": 17.28
+      },
+      "scheduled_latency": {
+        "count": 1000,
+        "p50_ms": 6.06,
+        "p95_ms": 15.23,
+        "p99_ms": 19.01
+      },
+      "methods": {
+        "announce": {
+          "count": 50,
+          "p50_ms": 15.55,
+          "p95_ms": 17.44,
+          "p99_ms": 19.84
+        },
+        "heartbeat": {
+          "count": 700,
+          "p50_ms": 3.67,
+          "p95_ms": 5.95,
+          "p99_ms": 7.39
+        },
+        "query": {
+          "count": 250,
+          "p50_ms": 5.45,
+          "p95_ms": 7.79,
+          "p99_ms": 19.43
+        }
+      },
+      "sampling_valid": true,
+      "errors": 0,
+      "errors_by_status": {},
+      "error_examples": [],
+      "storage": {
+        "PEERS": {
+          "objects": 1000,
+          "alarm_sets": 100,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 30900,
+          "rows_read": 83650,
+          "rows_written": 10650,
+          "rpc": 3750,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 36864000
+        },
+        "FILES": {
+          "objects": 32,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 7153,
+          "rows_read": 30146,
+          "rows_written": 4800,
+          "rpc": 1851,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 15171584
+        },
+        "DISCOVERY": {
+          "objects": 1,
+          "alarm_sets": 1,
+          "kv_gets": 1,
+          "kv_puts": 0,
+          "kv_deletes": 1,
+          "statements": 3009,
+          "rows_read": 8018,
+          "rows_written": 3,
+          "rpc": 1000,
+          "alarms": 1,
+          "pending": 0,
+          "database_bytes": 28672
+        },
+        "RATE_LIMIT": {
+          "objects": 1000,
+          "alarm_sets": 0,
+          "kv_gets": 0,
+          "kv_puts": 0,
+          "kv_deletes": 0,
+          "statements": 3000,
+          "rows_read": 100,
+          "rows_written": 2000,
+          "rpc": 1000,
+          "alarms": 0,
+          "pending": 0,
+          "database_bytes": 16384000
+        }
+      },
+      "worker_cpu_ms": null,
+      "harness_cpu_ms": 1410.221,
+      "meets_local_gate": true
+    }
+  ]
+}

@@ -53,6 +53,8 @@ jobs:
         if: steps.impact.outputs.run == 'true'
       - run: npm run platform:check:storage
         if: steps.impact.outputs.run == 'true'
+      - run: npm run check:nodes --workspace @q2q/platform
+        if: steps.impact.outputs.run == 'true'
       - run: npm run platform:build
         if: steps.impact.outputs.run == 'true'
         env:

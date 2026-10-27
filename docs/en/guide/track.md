@@ -7,6 +7,33 @@ cannot be made.
 It never carries file data, never sees an SDP, and never takes part in
 authorising a connection — peers sign their own tickets for that.
 
+## Workers implementation status
+
+`apps/track` implements Track with TypeScript, Hono, Zod and Peer/File Durable Objects.
+HTTP contracts, pagination and local control-plane acceptance with the unchanged Rust SDK
+have passed, including automatic readonly Registry RPC discovery. A local 8 MiB P2P download without CDN sources passed full-file hash verification,
+and a short 1,000-Peer engineering baseline passed. Cloud capacity validation and production
+deployment remain pending. Native Rust deployment remains supported. See the
+[Workers rollout guide](./deploy-workers-track) for configuration, staging and rollback.
+
+Workers Track calls the named Registry `PunchDiscovery` entrypoint through its `REGISTRY`
+Service Binding. It neither registers itself nor needs a Registry JWT. Environment labels
+must match; public JWT authentication remains enforced. The discovery DO refreshes complete
+pages through alarms about every 30 seconds. Failures retain only unexpired snapshots with
+backoff; expired data returns 503 and its lease is never extended. The platform displays
+and counts only Punch nodes.
+
+Workers queries authenticate and consume seq before carrying an internal file/requester/
+fixed-time/deadline context across DO reads. No session key is sent to FileIndex. Each
+request verifies at most 64 authoritative candidates and makes at most 80 internal RPCs;
+that budget can produce short or empty pages before the native 512-entry scan limit.
+Continue using next_cursor. DO failure or timeout returns 503; retry with a new seq and
+the same input cursor.
+
+Local SDK acceptance covers publishing, heartbeat, pagination and withdrawal, not P2P
+content downloads or production capacity. Heartbeat/query return unknown_session after
+session loss; publishing again explicitly reannounces. They do not automatically reconnect.
+
 ## What it holds
 
 Two indexes, both soft state with a TTL:
@@ -40,6 +67,25 @@ sequenceDiagram
 HMAC instead of a signature because a heartbeat every few seconds does not want
 an Ed25519 verification plus 96 bytes of key and signature each time.
 
+The stored session sequence must strictly increase. Both heartbeat and query consume
+sequence numbers; a query can consume its sequence before a later discovery or cursor
+error, so retries must use a new sequence. Heartbeats renew the session TTL, not the
+individual file-holding TTLs.
+
+The SDK coalesces holding renewals within one `ControlSession`. It requests a 300-second
+TTL, renews at half-life and batches up to 128 holdings, prioritizing the earliest expiry.
+Other publication timers reuse the updated lease. Complete and partial state remain
+separate. Withdrawal stops local renewal intent even when the remote delete fails.
+Initial publication, completion upgrades and withdrawals still send individual requests;
+bursts and shared NAT prefixes can still hit admission limits.
+
+`seq` is an unsigned 64-bit JSON integer. JavaScript clients must preserve it without
+rounding through `Number`; its MAC encoding, and that of `timestamp`, is exactly eight
+big-endian bytes after the UTF-8 Peer ID. Ticket timestamps must fit the signed 64-bit
+range used by canonical bencode. Unsupported numeric ranges are rejected rather than
+rounded. Expired or excessively long-lived tickets return HTTP 401; a structurally
+valid key that fails cryptographic verification returns `bad_signature`.
+
 ## Endpoints
 
 | Endpoint | Purpose |
@@ -47,7 +93,9 @@ an Ed25519 verification plus 96 bytes of key and signature each time.
 | `PUT /peers/{peer_id}/files` | Announce: go online, declare holdings |
 | `POST /peers/{peer_id}/heartbeat` | Stay online: refresh the TTL, prove possession of `session_key` |
 | `GET /files/{info_hash}/peers` | Query: who holds this file |
-| `POST /connections/relay` | Ask for TURN credentials |
+| `GET /health` | Public service identity and liveness |
+
+TURN credentials are returned by announce; there is currently no separate relay-credentials endpoint.
 
 Field-level details live in the design document.
 
@@ -59,7 +107,7 @@ Each fresh query picks a random Peer ID as its starting point and walks the orde
 
 `next_cursor` is an opaque continuation. Pass it back unchanged, with the same content hash and requester, to continue the same circular walk; omit it to start a newly rotated query. A fixed index is visited once without repeats, including across the wrap boundary. Existing raw Peer ID cursors remain accepted as legacy lexical continuations. New cursors are versioned, bounded to 1024 bytes and bound to the file/requester; they are not snapshot tokens. Concurrent arrivals, expiry and Punch reloads can change the live results between pages.
 
-Selection filters before filling the requested count. It scans at most 512 live storage candidates per request, in batches of 64; storage itself filters expired records. An empty/short page can still have next_cursor when more scanning remains. Continue until next_cursor is null when explicitly traversing pages. Each query uses one current Punch configuration snapshot for filtering and endpoint resolution.
+Native selection filters before filling the requested count. It scans at most 512 live storage candidates per request, in batches of 64; storage itself filters expired records. An empty/short page can still have next_cursor when more scanning remains. Continue until next_cursor is null when explicitly traversing pages. Each query uses one current Punch configuration snapshot for filtering and endpoint resolution.
 
 ### Rust SDK
 
@@ -116,3 +164,8 @@ See [Deploy](./deploy-single-node). Track needs:
 - a Registry endpoint and a Track token granting Punch discovery and state reporting
 - the same TURN shared secret as coturn
 - inbound TCP on its advertised port, reachable by clients
+
+The Workers implementation is manually deployed at `https://track.q2q.app`. Public SDK
+control-plane and no-CDN 8 MiB P2P smoke tests with full-file SHA256 passed using two
+local peers and live Registry/Punch. Cross-NAT, forced TURN and cloud capacity remain
+unverified; automatic deployment has not been enabled.

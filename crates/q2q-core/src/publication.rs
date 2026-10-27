@@ -198,7 +198,7 @@ async fn renew_holding(
     let delay = expires.saturating_sub(q2q_track::state::now()).max(2) / 2;
     let renewal = tokio::time::sleep(Duration::from_secs(delay));
     tokio::pin!(renewal);
-    loop {
+    let upgrade = loop {
       // Subscribe before checking: completion during the previous announce
       // still upgrades immediately, and ongoing blocks cannot postpone TTL.
       let latest = available.borrow_and_update().clone();
@@ -208,14 +208,18 @@ async fn renew_holding(
         ));
       }
       if latest.complete && !complete {
-        break;
+        break true;
       }
       tokio::select! {
-        _ = &mut renewal => break,
+        _ = &mut renewal => break false,
         changed = available.changed(), if changing => { if changed.is_err() { changing = false; } },
       }
+    };
+    if upgrade {
+      (expires, complete) = announce(session, hash, source).await?;
+    } else {
+      expires = session.renew_holdings(hash).await?;
     }
-    (expires, complete) = announce(session, hash, source).await?;
   }
 }
 

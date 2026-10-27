@@ -160,8 +160,9 @@ async function fetchNodes(baseUrl: string, token: string): Promise<RegistryNodes
     for (const node of page.nodes) {
       if (ids.has(node.node_id)) return { state: 'unavailable', server_time: null, nodes: [] };
       ids.add(node.node_id);
-      nodes.push(node);
-      if (nodes.length > 10_000) return { state: 'unavailable', server_time: null, nodes: [] };
+      // Validate/count every upstream row, but expose and aggregate only Punch.
+      if (node.service_type === 'punch') nodes.push(node);
+      if (ids.size > 10_000) return { state: 'unavailable', server_time: null, nodes: [] };
     }
     serverTime = page.server_time;
     cursor = page.next_cursor;

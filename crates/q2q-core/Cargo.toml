@@ -48,3 +48,7 @@ path = "tests/local_upload.rs"
 [[test]]
 name = "local_sharing"
 path = "tests/local_sharing.rs"
+
+[[test]]
+name = "track_workers"
+path = "tests/track_workers.rs"

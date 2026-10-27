@@ -11,6 +11,7 @@ use q2q_track::wire::{
   AnnounceRequest, AnnounceResponse, ErrorBody, HeartbeatRequest, HeartbeatResponse, PunchWire,
   QueryResponse,
 };
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock as SyncRwLock};
@@ -23,6 +24,19 @@ const SESSION_TTL: u64 = 300;
 struct TrackAuth {
   key: [u8; 32],
   seq: u64,
+  holdings: BTreeMap<[u8; 32], HoldingLease>,
+}
+
+#[derive(Clone, Copy)]
+struct HoldingLease {
+  expires: u64,
+  complete: bool,
+}
+
+impl HoldingLease {
+  fn due(self, now: u64) -> bool {
+    self.expires.saturating_sub(now) <= SESSION_TTL / 2
+  }
 }
 
 /// Options for one Track query. Limits are upper bounds; cursors are opaque
@@ -115,6 +129,7 @@ impl ControlSession {
       track_auth: Mutex::new(TrackAuth {
         key: session_key,
         seq: 0,
+        holdings: BTreeMap::new(),
       }),
       track_expires_at: AtomicU64::new(announced.expires_at),
       heartbeat_interval: announced.heartbeat_interval,
@@ -343,6 +358,57 @@ impl ControlSession {
     complete: &[[u8; 32]],
   ) -> Result<u64, ControlError> {
     let mut auth = self.track_auth.lock().await;
+    // Withdrawal expresses local serving intent even if Track is unavailable.
+    // Never keep renewing a stopped source after its best-effort delete fails.
+    for hash in del {
+      auth.holdings.remove(hash);
+    }
+    self.announce_locked(&mut auth, add, del, complete).await
+  }
+
+  /// A stale per-publication timer reuses the batch lease instead of rotating
+  /// the session again. The auth lock also orders withdrawal against renewal.
+  pub(crate) async fn renew_holdings(
+    self: &Arc<Self>,
+    hash: [u8; 32],
+  ) -> Result<u64, ControlError> {
+    let session = self.clone();
+    tokio::spawn(async move {
+      let mut auth = session.track_auth.lock().await;
+      let lease = auth
+        .holdings
+        .get(&hash)
+        .ok_or_else(|| ControlError::Protocol("cannot renew a withdrawn holding".into()))?;
+      let now = q2q_track::state::now();
+      if !lease.due(now) {
+        return Ok(lease.expires);
+      }
+      // Include this timer's file first so every successful call renews its
+      // caller, even when the session has more than one protocol batch.
+      let add = renewal_batch(&auth.holdings, hash);
+      let complete = add
+        .iter()
+        .filter(|hash| auth.holdings[*hash].complete)
+        .copied()
+        .collect::<Vec<_>>();
+      session
+        .announce_locked(&mut auth, &add, &[], &complete)
+        .await
+    })
+    .await
+    .map_err(|error| ControlError::Protocol(format!("renewal task failed: {error}")))?
+  }
+
+  async fn announce_locked(
+    &self,
+    auth: &mut TrackAuth,
+    added: &[[u8; 32]],
+    deleted: &[[u8; 32]],
+    completed: &[[u8; 32]],
+  ) -> Result<u64, ControlError> {
+    let add = added;
+    let del = deleted;
+    let complete = completed;
     let hashes = |list: &[[u8; 32]]| {
       list
         .iter()
@@ -374,6 +440,20 @@ impl ControlSession {
       .map_err(|error| ControlError::Http(error.without_url()))?;
     auth.key = decode_key(&announced.session_key, "Track session_key")?;
     auth.seq = 0;
+    // Only a successful response advances local leases. Remember partial
+    // holdings too; batching must never upgrade them to complete.
+    for hash in added {
+      auth.holdings.insert(
+        *hash,
+        HoldingLease {
+          expires: announced.expires_at,
+          complete: completed.contains(hash),
+        },
+      );
+    }
+    for hash in deleted {
+      auth.holdings.remove(hash);
+    }
     self
       .track_expires_at
       .store(announced.expires_at, Ordering::Release);
@@ -399,6 +479,20 @@ impl ControlSession {
     *self.turn.write().await = announced.turn;
     Ok(announced.expires_at)
   }
+}
+
+fn renewal_batch(holdings: &BTreeMap<[u8; 32], HoldingLease>, first: [u8; 32]) -> Vec<[u8; 32]> {
+  // Oldest leases first prevents repeated renewal of the first lexical batch
+  // while later files approach expiry when a session spans several batches.
+  let mut rest = holdings
+    .iter()
+    .filter(|(hash, _)| **hash != first)
+    .collect::<Vec<_>>();
+  rest.sort_by_key(|(hash, lease)| (lease.expires, **hash));
+  std::iter::once(first)
+    .chain(rest.into_iter().map(|(hash, _)| *hash))
+    .take(128)
+    .collect()
 }
 
 fn punch_assignment_changed(current: &PunchWire, next: &PunchWire) -> bool {

@@ -1,0 +1,8 @@
+{
+  "name": "@q2q/punch-discovery",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./index.ts" },
+  "dependencies": { "zod": "^4.6.7" }
+}

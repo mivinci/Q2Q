@@ -1,0 +1,118 @@
+{
+  "verified_at": "2026-10-27",
+  "sources": [
+    "https://developers.cloudflare.com/workers/platform/pricing/",
+    "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+    "https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/",
+    "https://developers.cloudflare.com/d1/platform/pricing/"
+  ],
+  "scope": "Partial modeled components, not a total or quoted bill. Each hypothetical scenario separately assumes 50 req/s continuously for 30 days and all shared included allocations available. Excludes CPU, DO duration/GB-s, storage, Registry D1, unmetered hidden KV/alarm reads, bootstrap and churn. Base subscription is excluded. Batch profile is not the current SDK per-file renewal pattern.",
+  "pricing": {
+    "workers_requests_per_million": 0.3,
+    "workers_included_requests": 10000000,
+    "do_requests_per_million": 0.15,
+    "do_included_requests": 1000000,
+    "sql_read_per_million": 0.001,
+    "sql_included_reads": 25000000000,
+    "sql_write_per_million": 1,
+    "sql_included_writes": 50000000,
+    "do_units_rounded_up": true
+  },
+  "cases": [
+    {
+      "profile": {
+        "peers": 100,
+        "holdings": 1,
+        "layout": "distributed",
+        "entries": 1
+      },
+      "assumed_monthly_http_requests": 129600000,
+      "projected_do_requests": 492480000,
+      "projected_known_sql_reads": 5637600000,
+      "projected_known_sql_writes": 466560000,
+      "components_usd": {
+        "workers_inbound_requests": 35.88,
+        "do_rpc_and_alarms": 73.8,
+        "known_sql_rows_read": 0,
+        "known_sql_rows_written": 417
+      },
+      "known_components_subtotal_usd": 526.68
+    },
+    {
+      "profile": {
+        "peers": 1000,
+        "holdings": 1,
+        "layout": "distributed",
+        "entries": 1
+      },
+      "assumed_monthly_http_requests": 129600000,
+      "projected_do_requests": 492480000,
+      "projected_known_sql_reads": 5417280000,
+      "projected_known_sql_writes": 466560000,
+      "components_usd": {
+        "workers_inbound_requests": 35.88,
+        "do_rpc_and_alarms": 73.8,
+        "known_sql_rows_read": 0,
+        "known_sql_rows_written": 417
+      },
+      "known_components_subtotal_usd": 526.68
+    },
+    {
+      "profile": {
+        "peers": 1000,
+        "holdings": 1,
+        "layout": "hot",
+        "entries": 1
+      },
+      "assumed_monthly_http_requests": 129600000,
+      "projected_do_requests": 784209600,
+      "projected_known_sql_reads": 10749542400,
+      "projected_known_sql_writes": 466560000,
+      "components_usd": {
+        "workers_inbound_requests": 35.88,
+        "do_rpc_and_alarms": 117.6,
+        "known_sql_rows_read": 0,
+        "known_sql_rows_written": 417
+      },
+      "known_components_subtotal_usd": 570.48
+    },
+    {
+      "profile": {
+        "peers": 1000,
+        "holdings": 1,
+        "layout": "hot",
+        "entries": 2
+      },
+      "assumed_monthly_http_requests": 129600000,
+      "projected_do_requests": 784468800,
+      "projected_known_sql_reads": 10749672000,
+      "projected_known_sql_writes": 466560000,
+      "components_usd": {
+        "workers_inbound_requests": 35.88,
+        "do_rpc_and_alarms": 117.6,
+        "known_sql_rows_read": 0,
+        "known_sql_rows_written": 417
+      },
+      "known_components_subtotal_usd": 570.48
+    },
+    {
+      "profile": {
+        "peers": 1000,
+        "holdings": 32,
+        "layout": "hot",
+        "entries": 2
+      },
+      "assumed_monthly_http_requests": 129600000,
+      "projected_do_requests": 985219200,
+      "projected_known_sql_reads": 15800054400,
+      "projected_known_sql_writes": 2274998400,
+      "components_usd": {
+        "workers_inbound_requests": 35.88,
+        "do_rpc_and_alarms": 147.75,
+        "known_sql_rows_read": 0,
+        "known_sql_rows_written": 2225
+      },
+      "known_components_subtotal_usd": 2408.63
+    }
+  ]
+}

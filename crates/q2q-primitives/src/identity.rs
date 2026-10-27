@@ -388,6 +388,13 @@ impl Ticket {
     if self.iat > self.exp {
       return Err(TicketError::BadValidityWindow);
     }
+    // Canonical bencode uses signed 64-bit integers. Reject untrusted JSON
+    // timestamps before payload() reaches its serializer invariant.
+    if self.iat > i64::MAX as u64 || self.exp > i64::MAX as u64 {
+      return Err(TicketError::Malformed(
+        "ticket time exceeds bencode integer range".into(),
+      ));
+    }
 
     // 1. the embedded key must actually be the issuer's
     if peer_id_from_public_key(&self.public_key) != self.iss {

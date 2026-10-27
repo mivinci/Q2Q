@@ -1,5 +1,6 @@
 """Gate app CI on its sources and resolved npm/WASM dependency closures."""
 import fnmatch
+import functools
 import json
 import os
 import posixpath
@@ -12,12 +13,13 @@ def git(*args):
     return subprocess.check_output(['git', *args])
 
 
-def closure(ref):
+@functools.lru_cache(maxsize=16)
+def closure(ref, root_names=('q2q-wasm',)):
     lock = tomllib.loads(git('show', f'{ref}:Cargo.lock').decode())
     packages = lock['package']
-    roots = [p for p in packages if p['name'] == 'q2q-wasm']
-    if len(roots) != 1:
-        raise ValueError('ambiguous WASM root')
+    roots = [p for p in packages if p['name'] in root_names]
+    if len(roots) != len(root_names):
+        raise ValueError('ambiguous Cargo roots')
     pending, found = roots[:], {}
     while pending:
         package = pending.pop()
@@ -89,7 +91,7 @@ def npm_closure(ref, app):
 
 def main():
     app = sys.argv[1]
-    if app not in ('platform', 'seed-processing', 'registry'):
+    if app not in ('platform', 'seed-processing', 'registry', 'track'):
         raise ValueError('unknown app')
     reason = 'manual run or missing base: run conservatively'
     run = True
@@ -107,6 +109,12 @@ def main():
             uses_wasm = 'crates/q2q-wasm' in before_workspaces + after_workspaces
             if uses_wasm:
                 shared += ['crates/q2q-primitives/**', 'Cargo.toml']
+            native_roots = ('q2q-core', 'q2q-track-server', 'q2q-punch-server')
+            if app == 'track':
+                native_packages = json.loads(closure(base, native_roots)) + json.loads(closure('HEAD', native_roots))
+                shared += [f"crates/{package['name']}/**" for package in native_packages if 'source' not in package]
+                shared += ['Cargo.toml', 'tests/fixtures/track/**', '.github/scripts/test-app-impact.py',
+                           '.github/scripts/wait-registry.py', '.github/scripts/test-wait-registry.py']
             own = [f'apps/{app}/**']
             if app == 'platform':
                 own += ['docs/public/logo-light.svg', 'docs/public/logo-dark.svg', 'docs/public/favicon.svg']
@@ -120,6 +128,9 @@ def main():
             if not run and uses_wasm and 'Cargo.lock' in paths:
                 run = closure(base) != closure('HEAD')
                 reason = 'WASM dependency closure changed' if run else 'WASM dependency closure unchanged'
+            if not run and app == 'track' and 'Cargo.lock' in paths:
+                run = closure(base, native_roots) != closure('HEAD', native_roots)
+                reason = 'native test dependency closure changed' if run else 'native test dependency closure unchanged'
         except (subprocess.CalledProcessError, ValueError, KeyError, TypeError) as error:
             run, reason = True, f'cannot determine impact: {type(error).__name__}'
     print(f'{app}: run={str(run).lower()} ({reason})')
