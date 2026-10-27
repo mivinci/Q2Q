@@ -143,7 +143,10 @@ export async function setSubscription(db: D1Database, actor: Actor, projectId: s
       FROM project p LEFT JOIN project_subscription s ON s.projectId = p.id
       JOIN plan_catalog catalog ON catalog.id = ? AND catalog.revision = ?
       JOIN plan_catalog fallback ON fallback.id = 'free' AND fallback.revision = ?
-      WHERE p.id = ? AND COALESCE(s.revision, 0) = ? ON CONFLICT(requestId) DO NOTHING`)
+      WHERE p.id = ? AND COALESCE(s.revision, 0) = ?
+        AND COALESCE(s.provider, '') != 'creem'
+        AND NOT EXISTS (SELECT 1 FROM billing_checkout ci WHERE ci.projectId = p.id AND ci.status IN ('creating','open','unknown'))
+      ON CONFLICT(requestId) DO NOTHING`)
       .bind(input.requestId, actor.id, actor.email, projectId, input.reason, hash, JSON.stringify(next), next.revision, now, planId, planRevision, freeRevision, projectId, input.revision),
     db.prepare(`INSERT INTO project_subscription
       (projectId, planId, status, provider, periodStartAt, periodEndAt, cancelAtPeriodEnd, createdAt, updatedAt, revision)

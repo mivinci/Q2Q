@@ -20,6 +20,9 @@ const { getPlanCatalog, getProjectEntitlements } = await import('../src/lib/serv
 const { formatBytes } = await import('../src/lib/upload.ts');
 const { createUpload, completeUpload, cancelUpload, requireUpload } = await import('../src/lib/server/uploads.ts');
 const { deleteFile } = await import('../src/lib/server/files.ts');
+const { projectNetwork } = await import('../src/lib/server/network.ts');
+const { actions: networkActions } = await import('../src/routes/network/+page.server.ts');
+const { createPublication } = await import('../src/lib/server/publications.ts');
 const MiB = 1024 ** 2;
 const rejected = (key) => (cause) => cause.status === 413 && cause.body.message === key;
 
@@ -32,6 +35,9 @@ function fixture() {
     INSERT INTO project VALUES ('project','Project',NULL,0),('other','Other',NULL,0);
     INSERT INTO project_member VALUES ('project','owner','owner',0),('other','other','owner',0);
     INSERT INTO storage_connection VALUES ('storage','project','platform-s3',0),('other-storage','other','platform-s3',0);`);
+  // 套餐定义是运行期配置，由 Admin 维护；测试显式设置预期定义，不把迁移种子
+  // 当作当前产品配置。Free 不提供自定义分发网络。
+  sql.exec("UPDATE plan_catalog SET customTrack = 0 WHERE id = 'free'");
   let beforeRun;
   const db = { prepare(query) { return { async all() { return { results: sql.prepare(query).all() }; }, bind(...args) { return {
     async first() { const row = sql.prepare(query).get(...args); return row ? { ...row } : null; },
@@ -231,4 +237,43 @@ await check('database rejects unsupported IDs, features and unsafe quota values'
     "UPDATE plan_catalog SET platformStorage = 2 WHERE id = 'free'",
     "UPDATE plan_catalog SET maxFileSizeBytes = 1.5 WHERE id = 'free'"
   ]) assert.throws(() => f.sql.exec(query));
+});
+
+await check('Free uses the platform network; paid plans retain custom networks', async f => {
+  globalThis.storageQuotaEnv.PLATFORM_TRACK_URL='https://track.example.test';
+  const catalog=await getPlanCatalog(f.db);
+  assert.ok(!catalog.free.features.includes('customTrack'));
+  assert.ok(catalog.creator.features.includes('customTrack'));
+  assert.ok(catalog.team.features.includes('customTrack'));
+  f.sql.exec("INSERT INTO project_network(projectId,mode,trackUrl,updatedAt) VALUES('project','custom','https://custom.example.test',0)");
+  assert.equal((await projectNetwork('project')).mode,'platform');
+  assert.equal((await projectNetwork('project')).trackUrl,'https://track.example.test');
+  const event=()=>({locals:{user:{id:'owner'}},url:new URL('https://platform.example.test/network'),
+    request:new Request('https://platform.example.test/network?/save',{method:'POST',headers:{origin:'https://platform.example.test'},
+      body:new URLSearchParams({projectId:'project',mode:'custom',trackUrl:'https://custom.example.test'})})});
+  await assert.rejects(networkActions.save(event()),error=>error.status===403 && error.body.message==='planRequired');
+  f.plan('creator');
+  assert.equal((await networkActions.save(event())).saved,true);
+  assert.equal((await projectNetwork('project')).mode,'custom');
+  f.sql.exec("UPDATE project_subscription SET periodEndAt=0 WHERE projectId='project'");
+  assert.equal((await projectNetwork('project')).mode,'platform');
+  assert.equal(f.sql.prepare("SELECT trackUrl FROM project_network WHERE projectId='project'").get().trackUrl,'https://custom.example.test');
+});
+
+await check('new publications snapshot only the network allowed by the current plan', async f => {
+  globalThis.storageQuotaEnv.PLATFORM_TRACK_URL='https://track.example.test';
+  const previousQueue=globalThis.storageQuotaEnv.PROCESSING_QUEUE;
+  globalThis.storageQuotaEnv.PROCESSING_QUEUE={send:async()=>{}};
+  try {
+    f.sql.exec("INSERT INTO project_network(projectId,mode,trackUrl,updatedAt) VALUES('project','custom','https://custom.example.test',0)");
+    for (const planId of ['free','creator','team']) {
+      f.plan(planId);
+      const task=await f.start(MiB),fileId=await f.complete(task.id);
+      f.sql.prepare(`INSERT INTO seed_task(fileId,uploadId,status,seedKey,proofKey,infoHash,seedDigest,seedSize,createdAt,updatedAt)
+        VALUES(?,?,'ready','fixture-seed','fixture-proof','fixture-hash','fixture-digest',64,0,0)`).run(fileId,task.id);
+      const publication=await createPublication(fileId,'owner',{id:crypto.randomUUID()});
+      assert.equal(publication.networkMode,planId==='free'?'platform':'custom');
+      assert.equal(publication.trackUrl,planId==='free'?'https://track.example.test':'https://custom.example.test');
+    }
+  } finally {globalThis.storageQuotaEnv.PROCESSING_QUEUE=previousQueue;}
 });

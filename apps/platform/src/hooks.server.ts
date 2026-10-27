@@ -41,7 +41,11 @@ export const handle: Handle = async ({ event, resolve }) => {
     : await resolvePage(event);
   const response = new Response(result.body, result);
   response.headers.set('Cache-Control', 'private, no-store');
-  response.headers.set('Referrer-Policy', 'no-referrer');
+  // SvelteKit navigation keeps the initial document's referrer policy. Every
+  // entry page must preserve Origin for same-origin form POSTs, including when
+  // the user reaches checkout through client navigation from another page.
+  // Cross-origin navigations (including Creem) still receive no referrer.
+  response.headers.set('Referrer-Policy', 'same-origin');
   response.headers.set('Content-Language', event.locals.locale);
   // HTML depends on both the explicit preference and browser language.
   response.headers.append('Vary', 'Cookie, Accept-Language');

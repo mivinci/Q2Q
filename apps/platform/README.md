@@ -77,6 +77,14 @@ npx shadcn-svelte@latest add dialog --cwd apps/platform
 
 订阅与套餐记录绑定项目。`/usage` 展示 Free、Creator、Team 三档和项目用量概览；服务端 entitlement 控制平台存储、分发网络和团队邀请等能力。购买与真实扣款、可信用量计量、额度和价格尚未接入。本地可显式启用 `BILLING_SIMULATION=enabled` 来切换模拟订阅，生产环境不得配置此开关。
 
+套餐定义存放在 `plan_catalog`，属于运行期配置，由 Admin 套餐页编辑，迁移只负责建表和初始种子。新环境或本地库不会自动获得当前的产品配置；例如 Free 不提供自定义分发网络，本地初始化后需要执行：
+
+```sh
+npx wrangler d1 execute DB --local --command "UPDATE plan_catalog SET customTrack = 0 WHERE id = 'free';"
+```
+
+线上同样需要在 Admin 或远端 D1 上执行一次；在该步骤完成前，服务端会按数据库中的 `customTrack=1` 允许 Free 使用自定义网络。
+
 部署时先创建真实 D1 数据库并替换 `wrangler.jsonc` 中的 database_id，再通过 Wrangler secrets 配置上述认证值并显式应用远端迁移；不要提交密钥或生产 `.dev.vars`。本地迁移不会随 build 自动执行，生产应用也不会在请求中自动迁移。
 
 认证 schema 对应 Better Auth 1.7.10（原生 D1），升级时检查 SQL 差异并新增迁移，不修改已应用迁移。认证入口由服务端 hook 接管 `/api/auth/*`，通过 cloudflare:workers 的 env 读取绑定，认证实例保持请求内作用域；项目业务放在 `src/lib/server/projects.ts`。页面只得到展示身份、成员项目及当前项目，不返回会话或 OAuth token。

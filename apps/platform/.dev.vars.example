@@ -5,6 +5,12 @@ REGISTRY_URL=
 REGISTRY_NODES_TOKEN=
 # Set to "enabled" only when developing the local plans UI. Never set this in production.
 # BILLING_SIMULATION=enabled
+# Creem sandbox: use a Test API key and the secret for your public webhook URL.
+CREEM_MODE=test
+CREEM_API_KEY=
+CREEM_WEBHOOK_SECRET=
+CREEM_CREATOR_PRODUCT_ID=
+CREEM_TEAM_PRODUCT_ID=
 BETTER_AUTH_SECRET=
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=

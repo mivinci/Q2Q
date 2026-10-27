@@ -41,7 +41,8 @@
   <form action="?/save" method="POST" class="mt-7 space-y-4" use:enhance={() => { saving = true; return async ({ update }) => { await update(); saving = false; }; }}>
     <input type="hidden" name="projectId" value={data.currentProject?.id} />
     {#each [{ value: 'platform', title: text.networkPlatform, description: text.networkPlatformDescription }, { value: 'custom', title: text.networkCustom, description: text.networkCustomDescription }] as option}
-      <label class={`flex cursor-pointer items-start gap-3 rounded-xl border bg-card p-5 transition-colors ${mode === option.value ? 'border-primary/60 ring-1 ring-primary/10' : ''}`}><input type="radio" name="mode" value={option.value} bind:group={mode} disabled={!owner || saving} class="mt-1 accent-primary" /><span><span class="block text-sm font-medium">{option.title}</span><span class="mt-1 block text-[13px] leading-relaxed text-muted-foreground">{option.description}</span></span></label>
+      {@const unavailable = option.value === 'custom' && !data.entitlements?.features.customTrack}
+      <label class={`flex items-start gap-3 rounded-xl border bg-card p-5 transition-colors ${unavailable ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'} ${mode === option.value ? 'border-primary/60 ring-1 ring-primary/10' : ''}`}><input type="radio" name="mode" value={option.value} bind:group={mode} disabled={!owner || saving || unavailable} class="mt-1 accent-primary" /><span><span class="block text-sm font-medium">{option.title}</span><span class="mt-1 block text-[13px] leading-relaxed text-muted-foreground">{unavailable ? text.networkCustomPlanRequired : option.description}</span></span></label>
     {/each}
     <div class="rounded-xl border bg-card p-5">
       {#if mode === 'platform'}

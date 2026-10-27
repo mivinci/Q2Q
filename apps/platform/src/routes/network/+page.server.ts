@@ -3,7 +3,7 @@ import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { projectNetwork, normalizeTrack } from '#lib/server/network.js';
 import { requireProject } from '#lib/server/projects.js';
-import { requireProjectFeature } from '#lib/server/plans.js';
+import { requireProjectFeature, effectivePlanIdSql } from '#lib/server/plans.js';
 export const load: PageServerLoad = async ({ locals, parent }) => {
   if (!locals.user) redirect(303, '/login');
   const { currentProject } = await parent();
@@ -22,11 +22,13 @@ export const actions: Actions = {
     let track: string | null = null;
     try { if (mode === 'custom') track = normalizeTrack(String(form.get('trackUrl') ?? '').trim()); }
     catch { return fail(400, { error: 'networkInvalid' as const }); }
-    // Membership may change after the permission read; arbitrate again in this write.
+    // Membership or plan access may change after preflight; arbitrate in the write.
+    const now = Date.now();
     const saved = await env.DB.prepare(`INSERT INTO project_network (projectId, mode, trackUrl, updatedAt)
       SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM project_member WHERE projectId = ? AND userId = ? AND role = 'owner')
+      AND EXISTS (SELECT 1 FROM plan_catalog WHERE id = ${effectivePlanIdSql('?', String(now))} AND ${mode === 'custom' ? 'customTrack' : 'platformNetwork'} = 1)
       ON CONFLICT(projectId) DO UPDATE SET mode = excluded.mode, trackUrl = excluded.trackUrl, updatedAt = excluded.updatedAt RETURNING projectId`)
-      .bind(projectId, mode, track, Date.now(), projectId, locals.user.id).first();
+      .bind(projectId, mode, track, now, projectId, locals.user.id, projectId).first();
     if (!saved) return fail(403, { error: 'networkInvalid' as const });
     return { saved: true };
   }

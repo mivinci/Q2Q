@@ -9,6 +9,7 @@
     "build": "npm run wasm:build --prefix ../.. && npm run types && vite build",
     "preview": "wrangler dev -c wrangler.jsonc -c ../seed-processing/wrangler.jsonc --persist-to .wrangler/state --port 4173 --log-level warn",
     "check:processing": "node --experimental-strip-types scripts/check-processing.mjs",
+    "check:billing": "node --experimental-strip-types --test scripts/check-billing.mjs",
     "check:storage": "node --experimental-strip-types scripts/check-storage-quota.mjs",
     "check:projects": "node --experimental-strip-types scripts/check-project-invitations.mjs",
     "check:projects:http": "node --experimental-strip-types scripts/check-project-invitations-http.mjs",
