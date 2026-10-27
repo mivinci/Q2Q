@@ -12,7 +12,9 @@
   import ConfirmDialog from '@q2q/ui/confirm-dialog';
   import ProcessingPanel from '#lib/components/processing-panel.svelte';
   import PublicationPanel from '#lib/components/publication-panel.svelte';
-  import ResponsiveMetadata from '@q2q/ui/responsive-metadata';
+  import * as Dropdown from '@q2q/ui/dropdown-menu';
+  import MoreHorizontal from '@lucide/svelte/icons/ellipsis';
+  import Trash from '@lucide/svelte/icons/trash-2';
   import type { PageProps } from './$types';
   let { data }: PageProps = $props();
   const text = $derived(messages[page.data.locale]);
@@ -70,41 +72,56 @@
 </script>
 
 <svelte:head><title>{data.file.name} · Q2Q</title></svelte:head>
-<div class="mx-auto w-full max-w-4xl px-4 py-8 sm:px-7">
-  <div class="mb-5 flex items-center gap-3"><File class="size-7 shrink-0 text-primary" /><h1 class="min-w-0 wrap-break-word text-2xl font-medium tracking-tight">{data.file.name}</h1></div>
-  <section class="mb-5 rounded-xl border bg-card p-5" aria-label={text.fileFlow}>
-    <h2 class="mb-4 text-sm font-medium">{text.fileFlow}</h2>
-    <ol class="grid gap-3 sm:grid-cols-3">
-      {#each lifecycle as step, index}
-        <li aria-current={step.state === 'current' ? 'step' : undefined} class="flex min-w-0 items-start gap-3 rounded-lg bg-muted/30 p-3">
-          <span class={`flex size-7 shrink-0 items-center justify-center rounded-full border text-xs ${step.state === 'complete' ? 'border-primary bg-primary text-primary-foreground' : step.state === 'failed' ? 'border-destructive text-destructive' : step.state === 'current' ? 'border-primary text-primary' : 'border-muted-foreground/30 text-muted-foreground'}`}>
-            {#if step.state === 'complete'}<Check class="size-4" />{:else if step.state === 'failed'}<AlertCircle class="size-4" />{:else}{index + 1}{/if}
+<div class="mx-auto w-full max-w-4xl px-4 py-6 sm:px-7">
+  <header class="mb-6">
+    <div class="flex items-start gap-3">
+      <span class="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted"><File class="size-5 text-muted-foreground" aria-hidden="true" /></span>
+      <div class="min-w-0 flex-1">
+        <h1 class="break-words text-xl font-medium tracking-tight sm:text-2xl">{data.file.name}</h1>
+        <span class="mt-2 inline-flex rounded-md border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground">{data.file.status==='uploaded'?text.uploadStored:data.file.status==='deleting'?text.fileDeleting:text.filePending}</span>
+      </div>
+      {#if data.canManage}
+        <Dropdown.Root>
+          <Dropdown.Trigger class="flex size-9 shrink-0 items-center justify-center rounded-lg outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring" aria-label={text.fileMoreActions}><MoreHorizontal class="size-4" /></Dropdown.Trigger>
+          <Dropdown.Content align="end" class="w-56">
+            <Dropdown.Item variant="destructive" disabled={deleting||blocked} onSelect={()=>confirmDelete=true}><Trash class="size-4" />{text.deleteFile}</Dropdown.Item>
+            {#if blocked}<p class="px-2 py-2 text-xs leading-relaxed text-muted-foreground">{data.publicationDeletionBlocked?text.publicationInUse:text.fileUploadActive}</p>{/if}
+          </Dropdown.Content>
+        </Dropdown.Root>
+      {/if}
+    </div>
+    <dl class="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-xs text-muted-foreground">
+      <div class="flex gap-1.5"><dt>{text.size}</dt><dd class="text-foreground">{formatBytes(data.file.size,page.data.locale)}</dd></div>
+      <div class="flex gap-1.5"><dt>{text.fileCreatedAt}</dt><dd>{new Intl.DateTimeFormat(page.data.locale,{dateStyle:'medium',timeStyle:'short'}).format(data.file.createdAt)}</dd></div>
+      <div class="flex gap-1.5"><dt>{text.updated}</dt><dd>{new Intl.DateTimeFormat(page.data.locale,{dateStyle:'medium',timeStyle:'short'}).format(data.file.updatedAt)}</dd></div>
+    </dl>
+  </header>
+  <nav aria-label={text.fileFlow} class="mb-6 border-y py-4">
+    <ol class="grid gap-4 sm:grid-cols-3 sm:gap-5">
+      {#each lifecycle as step,index}
+        <li aria-current={step.state==='current'?'step':undefined} class="flex min-w-0 items-start gap-2.5">
+          <span class={`flex size-6 shrink-0 items-center justify-center rounded-full border text-[11px] ${step.state==='complete'?'border-primary/20 bg-primary/10 text-primary':step.state==='failed'?'border-destructive/30 text-destructive':step.state==='current'?'border-primary text-primary':'border-border text-muted-foreground'}`}>
+            {#if step.state==='complete'}<Check class="size-3.5" aria-hidden="true" />{:else if step.state==='failed'}<AlertCircle class="size-3.5" aria-hidden="true" />{:else}{index+1}{/if}
           </span>
-          <div class="min-w-0"><p class="text-[13px] font-medium">{step.title}</p><p class={`mt-1 text-[13px] ${step.state === 'failed' ? 'text-destructive' : 'text-muted-foreground'}`}>{step.detail}</p></div>
+          <div class="min-w-0"><p class="text-[13px] font-medium">{step.title}</p><p class={`mt-0.5 text-xs ${step.state==='failed'?'text-destructive':'text-muted-foreground'}`}>{step.detail}</p></div>
         </li>
       {/each}
     </ol>
-  </section>
-  <ResponsiveMetadata
-    wrapperClass="mb-5 rounded-xl border bg-card p-4 sm:grid-cols-3 sm:gap-5 sm:p-5"
-    items={[
-      { label: text.size, value: formatBytes(data.file.size, page.data.locale), valueClass: 'text-sm' },
-      { label: text.fileCreatedAt, value: new Intl.DateTimeFormat(page.data.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(data.file.createdAt), valueClass: 'text-sm' },
-      { label: text.updated, value: new Intl.DateTimeFormat(page.data.locale, { dateStyle: 'medium', timeStyle: 'short' }).format(data.file.updatedAt), valueClass: 'text-sm' }
-    ]}
-  />
-  {#if data.file.status === 'uploaded'}
-    {#key data.file.id}<ProcessingPanel fileId={data.file.id} size={data.file.size} summary={data.processing} available={data.processingAvailable} canManage={data.canManage} onBusyChange={(value) => processing = value} />{/key}
+  </nav>
+  {#if issue}<p role="alert" class="mb-4 text-sm text-destructive">{issue}</p>{/if}
+  {#snippet uploadPanel()}
+    {#if data.currentProject}
+      {#key data.file.id}<UploadPanel detail onActiveChange={(value)=>uploading=value} retryFile={data.canManage&&data.file.status==='pending'?data.file:undefined} projectId={data.currentProject.id} ready={data.uploadReady&&data.file.status!=='deleting'&&!deleting} storageEnabled={data.storageEnabled} localUploads={data.localUploads} maxFileSize={data.maxFileSize} storageRemainingBytes={data.storageRemainingBytes} uploads={data.uploads} />{/key}
+    {/if}
+  {/snippet}
+  {#if data.file.status!=='uploaded'}{@render uploadPanel()}{/if}
+  {#if data.file.status==='uploaded'}
+    {#key data.file.id}<ProcessingPanel fileId={data.file.id} size={data.file.size} summary={data.processing} available={data.processingAvailable} canManage={data.canManage} onBusyChange={(value)=>processing=value} />{/key}
   {/if}
   {#if data.currentProject}
-    <div class="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4 text-sm"><div><p class="text-[13px] text-muted-foreground">{text.nextPublicationNetwork}</p><p class="mt-1">{data.network.trackUrl ? data.network.mode === 'custom' ? text.networkCustom : text.networkPlatform : text.networkNotConfigured}</p></div><Button href="/network" variant="ghost" size="sm">{text.networkConfigure}</Button></div>
-    <PublicationPanel fileId={data.file.id} publications={data.publications} ready={data.processing?.status === 'ready' && data.processingAvailable && data.file.status === 'uploaded'} canManage={data.canManage} />
-    {#key data.file.id}
-      <UploadPanel detail onActiveChange={(value) => uploading = value} retryFile={data.canManage && data.file.status === 'pending' ? data.file : undefined} projectId={data.currentProject.id} ready={data.uploadReady && data.file.status !== 'deleting' && !deleting} storageEnabled={data.storageEnabled} localUploads={data.localUploads} maxFileSize={data.maxFileSize} storageRemainingBytes={data.storageRemainingBytes} uploads={data.uploads} />
-    {/key}
+    <PublicationPanel fileId={data.file.id} publications={data.publications} ready={data.processing?.status==='ready'&&data.processingAvailable&&data.file.status==='uploaded'} canManage={data.canManage} networkLabel={data.network.trackUrl?data.network.mode==='custom'?text.networkCustom:text.networkPlatform:text.networkNotConfigured} />
   {/if}
-  {#if issue}<p role="alert" class="mb-4 text-sm text-destructive">{issue}</p>{/if}
-  {#if data.canManage}<div class="border-t pt-5"><Button variant="destructive" disabled={deleting || blocked} onclick={() => confirmDelete = true}>{text.deleteFile}</Button>{#if blocked}<p class="mt-2 text-[13px] text-muted-foreground">{data.publicationDeletionBlocked ? text.publicationInUse : text.fileUploadActive}</p>{/if}</div>{/if}
+  {#if data.file.status==='uploaded'}{@render uploadPanel()}{/if}
 </div>
 
 <ConfirmDialog

@@ -16,6 +16,7 @@ export const zh = {
   publicationNotFound: '发布版本不存在或无权访问。', publicationInvalid: '发布请求无效。', publicationConflict: '此发布请求已用于其他文件。', publicationActive: '此文件已有创建中或已发布的版本。', publicationNotReady: '请先完成文件上传和种子处理。', publicationInUse: '此文件仍被发布版本引用，请先撤回并等待下载授权到期、清理完成。',
   uploadStored: '已上传',
   processingTitle: '种子与内容证明', processingPending: '等待处理', processingRunning: '正在生成种子', processingReady: '种子已生成', processingFailed: '处理失败，请重试。', processingStart: '生成种子', processingRetry: '重试处理', processingProgress: '处理进度', processingUnavailable: '处理服务暂不可用，请稍后重试。', processingSourceChanged: '存储来源已改变，请检查原始文件。', processingNotReady: '种子尚未生成。', downloadSeed: '下载种子', contentIdentity: '内容身份', processingDescription: '基础种子包含文件身份和校验信息。配置 Track 并发布后，可导出供下载方使用的种子。',
+  fileMoreActions: '更多文件操作', publicationHistory: '历史版本', downloadGrantHistory: '下载授权记录',
   fileFlow: '分发准备', fileFlowUpload: '上传文件', fileFlowSeed: '生成种子', fileFlowPublish: '发布版本', fileFlowReadyToPublish: '准备发布',
   fileDetails: '文件详情', fileStatus: '状态', filePending: '待上传', fileDeleting: '删除中', deleteFile: '删除文件', deleteFileConfirm: '删除此文件及存储对象？此操作无法撤销。', fileCreatedAt: '上传时间', backToLibrary: '返回内容库', libraryLimit: '显示最近 50 个文件',
   openNavigation: '打开侧栏', closeNavigation: '关闭侧栏', projectNavigation: '项目与导航', navigationDescription: '切换项目、浏览工作空间和管理账户。', navigationProgress: '页面加载中',
