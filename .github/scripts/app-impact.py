@@ -91,7 +91,7 @@ def npm_closure(ref, app):
 
 def main():
     app = sys.argv[1]
-    if app not in ('platform', 'seed-processing', 'registry', 'track'):
+    if app not in ('platform', 'seed-processing', 'registry', 'track', 'admin'):
         raise ValueError('unknown app')
     reason = 'manual run or missing base: run conservatively'
     run = True
@@ -117,7 +117,10 @@ def main():
                            '.github/scripts/wait-registry.py', '.github/scripts/test-wait-registry.py']
             own = [f'apps/{app}/**']
             if app == 'platform':
-                own += ['docs/public/logo-light.svg', 'docs/public/logo-dark.svg', 'docs/public/favicon.svg']
+                own += ['docs/public/favicon.svg']
+            elif app == 'admin':
+                own += ['apps/platform/migrations/**', '.github/scripts/wait-registry.py',
+                        '.github/scripts/test-wait-registry.py']
             elif app == 'seed-processing':
                 own += ['apps/platform/migrations/**', 'apps/platform/scripts/check-processing.mjs']
             run = any(fnmatch.fnmatchcase(path, pattern) for path in paths for pattern in shared + own)

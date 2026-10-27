@@ -10,7 +10,7 @@ const publicOrigin = process.env.Q2Q_PUBLIC_ORIGIN;
 
 export default defineConfig({
   // Workspace-hoisted Svelte source packages must be compiled during SSR too.
-  ssr: { noExternal: ['bits-ui'] },
+  ssr: { noExternal: ['bits-ui', '@q2q/ui'] },
 	plugins: [
 		tailwindcss(),
 		sveltekit({

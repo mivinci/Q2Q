@@ -21,6 +21,7 @@ const rowSchema = z.object({
   node_id: nodeIdSchema,
   service_type: z.enum(['punch', 'track']),
   identity_version: integer.positive(), advertise_url: z.string(), public_key: z.string().nullable(),
+  discovery_enabled: z.union([z.literal(0),z.literal(1)]).optional().default(1),
   version: z.string(), region: label.nullable(), accepting_new_connections: z.union([z.literal(0), z.literal(1)]),
   metrics_json: z.string().nullable(), created_at: integer, last_seen: integer, expires_at: integer,
 }).refine(row => row.created_at <= row.last_seen && row.expires_at > row.last_seen && row.expires_at <= row.last_seen + 90);
@@ -198,7 +199,7 @@ async function rows(db: D1Database, parameters: {limit:number; after?:string}, d
   try {
     const where = discovery ? "service_type = 'punch' AND expires_at > ? AND node_id > ?" : 'node_id > ?';
     const args = discovery ? [serverTime, after ?? '', limit + 1] : [after ?? '', limit + 1];
-    result = await db.prepare(`SELECT * FROM nodes WHERE ${where} ORDER BY node_id COLLATE BINARY LIMIT ?`).bind(...args).all();
+    result = await db.prepare(`SELECT ${discovery ? 'nodes.*, CASE WHEN EXISTS(SELECT 1 FROM punch_policy p WHERE p.node_id=nodes.node_id AND p.enabled=0) THEN 0 ELSE 1 END AS discovery_enabled' : '*'} FROM nodes WHERE ${where} ORDER BY node_id COLLATE BINARY LIMIT ?`).bind(...args).all();
     if (!result.success) unavailable();
   } catch { unavailable(); }
   const parsed = z.array(rowSchema).safeParse(result.results);
@@ -215,7 +216,7 @@ export async function discoverPage(db: D1Database, input: unknown) {
   const parsed = z.array(discoveryNodeSchema).safeParse(page.map(row => ({
     punch_id: row.node_id, url: row.advertise_url, public_key: row.public_key,
     identity_version: row.identity_version, region: row.region,
-    accepting_new_connections: Boolean(row.accepting_new_connections), metrics: storedMetrics(row),
+    accepting_new_connections: Boolean(row.accepting_new_connections) && row.discovery_enabled === 1, metrics: storedMetrics(row),
     last_seen: row.last_seen, expires_at: row.expires_at,
   })));
   if (!parsed.success) unavailable();

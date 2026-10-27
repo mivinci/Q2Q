@@ -2,7 +2,7 @@ import { env } from 'cloudflare:workers';
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { requireProject } from '#lib/server/projects.js';
-import { getProjectEntitlements, isPlanId, planCatalog, planIds, type PlanFeature, type PlanId } from '#lib/server/plans.js';
+import { getProjectEntitlements, isPlanId, getPlanCatalog, planIds, type PlanFeature, type PlanId } from '#lib/server/plans.js';
 import { getStorageUsage } from '#lib/server/storage-quota.js';
 
 export const load: PageServerLoad = async ({ locals, parent }) => {
@@ -10,12 +10,13 @@ export const load: PageServerLoad = async ({ locals, parent }) => {
   const { currentProject } = await parent();
   if (!currentProject) redirect(303, '/library');
 
-  const [entitlements, usage, storageUsage] = await Promise.all([
+  const [entitlements, usage, storageUsage, planCatalog] = await Promise.all([
     getProjectEntitlements(env.DB, currentProject.id),
     env.DB.prepare(`SELECT COUNT(*) AS files, COALESCE(SUM(size), 0) AS recordedBytes
       FROM file_record WHERE projectId = ? AND status = 'uploaded'`)
       .bind(currentProject.id).first<{ files: number; recordedBytes: number }>(),
-    getStorageUsage(env.DB, currentProject.id)
+    getStorageUsage(env.DB, currentProject.id),
+    getPlanCatalog(env.DB)
   ]);
 
   return {

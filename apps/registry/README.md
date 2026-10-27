@@ -171,3 +171,13 @@ Registry 的 `DISCOVERY_ENVIRONMENT` 与 Track 的 `REGISTRY_ENVIRONMENT` 必须
 先部署支持此具名入口的 Registry，再启用匹配环境的 Track binding；不会将托管 Track 注册为 Registry 节点。
 Registry 自身测试包含真实 workerd/D1 的无 JWT 只读调用、越权写拒绝、分页参数验证与公网认证隔离。
 Track 的发现刷新/退避与上线状态见 [Workers Track](../track/README.md)。已按授权手动部署新版 RPC，并经线上 SDK 控制面和 P2P 冒烟；这不代表云端容量或跨 NAT 验收完成。
+
+## Punch 管理 RPC
+
+Admin 通过独立 Service Binding 入口 `PunchManagement` 调用 `listPunches`、`getPunch`、`setPolicy` 和 `getOperation`。绑定配置承担内部调用授权，仅配置给 Admin；Track 的 `PunchDiscovery` 不暴露管理方法，公网 JWT/HTTP 路由权限保持原样。
+
+先应用 `0003_punch_management.sql`，再部署 Registry，最后部署依赖该入口的 Admin。`punch_policy` 与心跳快照分开持久化，默认允许发现；停止项在公网 HTTP 与只读 RPC 中均合并为 accepting_new_connections=false；保留身份供旧会话续期。重新上报、租约过期和身份版本更新不覆盖策略；管理接口只接受已有 Punch，不修改 Track、地址、公钥或节点凭据。
+
+修改携带管理员身份、原因、请求 ID 和策略 revision。策略与 `punch_operation` 审计在同一 D1 batch 中提交，重复请求返回原结果，旧 revision 或相同请求 ID 的不同内容被拒绝。查询结果不包含服务 token 或私钥。Admin 的待确认记录是请求意图/结果缓存，Registry 的审计才是实际执行依据。
+
+停止发现不会断开连接或终止节点，Workers Track 缓存可能继续使用最多 60 秒；旧地址和已分发的 Peer/Punch 信息不因此撤销。部署流水线会验证管理表存在；CI 不自动迁移远端数据库。

@@ -1,6 +1,6 @@
 // Public task metadata only. Object keys, provider upload IDs and credentials stay on the server.
 export const uploadPartSize = 8 * 1024 * 1024;
-export const uploadMaxSize = 8 * 1024 * 1024 * 1024;
+export { uploadMaxSize } from '@q2q/plans';
 export type UploadStatus = 'initializing' | 'uploading' | 'completing' | 'uploaded' | 'cancelled' | 'failed';
 export interface UploadSummary {
   id: string;

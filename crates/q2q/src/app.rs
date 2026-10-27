@@ -599,7 +599,28 @@ async fn publish_command(args: &Args, stop: &mut Stop) -> Result<Outcome> {
   } else {
     None
   };
-  let Some(prepared) = prepare_source(&file, expected, &track, args.quiet, stop).await? else {
+  let prepared = prepare_source(&file, expected, &track, args.quiet, stop)
+    .await
+    .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> {
+      if matches!(
+        error.downcast_ref::<q2q_core::publication::PrepareError>(),
+        Some(q2q_core::publication::PrepareError::Io(cause))
+          if cause.kind() == io::ErrorKind::NotFound
+      ) {
+        let message = if seed_input {
+          format!(
+            "source file not found: {}\nThe seed contains metadata, not the file contents. By default, publish looks for the filename recorded in the seed beside the seed file. Use --file <PATH> to select the original file.",
+            file.display()
+          )
+        } else {
+          format!("source file not found: {}", file.display())
+        };
+        io::Error::new(io::ErrorKind::NotFound, message).into()
+      } else {
+        error
+      }
+    })?;
+  let Some(prepared) = prepared else {
     return Ok(Outcome::Interrupted);
   };
   let home = resolve_home()?;

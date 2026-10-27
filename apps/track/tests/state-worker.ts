@@ -465,9 +465,16 @@ export default {
         equal(queried.status, 200);
         const result = await queried.json() as {peers:{peer_id:string}[]; next_cursor:string|null};
         equal(result.peers.map(peer => peer.peer_id), [publisher.id]); equal(result.next_cursor, null);
+        // Management pauses new assignments while retaining known identity.
+        await env.DISCOVERY.getByName(DISCOVERY_NAME).publish({expires_at: seconds() + 60, nodes: [{...punch, accepting_new_connections: false, expires_at: seconds() + 90}]});
+        const retained = await app.request(`https://track.invalid/peers/${reader.id}/heartbeat`, {method:'POST',headers:{'Content-Type':'application/json'},body:stringifyWire({seq:3n,timestamp,mac:await sessionMac(key,reader.id,3n,timestamp)})},env);
+        equal(retained.status,200);
+        const newcomer=await identity();const attempted=await request(newcomer,[]);
+        const paused=await app.request(`https://track.invalid/peers/${newcomer.id}/files`,{method:'PUT',headers:{'Content-Type':'application/json'},body:`{"token":${attempted.token},"ttl":300,"add":[]}`},env);
+        equal(paused.status,503);equal((await paused.json() as {code:string}).code,'no_available_punch');
         await env.DISCOVERY.getByName(DISCOVERY_NAME).publish({expires_at: seconds() + 60, nodes: [{...punch, url: 'quic://changed.invalid:443', accepting_new_connections: true, expires_at: seconds() + 90}]});
         const moved = await app.request(`https://track.invalid/peers/${reader.id}/heartbeat`, {method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: stringifyWire({seq: 3n, timestamp, mac: await sessionMac(key, reader.id, 3n, timestamp)})}, env);
+          body: stringifyWire({seq: 4n, timestamp, mac: await sessionMac(key, reader.id, 4n, timestamp)})}, env);
         equal(moved.status, 401);
         const recovered = await announce(reader, []);
         if (base64(recovered) === base64(key)) throw new Error('reannounce did not rotate key');

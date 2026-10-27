@@ -44,7 +44,7 @@ export async function runtime(timeout = '5000', registry?: {punch_id:string; url
   if (registry) {
     try {
       const db = await mf.getD1Database('DB', 'sdk-registry');
-      for (const migration of ['0001_nodes.sql', '0002_report_limits.sql']) {
+      for (const migration of ['0001_nodes.sql', '0002_report_limits.sql', '0003_punch_management.sql']) {
         const sql = (await readFile(new URL(`../../registry/migrations/${migration}`, import.meta.url), 'utf8')).replace(/^\s*--.*$/gm, '');
         for (const statement of sql.split(';').map(value => value.trim()).filter(Boolean)) await db.prepare(statement).run();
       }

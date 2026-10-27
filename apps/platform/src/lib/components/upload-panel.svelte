@@ -5,7 +5,7 @@
   import Plus from '@lucide/svelte/icons/plus';
   import File from '@lucide/svelte/icons/file';
   import X from '@lucide/svelte/icons/x';
-  import { Button } from '#lib/components/ui/button/index.js';
+  import { Button } from '@q2q/ui/button';
   import { messages } from '#lib/i18n.js';
   import { formatBytes, uploadStatusLabels, type UploadSummary } from '#lib/upload.js';
   import { uploadFile, uploadRequest, type UploadProgress } from '#lib/upload-client.js';

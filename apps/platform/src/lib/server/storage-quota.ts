@@ -1,4 +1,4 @@
-import { planCatalog } from './plans.js';
+import { effectivePlanIdSql } from '@q2q/plans';
 import { uploadPartSize } from '../upload.js';
 
 export interface StorageUsage { usedBytes: number; reservedBytes: number }
@@ -20,18 +20,17 @@ export async function getStorageUsage(db: D1Database, projectId: string): Promis
 
 // Evaluate subscription and usage in the INSERT, not in a preceding read. D1's
 // serialized writes arbitrate concurrent uploads and a simultaneous downgrade.
-function limitSql(key: 'storageBytes' | 'maxFileSizeBytes') {
-  return `COALESCE((SELECT CASE planId
-    WHEN 'creator' THEN ${planCatalog.creator[key]} WHEN 'team' THEN ${planCatalog.team[key]}
-    ELSE ${planCatalog.free[key]} END FROM project_subscription
-    WHERE projectId = f.projectId AND status IN ('active', 'simulated')), ${planCatalog.free[key]})`;
+function limitSql(key: 'storageBytes' | 'maxFileSizeBytes' | 'platformStorage') {
+  return `(SELECT catalog.${key} FROM plan_catalog catalog WHERE catalog.id =
+    ${effectivePlanIdSql('f.projectId', '(SELECT now FROM request_time)')})`;
 }
 
 export async function reserveUpload(db: D1Database, input: {
   id: string; fileId: string; userId: string; connectionId: string;
   objectKey: string; transport: string; bucketIdentity: string; now: number;
 }) {
-  return db.prepare(`INSERT INTO upload_task
+  return db.prepare(`WITH request_time(now) AS (VALUES (?))
+    INSERT INTO upload_task
     (id, projectId, connectionId, createdBy, name, size, objectKey, partSize, status,
       createdAt, updatedAt, expiresAt, transport, bucketIdentity, fileId)
     SELECT ?, f.projectId, c.id, ?, f.name, f.size, ?, ?, 'initializing', ?, ?, ?, ?, ?, f.id
@@ -39,10 +38,11 @@ export async function reserveUpload(db: D1Database, input: {
     JOIN project_member m ON m.projectId = f.projectId AND m.userId = ?
     WHERE f.id = ? AND f.status = 'pending' AND (f.createdBy = ? OR m.role = 'owner')
       AND NOT EXISTS (SELECT 1 FROM upload_task WHERE fileId = f.id AND status IN ('initializing', 'uploading', 'completing'))
+      AND ${limitSql('platformStorage')} = 1
       AND f.size <= ${limitSql('maxFileSizeBytes')}
       AND COALESCE((SELECT SUM(t.size) ${occupied.replace('t.projectId = ?', 't.projectId = f.projectId')}), 0)
         <= ${limitSql('storageBytes')} - f.size
     ON CONFLICT(id) DO NOTHING`)
-    .bind(input.id, input.userId, input.objectKey, uploadPartSize, input.now, input.now, input.now + 86400000,
+    .bind(input.now, input.id, input.userId, input.objectKey, uploadPartSize, input.now, input.now, input.now + 86400000,
       input.transport, input.bucketIdentity, input.connectionId, input.userId, input.fileId, input.userId).run();
 }

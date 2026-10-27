@@ -4,7 +4,7 @@
   import FileSearch from '@lucide/svelte/icons/file-search';
   import { messages } from '#lib/i18n.js';
   import { formatBytes } from '#lib/upload.js';
-  import { Button } from '#lib/components/ui/button/index.js';
+  import { Button } from '@q2q/ui/button';
   import type { PublicationSummary } from '#lib/publication.js';
   import type { DecodedSeed } from '#lib/seed-codec.js';
   let { seeds }: { seeds: PublicationSummary[] } = $props();

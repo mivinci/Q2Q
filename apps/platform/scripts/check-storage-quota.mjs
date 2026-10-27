@@ -16,7 +16,7 @@ registerHooks({ resolve(specifier, context, next) {
   }
 } });
 const { getStorageUsage, reserveUpload } = await import('../src/lib/server/storage-quota.ts');
-const { planCatalog, getProjectEntitlements } = await import('../src/lib/server/plans.ts');
+const { getPlanCatalog, getProjectEntitlements } = await import('../src/lib/server/plans.ts');
 const { formatBytes } = await import('../src/lib/upload.ts');
 const { createUpload, completeUpload, cancelUpload, requireUpload } = await import('../src/lib/server/uploads.ts');
 const { deleteFile } = await import('../src/lib/server/files.ts');
@@ -33,7 +33,7 @@ function fixture() {
     INSERT INTO project_member VALUES ('project','owner','owner',0),('other','other','owner',0);
     INSERT INTO storage_connection VALUES ('storage','project','platform-s3',0),('other-storage','other','platform-s3',0);`);
   let beforeRun;
-  const db = { prepare(query) { return { bind(...args) { return {
+  const db = { prepare(query) { return { async all() { return { results: sql.prepare(query).all() }; }, bind(...args) { return {
     async first() { const row = sql.prepare(query).get(...args); return row ? { ...row } : null; },
     async all() { return { results: sql.prepare(query).all(...args) }; },
     async run() { beforeRun?.(query); return { meta: { changes: Number(sql.prepare(query).run(...args).changes) } }; }
@@ -62,8 +62,8 @@ function fixture() {
     const id = crypto.randomUUID();
     sql.prepare("INSERT INTO file_record VALUES (?,?,?,?,?,'pending',0,0)").run(id, project, user, 'fixture.bin', size); return id;
   };
-  const reserve = (fileId, id = crypto.randomUUID(), connectionId = 'storage') => reserveUpload(db, {
-    id, fileId, userId: 'owner', connectionId, objectKey: `fixture/${id}`, transport: 'local', bucketIdentity: 'local-r2', now: Date.now()
+  const reserve = (fileId, id = crypto.randomUUID(), connectionId = 'storage', now = Date.now()) => reserveUpload(db, {
+    id, fileId, userId: 'owner', connectionId, objectKey: `fixture/${id}`, transport: 'local', bucketIdentity: 'local-r2', now
   });
   const start = (size) => createUpload('owner', file(size), { id: crypto.randomUUID() });
   const complete = async (id) => { const task = await requireUpload(id, 'owner'); await completeUpload(task,
@@ -75,13 +75,13 @@ function fixture() {
 }
 async function check(name, body) {
   const f = fixture();
-  try { await body(f); console.log(`PASS ${name}`); } finally { f.sql.close(); }
+  try { f.catalog = await getPlanCatalog(f.db); await body(f); console.log(`PASS ${name}`); } finally { f.sql.close(); }
 }
 
 await check('catalog and subscription fallback enforce all three storage limits', async f => {
-  assert.deepEqual(['free','creator','team'].map(id => planCatalog[id].storageBytes), [100 * MiB, 100 * 1024 ** 3, 1024 ** 4]);
-  assert.equal(formatBytes(planCatalog.team.storageBytes, 'en'), '1 TiB');
-  for (const id of ['free','creator','team']) { f.plan(id); assert.equal((await getProjectEntitlements(f.db, 'project')).limits.storageBytes, planCatalog[id].storageBytes); }
+  assert.deepEqual(['free','creator','team'].map(id => f.catalog[id].storageBytes), [100 * MiB, 100 * 1024 ** 3, 1024 ** 4]);
+  assert.equal(formatBytes(f.catalog.team.storageBytes, 'en'), '1 TiB');
+  for (const id of ['free','creator','team']) { f.plan(id); assert.equal((await getProjectEntitlements(f.db, 'project')).limits.storageBytes, f.catalog[id].storageBytes); }
   f.plan('team', 'past_due'); assert.equal((await getProjectEntitlements(f.db, 'project')).limits.storageBytes, 100 * MiB);
 });
 await check('exact capacity succeeds and an extra byte is rejected', async f => {
@@ -91,16 +91,16 @@ await check('exact capacity succeeds and an extra byte is rejected', async f => 
 });
 for (const plan of ['creator', 'team']) await check(`${plan} enforces its full storage allowance`, async f => {
   f.plan(plan);
-  let left = planCatalog[plan].storageBytes - MiB;
+  let left = f.catalog[plan].storageBytes - MiB;
   while (left > 0) {
-    const size = Math.min(left, planCatalog[plan].maxFileSizeBytes);
+    const size = Math.min(left, f.catalog[plan].maxFileSizeBytes);
     const file = f.file(size); assert.equal((await f.reserve(file)).meta.changes, 1);
     f.sql.prepare("UPDATE upload_task SET status='uploaded' WHERE fileId=?").run(file);
     f.sql.prepare("UPDATE file_record SET status='uploaded' WHERE id=?").run(file);
     left -= size;
   }
   await f.start(MiB); await assert.rejects(f.start(1), rejected('uploadStorageLimit'));
-  const usage = await f.usage(); assert.equal(usage.usedBytes + usage.reservedBytes, planCatalog[plan].storageBytes);
+  const usage = await f.usage(); assert.equal(usage.usedBytes + usage.reservedBytes, f.catalog[plan].storageBytes);
 });
 await check('competing uploads cannot reserve the same remaining space', async f => {
   await f.used(99 * MiB);
@@ -151,7 +151,7 @@ await check('downgrade preserves existing reservations and content but blocks ne
 });
 await check('subscription is rechecked atomically when reservation writes', async f => {
   await f.used(99 * MiB); f.plan('team');
-  f.hook(query => { if (query.startsWith('INSERT INTO upload_task')) f.plan('free'); });
+  f.hook(query => { if (query.includes('INSERT INTO upload_task')) f.plan('free'); });
   await assert.rejects(f.start(2 * MiB), rejected('uploadStorageLimit'));
   assert.equal((await f.usage()).reservedBytes, 0);
 });
@@ -169,4 +169,66 @@ await check('expired multipart reservations remain charged until explicit cancel
   assert.equal((await f.usage()).reservedBytes, MiB);
   await cancelUpload(await requireUpload(task.id, 'owner'));
   assert.equal((await f.usage()).reservedBytes, 0);
+});
+
+await check('editing the database catalog immediately changes reads and upload limits', async f => {
+  f.sql.prepare("UPDATE plan_catalog SET maxFileSizeBytes = ?, storageBytes = ?, revision = revision + 1 WHERE id = 'free'").run(MiB, 2 * MiB);
+  assert.equal((await getProjectEntitlements(f.db, 'project')).limits.storageBytes, 2 * MiB);
+  await assert.rejects(f.start(2 * MiB), rejected('uploadPlanLimit'));
+  assert.equal((await f.reserve(f.file(2 * MiB))).meta.changes, 0);
+  await f.start(MiB); await f.start(MiB);
+  await assert.rejects(f.start(1), rejected('uploadStorageLimit'));
+  f.sql.prepare("UPDATE plan_catalog SET storageBytes = ?, revision = revision + 1 WHERE id = 'free'").run(3 * MiB);
+  await f.start(MiB);
+  assert.equal((await f.usage()).reservedBytes, 3 * MiB);
+});
+await check('catalog quota edits between preflight and reservation are checked atomically', async f => {
+  await f.used(99 * MiB);
+  f.hook(query => {
+    if (query.includes('INSERT INTO upload_task')) f.sql.exec("UPDATE plan_catalog SET storageBytes = 104857600 - 1 WHERE id = 'free'");
+  });
+  await assert.rejects(f.start(MiB), rejected('uploadStorageLimit'));
+  assert.equal((await f.usage()).reservedBytes, 0);
+});
+await check('removing storage capability at reservation prevents a preflight-approved upload', async f => {
+  f.hook(query => {
+    if (query.includes('INSERT INTO upload_task')) f.sql.exec("UPDATE plan_catalog SET platformStorage = 0 WHERE id = 'free'");
+  });
+  await assert.rejects(f.start(MiB), cause => cause.status === 403 && cause.body.message === 'planRequired');
+  assert.equal((await f.usage()).reservedBytes, 0);
+});
+await check('subscription start and expiry boundaries agree with atomic file limits', async f => {
+  const start = Date.now(); const end = start + 1000;
+  for (const status of ['active','simulated']) {
+    f.plan('creator', status);
+    f.sql.prepare("UPDATE project_subscription SET periodStartAt = ?, periodEndAt = ? WHERE projectId = 'project'").run(start,end);
+    for (const [now, expected] of [[start-1,'free'],[start,'creator'],[end-1,'creator'],[end,'free']]) {
+      assert.equal((await getProjectEntitlements(f.db, 'project', now)).planId, expected);
+      const inserted = await f.reserve(f.file(4 * MiB), crypto.randomUUID(), 'storage', now);
+      assert.equal(inserted.meta.changes, expected === 'creator' ? 1 : 0);
+    }
+  }
+});
+await check('expiry changed during preflight prevents a paid-size reservation', async f => {
+  f.plan('creator');
+  f.hook(query => {
+    if (query.includes('INSERT INTO upload_task')) f.sql.exec("UPDATE project_subscription SET periodEndAt = 0 WHERE projectId = 'project'");
+  });
+  await assert.rejects(f.start(4 * MiB), rejected('uploadPlanLimit'));
+  assert.equal((await f.usage()).reservedBytes, 0);
+});
+await check('missing catalog produces a service error instead of code-default quotas', async f => {
+  f.sql.exec("DELETE FROM plan_catalog WHERE id = 'free'");
+  await assert.rejects(getPlanCatalog(f.db), cause => cause.status === 503);
+  await assert.rejects(f.start(MiB), cause => cause.status === 503);
+  assert.equal((await f.reserve(f.file(MiB))).meta.changes, 0);
+});
+await check('database rejects unsupported IDs, features and unsafe quota values', async f => {
+  for (const query of [
+    "UPDATE plan_catalog SET id = 'unknown' WHERE id = 'free'",
+    "UPDATE plan_catalog SET storageBytes = -1 WHERE id = 'free'",
+    "UPDATE plan_catalog SET maxFileSizeBytes = 8589934593 WHERE id = 'free'",
+    "UPDATE plan_catalog SET platformStorage = 2 WHERE id = 'free'",
+    "UPDATE plan_catalog SET maxFileSizeBytes = 1.5 WHERE id = 'free'"
+  ]) assert.throws(() => f.sql.exec(query));
 });

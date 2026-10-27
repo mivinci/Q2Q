@@ -30,7 +30,12 @@
     "seed-processing:build": "npm run build --workspace @q2q/seed-processing",
     "platform:preview": "npm run preview --workspace @q2q/platform",
     "platform:types": "npm run types --workspace @q2q/platform",
-    "platform:db:migrate": "npm run db:migrate --workspace @q2q/platform"
+    "platform:db:migrate": "npm run db:migrate --workspace @q2q/platform",
+    "admin:dev": "npm run dev --workspace @q2q/admin",
+    "admin:check": "npm run check --workspace @q2q/admin",
+    "admin:build": "npm run build --workspace @q2q/admin",
+    "admin:test": "npm test --workspace @q2q/admin",
+    "platform:check:accounts": "npm run check:accounts --workspace @q2q/platform"
   },
   "devDependencies": {
     "playwright-core": "^1.57.0"

@@ -2,9 +2,9 @@
   import { page } from '$app/state';
   import Paintbrush from '@lucide/svelte/icons/paintbrush';
   import Languages from '@lucide/svelte/icons/languages';
-  import * as Avatar from '#lib/components/ui/avatar/index.js';
+  import * as Avatar from '@q2q/ui/avatar';
   import { messages } from '#lib/i18n.js';
-  import ThemeToggle from '#lib/components/theme-toggle.svelte';
+  import ThemeToggle from '@q2q/ui/theme-toggle';
   import LanguageSelect from '#lib/components/language-select.svelte';
   import type { PageProps } from './$types';
 
@@ -60,7 +60,7 @@
           <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground"><Paintbrush class="size-4" aria-hidden="true" /></span>
           <div><h3 class="text-sm font-medium">{text.appearance}</h3><p class="mt-1 text-[13px] leading-relaxed text-muted-foreground">{text.appearanceDescription}</p></div>
         </div>
-        <div class="w-full shrink-0 lg:w-64"><ThemeToggle showLabels /></div>
+        <div class="w-full shrink-0 lg:w-64"><ThemeToggle labels={text} showLabels /></div>
       </div>
       <div class="flex flex-col gap-5 p-5 lg:flex-row lg:items-center lg:justify-between">
         <div class="flex items-start gap-3">

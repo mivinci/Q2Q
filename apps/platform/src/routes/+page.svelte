@@ -3,7 +3,7 @@
   import ArrowRight from '@lucide/svelte/icons/arrow-right';
   import File from '@lucide/svelte/icons/file';
   import Sprout from '@lucide/svelte/icons/sprout';
-  import { Button } from '#lib/components/ui/button/index.js';
+  import { Button } from '@q2q/ui/button';
   import FileList from '#lib/components/file-list.svelte';
   import StorageUsage from '#lib/components/storage-usage.svelte';
   import { messages } from '#lib/i18n.js';

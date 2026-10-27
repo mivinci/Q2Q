@@ -1,0 +1,19 @@
+{
+  "extends": [
+    "$app/tsconfig",
+    "../../tsconfig.base.json"
+  ],
+  "compilerOptions": {
+    "allowArbitraryExtensions": true,
+    "types": [
+      "$app/types",
+      "./worker-configuration.d.ts"
+    ],
+    "allowJs": false,
+    "checkJs": false
+  },
+  "include": [
+    "src",
+    "vite.config.ts"
+  ]
+}

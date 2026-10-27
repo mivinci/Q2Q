@@ -71,6 +71,7 @@ export async function createUpload(userId: string, fileId: string, input: Record
     const found = await env.DB.prepare('SELECT id FROM upload_task WHERE id = ?').bind(id).first();
     if (!found) {
       const [usage, current] = await Promise.all([getStorageUsage(env.DB, projectId), getProjectEntitlements(env.DB, projectId)]);
+      if (!current.features.platformStorage) error(403, 'planRequired');
       if (usage.usedBytes + usage.reservedBytes + size > current.limits.storageBytes) error(413, 'uploadStorageLimit');
       if (size > current.limits.maxFileSizeBytes) error(413, 'uploadPlanLimit');
       error(409, 'uploadConflict');

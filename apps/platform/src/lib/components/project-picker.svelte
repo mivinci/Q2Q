@@ -9,8 +9,8 @@
   import Layers from '@lucide/svelte/icons/layers';
   import Settings2 from '@lucide/svelte/icons/settings-2';
   import { messages } from '#lib/i18n.js';
-  import { Button } from '#lib/components/ui/button/index.js';
-  import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
+  import { Button } from '@q2q/ui/button';
+  import * as DropdownMenu from '@q2q/ui/dropdown-menu';
   import type { Project } from '#lib/server/projects.js';
   let { projects, currentProject, compact = false }: { projects: Project[]; currentProject: Project; compact?: boolean } = $props();
   const id = $props.id();

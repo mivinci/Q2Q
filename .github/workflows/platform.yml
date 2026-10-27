@@ -55,6 +55,10 @@ jobs:
         if: steps.impact.outputs.run == 'true'
       - run: npm run check:nodes --workspace @q2q/platform
         if: steps.impact.outputs.run == 'true'
+      - run: npm run platform:check:projects
+        if: steps.impact.outputs.run == 'true'
+      - run: npm run platform:check:accounts
+        if: steps.impact.outputs.run == 'true'
       - run: npm run platform:build
         if: steps.impact.outputs.run == 'true'
         env:
@@ -79,6 +83,17 @@ jobs:
             echo "::error::Missing CLOUDFLARE_ACCOUNT_ID repository variable."
             exit 1
           fi
+
+      - name: Verify platform admin migrations before deployment
+        if: >-
+          steps.impact.outputs.run == 'true' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          github.ref == 'refs/heads/main'
+        working-directory: apps/platform
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler d1 execute DB --remote --command "SELECT id, maxFileSizeBytes, storageBytes, revision FROM plan_catalog ORDER BY id; SELECT requestId FROM admin_operation LIMIT 0; SELECT revision FROM project_subscription LIMIT 0; SELECT disabledAt, accessRevision, authVersion FROM user LIMIT 0; SELECT authVersion FROM session LIMIT 0; SELECT requestId FROM registry_request LIMIT 0;"
 
       - name: Deploy platform Worker
         if: >-

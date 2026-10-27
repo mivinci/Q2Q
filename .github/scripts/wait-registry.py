@@ -25,10 +25,10 @@ def main():
     while time.monotonic() < deadline:
         data = json.loads(subprocess.check_output(['gh', 'api', endpoint]))
         if registry_state(data['workflow_runs'], sha) == 'success':
-            print('Registry workflow succeeded for this main commit; deploying Track.')
+            print('Registry workflow succeeded for this main commit; deploying the RPC consumer.')
             return
         time.sleep(10)
-    raise TimeoutError('Registry workflow did not succeed within 15 minutes; Track was not deployed')
+    raise TimeoutError('Registry workflow did not succeed within 15 minutes; RPC consumer was not deployed')
 
 
 if __name__ == '__main__':
