@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { enhance, type SubmitFunction } from '$app/forms';
   import { page } from '$app/state';
   import { messages } from '#lib/messages.js';
   import { Button } from '@q2q/ui/button';
@@ -13,19 +14,25 @@
   let confirmed = false;
   let pending = $state(false);
 
-  function submit(event: SubmitEvent) {
-    if (!confirmed) {
-      event.preventDefault();
-      description = review(new FormData(event.currentTarget as HTMLFormElement));
+  const submit: SubmitFunction = ({ formData, cancel }) => {
+    if (!confirmed || pending) {
+      cancel();
+      if (pending) return;
+      description = review(formData);
       open = true;
-    } else {
-      confirmed = false;
-      pending = true;
+      return;
     }
-  }
+    confirmed = false;
+    pending = true;
+    return async ({ update }) => {
+      try { await update(); }
+      finally { pending = false; }
+    };
+  };
+
 </script>
 
-<form method="POST" bind:this={element} onsubmit={submit} class="space-y-5">
+<form method="POST" bind:this={element} use:enhance={submit} class="space-y-4">
   {@render children()}
   <Button type="submit" variant={destructive ? 'destructive' : 'default'} disabled={pending}>{pending ? text.saving : text.reviewChanges}</Button>
 </form>

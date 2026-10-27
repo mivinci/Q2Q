@@ -16,7 +16,15 @@
     "./theme.css": "./src/theme.css",
     "./assets/*": "./src/assets/*",
     "./app-shell": "./src/app-shell.svelte",
-    "./language-select": "./src/language-select.svelte"
+    "./language-select": "./src/language-select.svelte",
+    "./input": "./src/input/index.ts",
+    "./select": "./src/select/index.ts",
+    "./calendar": "./src/calendar/index.ts",
+    "./popover": "./src/popover/index.ts",
+    "./separator": "./src/separator/index.ts",
+    "./date-picker": "./src/date-picker.svelte",
+    "./textarea": "./src/textarea/index.ts",
+    "./checkbox": "./src/checkbox/index.ts"
   },
   "peerDependencies": {
     "svelte": "^5.57.1",
@@ -29,6 +37,7 @@
     "tailwind-variants": "^3.3.1",
     "mode-watcher": "^1.1.0",
     "tw-animate-css": "^1.4.0",
-    "shadcn-svelte": "^1.7.0"
+    "shadcn-svelte": "^1.7.0",
+    "@internationalized/date": "^3.12.4"
   }
 }
