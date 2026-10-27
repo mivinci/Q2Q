@@ -55,7 +55,7 @@
   onDestroy(() => controller?.abort());
 </script>
 
-<div id="upload" class="mb-7 scroll-mt-20">
+<div id="upload" class={detail?'mb-5 scroll-mt-20':'mb-7 scroll-mt-20'}>
   <div class="flex flex-wrap items-start justify-between gap-4">
     {#if !detail}<div><h1 class="text-2xl font-medium tracking-tight">{text.library}</h1><p class="mt-1 text-[13px] text-muted-foreground">{text.description}</p></div>{/if}
     <div class="text-right" class:hidden={detail}>
@@ -79,7 +79,7 @@
     </div>
   {/if}
   {#if detail && retryFile && !uploads.length}
-    <Button disabled={!ready || !!active} onclick={() => { retryTask = { fileId: retryFile!.id, name: retryFile!.name, size: retryFile!.size }; input.click(); }}>{text.uploadRetry}</Button>
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4"><p class="text-sm text-muted-foreground">{text.filePending}</p><Button disabled={!ready || !!active} onclick={() => { retryTask = { fileId: retryFile!.id, name: retryFile!.name, size: retryFile!.size }; input.click(); }}>{text.uploadRetry}</Button></div>
   {/if}
   {#snippet historyList()}
     <ul class="divide-y">
@@ -91,7 +91,7 @@
             {#if task.canManage && (task.status === 'uploading' || ((task.status === 'cancelled' || task.status === 'failed') && task.cleanupPending))}
               <Button variant="ghost" size="sm" disabled={actionId !== null} onclick={() => taskAction(task, 'cancel')}>{task.cleanupPending ? text.uploadRetryCleanup : text.cancelUpload}</Button>
             {:else if task.canManage && (task.status === 'cancelled' || task.status === 'failed') && !task.cleanupPending}
-              <Button variant="outline" size="sm" disabled={!ready || !!active || uploads.some((other) => other.fileId === task.fileId && ['initializing', 'uploading', 'completing', 'uploaded'].includes(other.status))}
+              <Button variant={detail?'default':'outline'} size="sm" disabled={!ready || !!active || uploads.some((other) => other.fileId === task.fileId && ['initializing', 'uploading', 'completing', 'uploaded'].includes(other.status))}
                 onclick={() => { retryTask = task; input.click(); }}>{text.uploadRetry}</Button>
             {:else if task.canManage && task.status === 'completing'}
               <Button variant="outline" size="sm" disabled={actionId !== null} onclick={() => taskAction(task, 'complete')}>{text.uploadRetryComplete}</Button>
@@ -103,7 +103,7 @@
   {/snippet}
   {#if uploads.length}
     {#if detail}
-      <details aria-label={text.uploadHistory} class="mt-7 overflow-hidden rounded-xl border" open={uploads.some((task) => task.cleanupPending || task.status === 'completing')}>
+      <details aria-label={text.uploadHistory} class="overflow-hidden rounded-xl border" class:mt-4={!!active||!!issue} open={uploads.some((task) => task.cleanupPending || task.status === 'completing') || (!!retryFile && uploads.some(task=>['failed','initializing','uploading'].includes(task.status)))}>
         <summary class="cursor-pointer bg-muted/30 px-4 py-3 text-[13px] font-medium">{text.uploadHistory} · {uploads.length}</summary>
         <div class="border-t bg-card">
           <p class="px-4 py-3 text-[13px] text-muted-foreground">{text.uploadHistoryDescription}</p>

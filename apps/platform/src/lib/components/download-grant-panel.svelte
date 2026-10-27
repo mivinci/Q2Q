@@ -7,8 +7,8 @@
   import { uploadRequest } from '#lib/upload-client.js';
   import { Button } from '@q2q/ui/button';
   import ConfirmDialog from '@q2q/ui/confirm-dialog';
-  let { publicationId, name, infoHash, networkMode, trackUrl }: {
-    publicationId: string; name: string; infoHash: string; networkMode: 'platform' | 'custom' | 'unconfigured'; trackUrl: string | null;
+  let { publicationId, name, infoHash, networkMode, trackUrl, prominent = false }: {
+    publicationId: string; name: string; infoHash: string; networkMode: 'platform' | 'custom' | 'unconfigured'; trackUrl: string | null; prominent?: boolean;
   } = $props();
   const text = $derived(messages[page.data.locale]);
   const magnetLink = $derived.by(() => {
@@ -54,8 +54,8 @@
     finally { busy = false; }
   }
 </script>
-<div class="mt-3 w-full rounded-lg bg-muted/40 p-3">
-  <Button size="sm" variant="outline" disabled={busy} onclick={() => confirmExport = true}>{text.exportDownloadSeed}</Button>
+<div class={prominent?'mt-4 w-full':'mt-3 w-full rounded-lg bg-muted/40 p-3'}>
+  <Button size="sm" variant={prominent?'default':'outline'} disabled={busy} onclick={() => confirmExport = true}>{text.exportDownloadSeed}</Button>
   <p class="mt-2 text-[13px] text-muted-foreground">{text.downloadGrantWarning}</p>
   <div class="mt-4 border-t pt-3">
     <p class="text-[13px] font-medium">{text.magnetLink}</p>
@@ -67,12 +67,22 @@
     {#if magnetCopyFailed}<p role="status" class="mt-2 text-[13px] text-destructive">{text.magnetCopyFailed}</p>{/if}
     {#if magnetCopied}<p role="status" class="sr-only">{text.magnetCopied}</p>{/if}
   </div>
+  {#snippet grantRows()}
   {#each grants as grant (grant.id)}
     <div class="mt-3 flex flex-wrap items-center justify-between gap-2 text-[13px]">
       <span class="min-w-0 break-all font-mono text-muted-foreground">{grant.id}</span>
       {#if grant.revokedAt}<span>{text.downloadGrantRevoked}</span>{:else}<Button size="sm" variant="ghost" disabled={busy} onclick={() => revoke(grant.id)}>{text.revokeDownloadGrant}</Button>{/if}
     </div>
   {/each}
+  {/snippet}
+  {#if grants.length}
+    {#if prominent}
+      <details class="mt-4 border-t">
+        <summary class="cursor-pointer py-3 text-xs font-medium text-muted-foreground">{text.downloadGrantHistory} · {grants.length}</summary>
+        {@render grantRows()}
+      </details>
+    {:else}{@render grantRows()}{/if}
+  {/if}
   {#if issue}<p role="alert" class="mt-2 text-sm text-destructive">{issue}</p>{/if}
 </div>
 
