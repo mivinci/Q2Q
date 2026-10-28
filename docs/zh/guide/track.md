@@ -57,3 +57,10 @@ if let Some(cursor) = page.next_cursor {
 高层普通下载和 VOD 默认请求下载并发的两倍备选：默认 4 个连接请求 8 个候选，默认推导最多 32 个。可用 `client::builder().peer_query_limit(12)` 独立配置 1–50，实际连接上限仍由 max_download_peers 控制。初次发现和每五秒刷新都发送这个 limit，内存候选保留上限一致。刷新发起新轮换查询，不自动遍历所有页。
 
 SDK 在发请求前拒绝非法数量。Builder 新增 `BuildError::InvalidPeerQueryLimit`，穷举匹配该错误的调用者需增加分支。
+
+
+## 发布原生 Track 镜像
+
+原生 Track 的版本以 `crates/q2q-track-server/Cargo.toml` 为准。准备发版 PR 时更新该包版本和 `Cargo.lock`，版本必须高于已有 `track/v*` tag 与镜像。合入 `main` 后，原生服务镜像发布工作流等待同提交的 Rust CI，检查镜像版本未被使用、验证构建产物的 `--version`，再创建对应 `track/vX.Y.Z` tag 并发布版本镜像和 `latest`。服务的健康接口和 Registry 心跳均读取该 Cargo 版本。
+
+Track 与 Punch 分别检测和发布，仅修改其中一个包的版本不会发布另一个镜像。Workers Track 按[自己的部署流程](./deploy-workers-track)更新。服务器需拉取原生 Track 新镜像并重启；若版本镜像已存在，发布流程会拒绝覆盖。tag 已创建但版本镜像尚未推送时可重跑同一工作流。

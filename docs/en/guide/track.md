@@ -169,3 +169,10 @@ The Workers implementation is manually deployed at `https://track.q2q.app`. Publ
 control-plane and no-CDN 8 MiB P2P smoke tests with full-file SHA256 passed using two
 local peers and live Registry/Punch. Cross-NAT, forced TURN and cloud capacity remain
 unverified; automatic deployment has not been enabled.
+
+
+## Publishing the native Track image
+
+The native Track version comes from `crates/q2q-track-server/Cargo.toml`. A release PR updates that package version and `Cargo.lock`; the version must be newer than existing `track/v*` tags and images. After it is merged into `main`, the native service image workflow waits for Rust CI on the same commit, checks that the image tag is unused, verifies the built binary's `--version`, creates the corresponding `track/vX.Y.Z` Git tag and publishes the versioned image and `latest`. The service health endpoint and Registry heartbeat both report the Cargo version.
+
+Track and Punch versions are detected and published independently. Workers Track follows its [own deployment process](./deploy-workers-track). Servers must pull the new native Track image and restart; the workflow refuses to overwrite an existing version image. If the Git tag was created but the versioned image was not pushed, the same workflow run can be retried.

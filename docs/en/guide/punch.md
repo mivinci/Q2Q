@@ -166,3 +166,12 @@ See [Deploy](./deploy-single-node). A Punch needs:
 - inbound **UDP and TCP** on the configured `bind` port for QUIC and WSS
 - `cluster_size` set to the number of instances, so the rate limit is split
   rather than multiplied
+
+
+## Publishing a Punch image
+
+The program version comes from `crates/q2q-punch-server/Cargo.toml`. To prepare a release PR, update that package to a new stable version (for example `0.6.1`) and update `Cargo.lock`. The version must be newer than existing `punch/v*` tags and image versions. Ordinary code changes do not publish an image.
+
+After the version PR is merged into `main`, the native service image release workflow waits for Rust CI on the same commit, checks that the target image tag is unused, builds the image and checks the container's `--version`. It then creates the `punch/v0.6.1` Git tag and publishes the `v0.6.1` and `latest` images. Punch reports the Cargo package version in its Registry heartbeat, so the management page shows `0.6.1`.
+
+If the run fails after creating the Git tag but before pushing the version image, rerun the same workflow; the existing tag must point to the same commit. Once the version image exists, the guard refuses to overwrite it. Inspect the registry and failed step before recovering `latest` from the existing image. Servers must pull the new image and restart. Existing images are unchanged.
