@@ -83,3 +83,19 @@ Core uses Executor, not the ordinary file Downloader. Seeds, ProofTree, Merkle v
 `BuildError::Http` is a new variant for executor construction errors; exhaustive matches need updating. The shared multi-transfer cap and admission counting toward request deadlines are intentional resource behavior changes.
 
 Run the complete example with `cargo run -p q2q-http --example download -- URL OUTPUT SIZE SHA1`.
+
+## URL access policy
+
+`Executor::builder().url_policy(predicate)` and `Downloader::builder().url_policy(predicate)` accept an optional synchronous `Fn(&url::Url) -> bool + Send + Sync`. Initial requests and every redirect are checked before admission or network I/O. The same policy covers GET, Range, mirror changes, and network requests during resume. Rejection returns `Error::Invalid` without including the URL. Without a policy, existing HTTP(S) behavior remains unchanged.
+
+Use `with_url_policy(predicate)` to derive a restricted handle from an existing executor or downloader. It shares the connection pool, global/per-host request budgets, and file/disk budgets. Policies intersect with the parent's restrictions and cannot loosen them; the parent remains unchanged.
+
+```rust,no_run
+let shared = q2q_http::Downloader::builder().build()?;
+let restricted = shared.with_url_policy(|url| {
+    url.scheme() == "https" && url.host_str() == Some("cdn.example.com")
+});
+# Ok::<(), q2q_http::Error>(())
+```
+
+Predicates must be fast and nonblocking. Callers define allowed source and redirect CDN hosts. This validates URLs, not resolved IP addresses, and is not a complete SSRF sandbox. Offline verification of an existing completed target does not access the network or invoke the predicate.

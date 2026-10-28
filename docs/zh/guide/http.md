@@ -85,3 +85,19 @@ core 调用流式 Executor，而非普通文件 Downloader。Seed、ProofTree、
 新增 `BuildError::Http` 报告 Executor 构建失败；穷举匹配 BuildError 的调用方需覆盖新分支。多任务总 HTTP 上限及排队纳入期限是本次明确的资源行为变化。
 
 完整调用示例位于 `crates/q2q-http/examples/download.rs`，可用 `cargo run -p q2q-http --example download -- URL OUTPUT SIZE SHA1` 运行。
+
+## URL 访问策略
+
+`Executor::builder().url_policy(predicate)` 和 `Downloader::builder().url_policy(predicate)` 可配置可选的同步 `Fn(&url::Url) -> bool + Send + Sync`。首次请求和每次重定向均在准入和网络 I/O 前校验，普通 GET、Range、镜像切换和恢复中的网络请求使用相同策略。拒绝返回不含 URL 的 `Error::Invalid`；默认不额外限制现有 HTTP(S) 行为。
+
+已有句柄可通过 `with_url_policy(predicate)` 派生受限句柄，保留连接池、全局/host 请求预算及文件/磁盘预算；策略与父句柄取交集，不能放宽父策略，父句柄保持不变。调用方无需为单类下载建立独立下载器。
+
+```rust,no_run
+let shared = q2q_http::Downloader::builder().build()?;
+let restricted = shared.with_url_policy(|url| {
+    url.scheme() == "https" && url.host_str() == Some("cdn.example.com")
+});
+# Ok::<(), q2q_http::Error>(())
+```
+
+谓词必须快速、不阻塞，调用方负责定义完整来源及重定向 CDN 白名单。此功能只校验 URL，不进行 DNS/IP 固定，不能替代完整 SSRF 隔离；已有目标文件的离线校验不产生网络访问，不调用策略。
