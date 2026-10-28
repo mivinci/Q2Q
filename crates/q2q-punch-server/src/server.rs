@@ -474,9 +474,13 @@ pub async fn serve(endpoint: Endpoint, state: Arc<State>) {
   }
 }
 
+// Erase only the socket IO type; both modes share framing, auth and limits.
+trait WebSocketIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> WebSocketIo for T {}
+
 pub async fn serve_websocket(
   listener: TcpListener,
-  acceptor: TlsAcceptor,
+  acceptor: Option<TlsAcceptor>,
   state: Arc<State>,
 ) -> std::io::Result<()> {
   let global_connections = state.websocket_slots.clone();
@@ -498,11 +502,16 @@ pub async fn serve_websocket(
         .max_message_size(Some(st.max_request_bytes))
         .max_frame_size(Some(st.max_request_bytes));
       let handshake = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
-        let tls_stream = tls
-          .accept(stream)
-          .await
-          .map_err(|error| error.to_string())?;
-        accept_async_with_config(tls_stream, Some(ws_config))
+        let stream: Box<dyn WebSocketIo> = match tls {
+          Some(tls) => Box::new(
+            tls
+              .accept(stream)
+              .await
+              .map_err(|error| error.to_string())?,
+          ),
+          None => Box::new(stream),
+        };
+        accept_async_with_config(stream, Some(ws_config))
           .await
           .map_err(|error| error.to_string())
       })
@@ -514,7 +523,7 @@ pub async fn serve_websocket(
           handle_websocket(socket, st, remote).await;
         }
         Ok(Err(error)) => tracing::debug!(%remote, %error, "WebSocket handshake failed"),
-        Err(_) => tracing::debug!(%remote, "WebSocket TLS or upgrade handshake timed out"),
+        Err(_) => tracing::debug!(%remote, "WebSocket transport or upgrade handshake timed out"),
       }
     });
   }
@@ -1194,6 +1203,91 @@ mod tests {
     })
     .await
     .unwrap();
+  }
+
+  async fn websocket_listener_join(tls_enabled: bool) {
+    let identity = crate::cert::PunchIdentity::generate("punch-1").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let acceptor =
+      tls_enabled.then(|| TlsAcceptor::from(Arc::new(identity.tls_server_config().unwrap())));
+    let st = Arc::new(state(60));
+    let server = tokio::spawn(serve_websocket(listener, acceptor, st.clone()));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+      let tcp = tokio::net::TcpStream::connect(address).await.unwrap();
+      let stream: Box<dyn WebSocketIo> = if tls_enabled {
+        // Fixture certificate only: production native clients pin the Track key.
+        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+          rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AcceptAny))
+        .with_no_client_auth();
+        Box::new(
+          tokio_rustls::TlsConnector::from(Arc::new(config))
+            .connect("punch-1".try_into().unwrap(), tcp)
+            .await
+            .unwrap(),
+        )
+      } else {
+        Box::new(tcp)
+      };
+      let scheme = if tls_enabled { "wss" } else { "ws" };
+      let (mut socket, _) =
+        tokio_tungstenite::client_async(format!("{scheme}://{address}/"), stream)
+          .await
+          .unwrap();
+      let request = Request {
+        v: 1,
+        id: "listener-join".into(),
+        method: "punch.join".into(),
+        params: serde_json::to_value(join_request(11, "punch-1", now())).unwrap(),
+      };
+      socket
+        .send(Message::Binary(
+          serde_json::to_vec(&PunchFrame::Request(request))
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+      let Message::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
+        panic!("expected binary response");
+      };
+      let PunchFrame::Response(response) = serde_json::from_slice(&bytes).unwrap() else {
+        panic!("expected Punch response");
+      };
+      assert_eq!(response.id, "listener-join");
+      assert!(response.error.is_none());
+      assert!(response.result.is_some());
+      socket.close(None).await.unwrap();
+      while let Some(message) = socket.next().await {
+        if matches!(message, Ok(Message::Close(_)) | Err(_)) {
+          break;
+        }
+      }
+      // The session must release the authenticated binding in either mode.
+      while st.websocket_slots.available_permits() != CONNECTION_LIMIT {
+        tokio::task::yield_now().await;
+      }
+      assert!(st.bindings.get(&peer(11)).is_none());
+    })
+    .await
+    .unwrap();
+    server.abort();
+    let _ = server.await;
+  }
+
+  #[tokio::test]
+  async fn plain_websocket_listener_authenticates_and_cleans_up() {
+    websocket_listener_join(false).await;
+  }
+
+  #[tokio::test]
+  async fn tls_websocket_listener_authenticates_and_cleans_up() {
+    websocket_listener_join(true).await;
   }
 
   #[tokio::test]

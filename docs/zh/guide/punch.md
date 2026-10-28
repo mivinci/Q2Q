@@ -11,11 +11,24 @@ Punch 不解析经手的 SDP，只把它视作不透明字符串；它不签发�
 1. **连接迁移。** Peer 可能运行在手机或家庭网络中。Wi-Fi 与蜂窝网络切换通常会中断 TCP 连接；QUIC 使用连接 ID 标识连接，而不只依赖网络地址，因此可以继续使用原连接。
 2. **底层就是 UDP。** Punch 的一项职责是帮助 Peer 保持 NAT 映射，这需要定期发送 UDP 数据包。QUIC 基于 UDP，无需再维护另一条 UDP 通道。
 
-QUIC 仍是首选传输。Punch 在同一个 `bind` 地址上分别监听 UDP/QUIC 与 TCP/WSS。SDK 从 Track 下发的 `quic://host:port` 派生 `wss://host:port/`，先尝试 QUIC，只有链路无法建立时才回退到 TLS 上的 WebSocket。Track 无需单独配置 WSS 地址。
+QUIC 仍是首选传输。Punch 在同一个 `bind` 地址上分别监听 UDP/QUIC 与 TCP/WebSocket；直接 WSS 需开启下述 TLS 配置。SDK 从 Track 下发的 `quic://host:port` 派生 `wss://host:port/`，先尝试 QUIC，只有链路无法建立时才回退到 TLS 上的 WebSocket。Track 无需单独配置 WSS 地址。
 
 QUIC 心跳通过可靠双向 stream 发送，降低单个 UDP 包丢失导致长时间发布退出的风险；stream 仍由 QUIC 的 UDP 连接承载。WSS 上的心跳则使用有界 WebSocket 控制帧。其他消息（`join`、`exit` 和全部信令）在两种传输上也都使用可靠消息。两种方式都复用 Track 下发的 Punch 公钥验证服务身份。
 
 WSS 只覆盖 Punch 绑定和信令控制面，握手使用根路径 `/`。文件数据仍通过 WebRTC DataChannel 和 ICE 传输；仅启用 WSS 不代表 UDP 被阻断时文件也能传完。要在这种网络中完成传输，还需单独验证 TURN/TCP 或 TURN/TLS 数据通路。
+
+## WebSocket TLS 配置
+
+`websocket_tls` 默认 `false`：TCP listener 接收明文 WS，适合放在终止公网 TLS 的反向代理后面。QUIC 的 TLS 与持久化节点身份不受此开关影响。
+
+```toml
+bind = "0.0.0.0:4433"
+websocket_tls = false
+```
+
+反向代理对外提供受浏览器信任的 WSS 证书，向 Punch 转发明文 WebSocket，并保留 Upgrade 握手。明文上游应限制在本机、私网或可信隧道内；当前 TCP/UDP 共用 `bind`，如需公网 QUIC，应通过防火墙单独限制 TCP 上游的访问。
+
+直接使用原生 SDK 的 WSS 回退时，设置 `websocket_tls = true`，Punch 会继续使用现有节点身份完成 TLS。已有配置升级后若仍需直接 WSS，必须显式开启。当前原生 SDK 始终派生 WSS 地址并校验 Track 下发的 Punch 公钥，不支持直接连接明文 WS；也不能把代理的普通域名证书当作原来的节点证书。浏览器的独立 WSS 发现与节点身份验证仍属于 Web SDK 后续设计。
 
 ## 在线绑定
 

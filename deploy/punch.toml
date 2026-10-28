@@ -1,7 +1,10 @@
 # Punch configuration. Mounted into the container at /etc/q2q/punch.toml.
 
 bind = "0.0.0.0:4433"
-# QUIC listens on UDP and WSS listens on TCP at this same address and port.
+# QUIC listens on UDP and WebSocket listens on TCP at this same address and port.
+# Default false: terminate public WSS at a reverse proxy and forward plain WS.
+# Set true for direct native WSS with the pinned Punch identity certificate.
+websocket_tls = false
 # Must match the punch_id Track assigns in track.toml.
 punch_id = "punch-1"
 ttl_secs = 300

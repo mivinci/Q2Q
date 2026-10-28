@@ -207,6 +207,7 @@ Continue on the management machine. Write `$Q2Q_DEPLOY_DIR/punch.toml` with cont
 
 ```toml
 bind = "0.0.0.0:4433"
+websocket_tls = true
 punch_id = "punch-1"
 
 [identity]
