@@ -207,6 +207,7 @@ q2q-keygen token \
 
 ```toml
 bind = "0.0.0.0:4433"
+websocket_tls = true
 punch_id = "punch-1"
 
 [identity]

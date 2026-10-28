@@ -20,8 +20,8 @@ The control channel is QUIC rather than TCP, for two reasons:
    mapping alive, which only periodic UDP packets can do. QUIC is UDP, so no
    second path is needed.
 
-QUIC remains the preferred transport. Punch listens for UDP/QUIC and TCP/WSS on
-the same `bind` address. The SDK derives `wss://host:port/` from Track's
+QUIC remains the preferred transport. Punch listens for UDP/QUIC and TCP/WebSocket on
+the same `bind` address. Direct WSS requires the TLS setting below. The SDK derives `wss://host:port/` from Track's
 `quic://host:port` address, tries QUIC first, and falls back to WebSocket over
 TLS when the QUIC link cannot be established. Track needs no separate WSS URL.
 
@@ -36,6 +36,19 @@ WebSocket root path (`/`). Peer file data still uses WebRTC DataChannels and its
 own ICE path; WSS alone does not make a transfer work when UDP is blocked. See
 [Deploy](./deploy-single-node) for the listener configuration. Supporting file transfers on UDP-blocked networks
 requires a separate data-plane path such as TURN over TCP/TLS.
+
+## WebSocket TLS configuration
+
+`websocket_tls` defaults to `false`: the TCP listener accepts plain WS behind a reverse proxy that terminates public TLS. QUIC TLS and the persistent node identity are unaffected.
+
+```toml
+bind = "0.0.0.0:4433"
+websocket_tls = false
+```
+
+The proxy serves WSS with a browser-trusted certificate and forwards plain WebSocket traffic, including the Upgrade handshake. Keep the plaintext upstream on loopback, a private network, or a trusted tunnel. TCP and UDP currently share `bind`; when QUIC is public, restrict upstream TCP access separately with a firewall.
+
+For direct native SDK WSS fallback, set `websocket_tls = true` to retain TLS using the existing Punch identity. Existing deployments requiring direct WSS must explicitly enable this setting when upgrading. The native SDK still derives a WSS URL and pins the Punch public key supplied by Track: it cannot connect directly to plain WS or accept an ordinary proxy certificate as the node identity. Separate browser WSS discovery and node authentication remain part of the Web SDK design.
 
 ## Bindings
 

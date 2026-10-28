@@ -39,6 +39,9 @@ struct Args {
 struct Config {
   bind: SocketAddr,
   punch_id: String,
+  /// Enable in-process WebSocket TLS; leave disabled behind a TLS reverse proxy.
+  #[serde(default)]
+  websocket_tls: bool,
   #[serde(default = "default_ttl")]
   ttl_secs: u64,
   #[serde(default = "default_sweep")]
@@ -235,7 +238,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
   });
 
-  let acceptor = TlsAcceptor::from(Arc::new(identity.tls_server_config()?));
+  let acceptor = if config.websocket_tls {
+    Some(TlsAcceptor::from(Arc::new(identity.tls_server_config()?)))
+  } else {
+    None
+  };
+  tracing::info!(tls = config.websocket_tls, "WebSocket listener configured");
   let (registry_stop, stop) = tokio::sync::watch::channel(false);
   let registry_task =
     registry_reporter.map(|reporter| tokio::spawn(reporter.run(state.clone(), stop)));
@@ -271,6 +279,15 @@ async fn shutdown_signal() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn websocket_tls_is_opt_in() {
+    let base = "bind = '127.0.0.1:4433'\npunch_id = 'punch-1'\n";
+    let default: Config = toml::from_str(base).unwrap();
+    assert!(!default.websocket_tls);
+    let enabled: Config = toml::from_str(&format!("{base}websocket_tls = true\n")).unwrap();
+    assert!(enabled.websocket_tls);
+  }
 
   #[tokio::test]
   async fn tcp_and_udp_listeners_share_the_configured_address() {
