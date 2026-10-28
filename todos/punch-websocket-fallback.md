@@ -88,3 +88,10 @@ Track 配置与协议响应不再包含单独的 WSS 地址；`url` 始终表示
 - [x] connect/offer 校验票据范围；exit 独立 MAC 域及完整防重放校验；畸形 MAC 安全拒绝。exit 线协议兼容说明见 [Punch 指南](../docs/zh/guide/punch.md)。
 - [x] 按连接串行处理信令状态与路由切换；投递失败缓冲或明确报错，补发队列有条数和字节上限。QUIC 并发握手、连接额度、首次认证与请求读写期限已覆盖。
 - [x] 验证：Punch 库 38 项、Punch server 37 项；SDK 135 项及公开 API 集成 10 项；CLI 11 项。临时本地 Track/Punch（1 秒心跳、默认 Binding TTL）上的 SDK 并发上传/VOD/清理和 CLI 发布/下载/中断续传/撤回用例各 1 项通过；严格 Clippy、格式检查和文档构建通过。其他外部服务用例及手动 benchmark 未运行。
+
+
+## Punch 镜像发版和心跳版本
+
+用户确认采用版本 PR：更新 `q2q-punch-server` 的 Cargo 包版本及 lock，合入 main 后按版本变化触发发版。PR 阶段校验版本递增、stable 格式、锁文件和 Git tag；发布等待同提交 Rust CI，检查 Registry 目标 tag 不存在，构建镜像并验证容器 `--version`，再创建 Git tag 和发布版本镜像及 latest。心跳继续使用 `CARGO_PKG_VERSION`，没有第二个版本来源。
+
+已停止旧的 tag/手动镜像发布入口，Punch 和原生 Track 均使用独立版本检测及镜像发布任务；Workers Track 的部署保持原工作流。当前已有 `punch/v0.6.0`，下次需使用高于它的版本；本改动不改 Cargo 版本，也不触发实际发布。目标镜像已存在时拒绝覆盖；相同提交的 Git tag 可在推送镜像前失败后重试。正式 CI 和 Docker 构建需在 GitHub 上验证。
