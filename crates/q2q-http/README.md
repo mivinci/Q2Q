@@ -63,3 +63,9 @@ See the [HTTP guide](../../docs/en/guide/http.md) or
 Run `cargo run -p q2q-http --example download -- URL OUTPUT SIZE SHA1` for a complete
 file download with progress. Caller applications provide Tokio; this crate does
 not start a runtime for them.
+
+Optional `url_policy` predicates on both builders check initial URLs and every
+redirect before network I/O. `with_url_policy` derives a stricter handle sharing
+the same pool and request/file/disk budgets; policies intersect and cannot loosen
+parent restrictions. Predicates must be fast and nonblocking. This is URL-level
+filtering, not DNS/IP pinning. See the HTTP guide for the policy contract.

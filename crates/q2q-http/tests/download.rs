@@ -635,3 +635,83 @@ async fn journal_failure_stops_later_queued_writes_and_wait_releases_lock() {
     .unwrap();
   lock.try_lock().unwrap();
 }
+
+#[tokio::test]
+async fn downloader_policy_applies_to_redirects_and_resumed_transfers() {
+  let dir = tempfile::tempdir().unwrap();
+  let blocked = Server::start(|_| Reply::body(b"hello")).await;
+  let destination = blocked.url.clone();
+  let source = Server::start(move |_| {
+    let mut reply = Reply::body(b"");
+    reply.status = 302;
+    reply.headers.push(("Location".into(), destination.clone()));
+    reply
+  })
+  .await;
+  let source_port = url::Url::parse(&source.url).unwrap().port();
+  let downloader = Downloader::builder()
+    .retries(0)
+    .url_policy(move |url| url.port() == source_port)
+    .build()
+    .unwrap();
+  for resume in [false, true] {
+    let path = dir.path().join(if resume { "resume" } else { "download" });
+    let req = request(&path, &source.url, b"hello");
+    let task = if resume {
+      downloader.resume(req).await
+    } else {
+      downloader.download(req).await
+    }
+    .unwrap();
+    assert!(task.wait().await.is_err());
+    assert!(!path.exists());
+  }
+  assert!(blocked.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn derived_downloader_keeps_parent_file_budget_and_policy() {
+  let dir = tempfile::tempdir().unwrap();
+  let server = Server::start(|_| {
+    let mut reply = Reply::body(b"hello");
+    reply.delay = Duration::from_millis(150);
+    reply
+  })
+  .await;
+  let parent = Downloader::builder()
+    .max_active_files(1)
+    .url_policy(|url| url.path() != "/denied")
+    .build()
+    .unwrap();
+  let child = parent.with_url_policy(|_| true);
+  let rejected = child
+    .download(request(
+      dir.path().join("denied"),
+      &format!("{}/denied", server.url),
+      b"hello",
+    ))
+    .await
+    .unwrap();
+  assert!(rejected.wait().await.is_err());
+  assert!(server.requests.lock().unwrap().is_empty());
+  let first = child
+    .download(request(dir.path().join("first"), &server.url, b"hello"))
+    .await
+    .unwrap();
+  assert!(
+    tokio::time::timeout(
+      Duration::from_millis(20),
+      parent.download(request(dir.path().join("second"), &server.url, b"hello"))
+    )
+    .await
+    .is_err()
+  );
+  first.wait().await.unwrap();
+  parent
+    .download(request(dir.path().join("second"), &server.url, b"hello"))
+    .await
+    .unwrap()
+    .wait()
+    .await
+    .unwrap();
+}

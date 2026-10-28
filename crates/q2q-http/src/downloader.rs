@@ -131,6 +131,7 @@ impl TryFrom<DownloadRequest> for Spec {
 pub struct Downloader {
   inner: Arc<Inner>,
 }
+#[derive(Clone)]
 struct Inner {
   http: Executor,
   files: Arc<Semaphore>,
@@ -206,6 +207,11 @@ impl DownloaderBuilder {
     self.http = self.http.timeout(d);
     self
   }
+  /// Apply a synchronous URL predicate to initial requests and redirect targets.
+  pub fn url_policy(mut self, policy: impl Fn(&url::Url) -> bool + Send + Sync + 'static) -> Self {
+    self.http = self.http.url_policy(policy);
+    self
+  }
   pub fn build(self) -> Result<Downloader, Error> {
     if self.files == 0
       || self.files > Semaphore::MAX_PERMITS
@@ -234,6 +240,18 @@ impl DownloaderBuilder {
   }
 }
 impl Downloader {
+  /// Restrict network targets while sharing file/disk limits, pool and request budgets.
+  /// The new predicate is intersected with any existing executor policy.
+  pub fn with_url_policy(
+    &self,
+    policy: impl Fn(&url::Url) -> bool + Send + Sync + 'static,
+  ) -> Self {
+    let mut inner = (*self.inner).clone();
+    inner.http = inner.http.with_url_policy(policy);
+    Self {
+      inner: Arc::new(inner),
+    }
+  }
   pub fn builder() -> DownloaderBuilder {
     DownloaderBuilder::default()
   }

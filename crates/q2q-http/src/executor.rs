@@ -18,9 +18,12 @@ use tokio::{
 };
 use url::Url;
 
+type UrlPolicy = Arc<dyn Fn(&Url) -> bool + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Executor {
   inner: Arc<Inner>,
+  url_policy: Option<UrlPolicy>,
 }
 struct Inner {
   http: reqwest::Client,
@@ -41,6 +44,7 @@ pub struct ExecutorBuilder {
   redirects: usize,
   collect_limit: usize,
   invalid_certs: bool,
+  url_policy: Option<UrlPolicy>,
 }
 impl Default for ExecutorBuilder {
   fn default() -> Self {
@@ -52,6 +56,7 @@ impl Default for ExecutorBuilder {
       redirects: 3,
       collect_limit: 8 * 1024 * 1024,
       invalid_certs: false,
+      url_policy: None,
     }
   }
 }
@@ -86,6 +91,13 @@ impl ExecutorBuilder {
     self.invalid_certs = yes;
     self
   }
+  /// Check each initial/redirect URL before admission or network I/O.
+  /// The synchronous predicate must be fast and must not block. Rejection errors
+  /// contain no URL. This is a URL policy, not DNS/IP pinning or an SSRF sandbox.
+  pub fn url_policy(mut self, policy: impl Fn(&Url) -> bool + Send + Sync + 'static) -> Self {
+    self.url_policy = Some(Arc::new(policy));
+    self
+  }
   pub fn build(self) -> Result<Executor, Error> {
     if self.requests == 0
       || self.per_host == 0
@@ -110,6 +122,7 @@ impl ExecutorBuilder {
       .build()
       .map_err(Error::http)?;
     Ok(Executor {
+      url_policy: self.url_policy,
       inner: Arc::new(Inner {
         http,
         global: Arc::new(Semaphore::new(self.requests)),
@@ -124,6 +137,17 @@ impl ExecutorBuilder {
   }
 }
 impl Executor {
+  /// Derive a restricted handle sharing the pool and all admission budgets.
+  /// Additional policies are intersected; a derived handle cannot loosen its parent.
+  pub fn with_url_policy(&self, policy: impl Fn(&Url) -> bool + Send + Sync + 'static) -> Self {
+    let previous = self.url_policy.clone();
+    Self {
+      inner: self.inner.clone(),
+      url_policy: Some(Arc::new(move |url| {
+        previous.as_ref().is_none_or(|check| check(url)) && policy(url)
+      })),
+    }
+  }
   pub fn builder() -> ExecutorBuilder {
     ExecutorBuilder::default()
   }
@@ -256,6 +280,14 @@ impl Request {
       return Err(Error::Invalid("invalid byte range"));
     }
     for redirects in 0..=self.executor.inner.redirects {
+      if self
+        .executor
+        .url_policy
+        .as_ref()
+        .is_some_and(|check| !check(&url))
+      {
+        return Err(Error::Invalid("request URL rejected by policy"));
+      }
       let permits = self.executor.permits(&url).await?;
       let mut request = self
         .executor

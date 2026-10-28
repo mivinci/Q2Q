@@ -277,3 +277,124 @@ async fn collection_after_stream_consumption_does_not_report_partial_bytes_as_ex
   ));
   assert_eq!(http.active_requests(), 0);
 }
+
+#[tokio::test]
+async fn url_policy_rejects_initial_and_each_redirect_before_network() {
+  let server = Server::start(|request| {
+    let mut reply = Reply::body(b"");
+    reply.status = 302;
+    reply.headers.push((
+      "Location".into(),
+      if request.path == "/start" {
+        "/middle"
+      } else {
+        "/blocked?grant=secret"
+      }
+      .into(),
+    ));
+    reply
+  })
+  .await;
+  let http = Executor::builder()
+    .url_policy(|url| url.path() != "/blocked")
+    .build()
+    .unwrap();
+  let error = http
+    .get(format!("{}/blocked?grant=secret", server.url))
+    .send()
+    .await
+    .err()
+    .unwrap();
+  assert!(matches!(
+    error,
+    Error::Invalid("request URL rejected by policy")
+  ));
+  assert!(!error.to_string().contains("secret"));
+  assert!(server.requests.lock().unwrap().is_empty());
+  assert!(
+    http
+      .get(format!("{}/start", server.url))
+      .send()
+      .await
+      .is_err()
+  );
+  let requests = server.requests.lock().unwrap();
+  assert_eq!(
+    requests
+      .iter()
+      .map(|request| request.path.as_str())
+      .collect::<Vec<_>>(),
+    ["/start", "/middle"]
+  );
+  assert_eq!(http.active_requests(), 0);
+}
+
+#[tokio::test]
+async fn derived_url_policy_intersects_parent_and_shares_admission() {
+  let server = Server::start(|_| Reply::body(b"body")).await;
+  let parent = Executor::builder()
+    .max_requests(1)
+    .url_policy(|url| url.path() != "/parent-denied")
+    .build()
+    .unwrap();
+  let child = parent.with_url_policy(|url| url.path() != "/child-denied");
+  for path in ["parent-denied", "child-denied"] {
+    assert!(
+      child
+        .get(format!("{}/{path}", server.url))
+        .send()
+        .await
+        .is_err()
+    );
+  }
+  assert!(server.requests.lock().unwrap().is_empty());
+  let response = child.get(&server.url).send().await.unwrap();
+  assert_eq!(parent.active_requests(), 1);
+  assert!(
+    tokio::time::timeout(Duration::from_millis(20), parent.get(&server.url).send())
+      .await
+      .is_err()
+  );
+  drop(response);
+  assert_eq!(parent.active_requests(), 0);
+  assert!(
+    parent
+      .get(format!("{}/child-denied", server.url))
+      .send()
+      .await
+      .is_ok()
+  );
+}
+
+#[tokio::test]
+async fn allowed_cross_origin_redirect_and_ranges_still_work() {
+  let target = Server::start(|r| Reply::range(r, b"abcdef")).await;
+  let destination = target.url.clone();
+  let source = Server::start(move |_| {
+    let mut reply = Reply::body(b"");
+    reply.status = 302;
+    reply.headers.push(("Location".into(), destination.clone()));
+    reply
+  })
+  .await;
+  let source_port = url::Url::parse(&source.url).unwrap().port();
+  let target_port = url::Url::parse(&target.url).unwrap().port();
+  let http = Executor::builder()
+    .url_policy(move |url| url.port() == source_port || url.port() == target_port)
+    .build()
+    .unwrap();
+  let body = http
+    .get_range(&source.url, 1..4, 6)
+    .send()
+    .await
+    .unwrap()
+    .collect_exact(3)
+    .await
+    .unwrap();
+  assert_eq!(&body[..], b"bcd");
+  assert_eq!(
+    target.requests.lock().unwrap()[0].range.as_deref(),
+    Some("bytes=1-3")
+  );
+  assert_eq!(http.active_requests(), 0);
+}
