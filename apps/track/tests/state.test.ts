@@ -81,7 +81,7 @@ test('HTTP bounds and IP rate limits are shared across Worker entries', {timeout
 });
 
 test('HTTP query preserves budget continuations and handles authoritative DO failures', {timeout: 30000}, async () => {
-  const mf = await runtime('500');
+  const mf = await runtime();
   try {
     const response = await mf.dispatchFetch('https://track.invalid/query-checks');
     const result = await response.json();

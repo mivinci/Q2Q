@@ -495,12 +495,12 @@ export default {
         const event = await target.seedForTest({peer_id: ids[65]!, public_key: punch.public_key, session_key: base64(new Uint8Array(32)), punch, expires_at: seconds() + 300}, content);
         await file.apply(event);
         let seq = 0n;
-        async function query(cursor = ids[0]!, replay = false) {
+        async function query(cursor = ids[0]!, replay = false, timeout = env.REQUEST_TIMEOUT_MS) {
           if (!replay) seq++;
           const timestamp = BigInt(seconds());
           const params = new URLSearchParams({peer_id: who.id, seq: String(seq), timestamp: String(timestamp), cursor, limit: '10',
             mac: await sessionMac(decodeBase64(auth.session_key, 32), who.id, seq, timestamp)});
-          return app.request(`https://track.invalid/files/${content}/peers?${params}`, {}, env);
+          return app.request(`https://track.invalid/files/${content}/peers?${params}`, {}, {...env, REQUEST_TIMEOUT_MS: timeout});
         }
         const short = await query(); equal(short.status, 200);
         const first = await short.json() as {peers:unknown[]; next_cursor:string};
@@ -510,7 +510,9 @@ export default {
         equal(next.peers.map(peer => peer.peer_id), [ids[65]]); equal(next.next_cursor, null);
         await target.readModeForTest('fail'); equal((await query(ids[64]!)).status, 503);
         equal((await query(ids[64]!, true)).status, 401); // Failed query still consumed seq.
-        await target.readModeForTest('gate'); equal((await query(ids[64]!)).status, 503);
+        // Only the deliberately blocked read uses a short timeout; cold healthy DO scans
+        // retain the normal request budget rather than becoming a CPU-speed test.
+        await target.readModeForTest('gate'); equal((await query(ids[64]!, false, '500')).status, 503);
         await target.releaseReadsForTest(); await target.readModeForTest('ok');
         equal((await query(ids[64]!)).status, 200);
         await file.modeForTest('read-fail'); equal((await query(ids[64]!)).status, 503);

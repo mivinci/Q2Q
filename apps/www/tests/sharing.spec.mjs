@@ -19,6 +19,11 @@ const test=base.extend({
 async function routeTrack(context,trackUrl){await context.route(/^https:\/\/track\.(?:test\.invalid|q2q\.app)\//,async route=>{
  const url=new URL(route.request().url());const response=await route.fetch({url:trackUrl+url.pathname+url.search});await route.fulfill({response});
 });}
+async function closeServices(context,services){
+ // route.fetch uses a separate HTTP client and can outlive page navigation.
+ // Drain forwarding handlers while their local Track service is still available.
+ try{await context.unrouteAll({behavior:'wait'});}finally{await services.close();}
+}
 async function startSharing(page){
  await page.goto('/');await expect(page.getByRole('button',{name:'分享文件',exact:true})).toBeEnabled();
  await page.locator('input[type=file]:not([accept])').setInputFiles({name:'published.bin',mimeType:'application/octet-stream',buffer:payload});
@@ -47,7 +52,7 @@ test('real page shares a file exports seed and downloads verified P2P bytes in a
  receiver=await context.newPage();await receive(receiver,seed);
  expect(await page.evaluate(()=>JSON.stringify(Object.entries(localStorage)))).not.toContain('registry');
  await stop(page,row);
- }finally{await receiver?.close();await page.goto('about:blank');await services.close();}
+ }finally{await receiver?.close();await page.goto('about:blank');await closeServices(context,services);}
 });
 
 test('share pause resume stop and reload have honest foreground-only states on a narrow page',async({page,context})=>{
@@ -57,14 +62,14 @@ test('share pause resume stop and reload have honest foreground-only states on a
  await row.getByRole('button',{name:/详情/}).click();await page.getByRole('menuitem',{name:'继续',exact:true}).click();await expect(row.getByText('等待接收',{exact:true})).toBeVisible();
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
  await stop(page,row);await page.reload();await expect(page.getByRole('article')).toHaveCount(0);
- }finally{await page.goto('about:blank').catch(()=>{});await services.close();}
+ }finally{await page.goto('about:blank').catch(()=>{});await closeServices(context,services);}
 });
 
 test('main page accepts a peer-only native seed and exports identical file bytes',async({page,context,browserName})=>{
  test.skip(browserName==='webkit','WebKit/native ICE remains unverified');test.setTimeout(60000);
  const services=await p2pFixture();
  try{await routeTrack(context,services.trackUrl);await receive(page,Buffer.from(services.seed,'base64'),'browser-p2p.bin');await services.finish();}
- finally{await page.goto('about:blank').catch(()=>{});await services.close();}
+ finally{await page.goto('about:blank').catch(()=>{});await closeServices(context,services);}
 });
 
 test('downloaded content is shared only after explicit action and active cache cannot be deleted',async({page,context})=>{
@@ -79,7 +84,7 @@ test('downloaded content is shared only after explicit action and active cache c
  const seed=await seedFrom(receiver,cached);await stop(page,originRow);
  third=await context.newPage();await receive(third,seed);
  await stop(receiver,cached);
- }finally{await third?.close();await receiver?.goto('about:blank');await receiver?.close();await page.goto('about:blank');await services.close();}
+ }finally{await third?.close();await receiver?.goto('about:blank');await receiver?.close();await page.goto('about:blank');await closeServices(context,services);}
 });
 
 test('native SDK downloads the seed exported from the real sharing page',async({page,context,browserName})=>{
@@ -93,7 +98,7 @@ test('native SDK downloads the seed exported from the real sharing page',async({
  try{await routeTrack(context,services.trackUrl);const row=await startSharing(page),seed=await seedFrom(page,row);const path=join(folder,'web.q2q');await writeFile(path,seed);
  const result=await execute(artifact.executable,['native_downloads_browser_publication','--ignored','--nocapture'],{cwd:root,env:{...process.env,Q2Q_BROWSER_UPLOAD_TRACK:services.trackUrl,Q2Q_BROWSER_UPLOAD_SEED:path},timeout:50000});
  expect(result.stdout).toContain('Browser publication verified by native SDK');await stop(page,row);
- }finally{await page.goto('about:blank');await services.close();await rm(folder,{recursive:true,force:true});}
+ }finally{await page.goto('about:blank');await closeServices(context,services);await rm(folder,{recursive:true,force:true});}
 });
 
 test('sharing confirmation is cancellable, details do not stop publication, and labels follow language',async({page,context})=>{
@@ -107,7 +112,7 @@ test('sharing confirmation is cancellable, details do not stop publication, and 
  await page.getByRole('button',{name:'设置',exact:true}).click();await page.getByRole('button',{name:'语言: 简体中文',exact:true}).click();await page.getByRole('menuitemradio',{name:'English',exact:true}).click();await page.keyboard.press('Escape');
  await expect(page.getByRole('article',{name:'Share: published.bin',exact:true}).getByText('Waiting for receiver',{exact:true})).toBeVisible();
  await expect(page.getByRole('button',{name:'Save seed',exact:true})).toBeEnabled();
- }finally{await page.goto('about:blank').catch(()=>{});await services.close();}
+ }finally{await page.goto('about:blank').catch(()=>{});await closeServices(context,services);}
 });
 
 async function startDownload(page,seed,name='published.bin'){
@@ -129,7 +134,7 @@ test('offline peer source fails honestly and retry succeeds once the source resu
  await expect(row.getByText('下载失败',{exact:true})).toBeVisible({timeout:30000});await expect(row.getByRole('button',{name:'重试',exact:true})).toBeEnabled();
  await shared.getByRole('button',{name:/详情/}).click();await page.getByRole('menuitem',{name:'继续',exact:true}).click();await expect(shared.getByText('等待接收',{exact:true})).toBeVisible();
  await row.getByRole('button',{name:'重试',exact:true}).click();await exportAndVerify(receiver,row);await stop(page,shared);
- }finally{await receiver?.goto('about:blank').catch(()=>{});await receiver?.close();await page.goto('about:blank').catch(()=>{});await services.close();}
+ }finally{await receiver?.goto('about:blank').catch(()=>{});await receiver?.close();await page.goto('about:blank').catch(()=>{});await closeServices(context,services);}
 });
 
 test('lost Punch connection fails the share and a new file selection recovers after service restart',async({page,context})=>{
@@ -141,7 +146,7 @@ test('lost Punch connection fails the share and a new file selection recovers af
  await page.getByRole('button',{name:'开始分享',exact:true}).click();
  const recovered=page.getByRole('article',{name:'分享: recovered.bin',exact:true});await expect(recovered.getByText('等待接收',{exact:true})).toBeVisible({timeout:15000});
  await stop(page,recovered);
- }finally{await page.goto('about:blank').catch(()=>{});await services.close();}
+ }finally{await page.goto('about:blank').catch(()=>{});await closeServices(context,services);}
 });
 
 test('peer-only download survives pause and real page reload with seed reselection',async({page,context,browserName})=>{
@@ -154,7 +159,7 @@ test('peer-only download survives pause and real page reload with seed reselecti
  await expect(restored.getByText('等待恢复',{exact:true})).toBeVisible();await restored.getByRole('button',{name:'继续',exact:true}).click();
  await page.locator('input[type=file][accept]').setInputFiles({name:'original.q2q',mimeType:'application/octet-stream',buffer:seed});
  await page.getByRole('button',{name:'开始下载',exact:true}).click();await exportAndVerify(page,restored);await services.finish();
- }finally{await page.goto('about:blank').catch(()=>{});await services.close();}
+ }finally{await page.goto('about:blank').catch(()=>{});await closeServices(context,services);}
 });
 
 test('failed preparation does not offer a seed and removing the failure releases a slot',async({page,context})=>{
@@ -167,7 +172,7 @@ test('failed preparation does not offer a seed and removing the failure releases
  await failed.getByRole('button',{name:/详情/}).click();await page.getByRole('menuitem',{name:'移除任务',exact:true}).click();await expect(failed).toHaveCount(0);
  await context.unroute(/^https:\/\/track\.(?:test\.invalid|q2q\.app)\//);await routeTrack(context,services.trackUrl);
  const row=await startSharing(page);await stop(page,row);
- }finally{await page.goto('about:blank').catch(()=>{});await services.close();}
+ }finally{await page.goto('about:blank').catch(()=>{});await closeServices(context,services);}
 });
 
 test('reloading an active share never restores a fake online task or persisted file access',async({page,context})=>{
@@ -177,5 +182,5 @@ test('reloading an active share never restores a fake online task or persisted f
  page.once('dialog',dialog=>dialog.accept());await page.reload();
  await expect(page.getByRole('button',{name:'分享文件',exact:true})).toBeEnabled();await expect(page.getByRole('article')).toHaveCount(0);
  const row=await startSharing(page);await stop(page,row);
- }finally{await page.goto('about:blank').catch(()=>{});await services.close();}
+ }finally{await page.goto('about:blank').catch(()=>{});await closeServices(context,services);}
 });
