@@ -15,6 +15,21 @@ async function rejects(promise: Promise<unknown>, expected: string) {
 const bytes = (value: string) => new TextEncoder().encode(value);
 async function text(handle: FileSystemFileHandle) { return (await handle.getFile()).text(); }
 
+async function removeFixtureFile(root: Pick<FileSystemDirectoryHandle, 'removeEntry'>, name: string) {
+  // Chromium can acknowledge abort before the browser process releases its native
+  // file lock. Only teardown tolerates that transient error; SDK operations and
+  // immediate reopen assertions in each case must still succeed without retries.
+  const deadline = performance.now() + 2000;
+  for (;;) {
+    try { await root.removeEntry(name); return; }
+    catch (error) {
+      if (!(error instanceof DOMException) || error.name !== 'NoModificationAllowedError'
+        || performance.now() >= deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+}
+
 async function fixture(run: (handle: FileSystemFileHandle) => Promise<void>) {
   const root = await navigator.storage.getDirectory();
   const name = `q2q-test-${crypto.randomUUID()}`;
@@ -22,10 +37,10 @@ async function fixture(run: (handle: FileSystemFileHandle) => Promise<void>) {
   try { await run(handle); }
   catch (error) {
     // A leaked native stream can also make cleanup fail; retain the first failure.
-    try { await root.removeEntry(name); } catch { /* preserve the test failure */ }
+    try { await removeFixtureFile(root, name); } catch { /* preserve the test failure */ }
     throw error;
   }
-  await root.removeEntry(name);
+  await removeFixtureFile(root, name);
 }
 async function seed(handle: FileSystemFileHandle, value: string) {
   const stream = await handle.createWritable();
@@ -34,6 +49,25 @@ async function seed(handle: FileSystemFileHandle, value: string) {
 }
 
 export const cases: Record<string, () => Promise<void>> = {
+  'fixture cleanup retries only transient native lock errors and remains bounded': async () => {
+    let attempts = 0;
+    await removeFixtureFile({ async removeEntry() {
+      if (++attempts < 3) throw new DOMException('native lock pending', 'NoModificationAllowedError');
+    } }, 'temporary.bin');
+    assert(attempts === 3);
+    for (const name of ['NotAllowedError', 'NotFoundError', 'NoModificationAllowedError']) {
+      const failure = new DOMException('cleanup failure', name);
+      attempts = 0;
+      try {
+        await removeFixtureFile({ async removeEntry() { attempts++; throw failure; } }, 'temporary.bin');
+      } catch (error) {
+        assert(error === failure);
+        assert(name === 'NoModificationAllowedError' ? attempts > 1 : attempts === 1);
+        continue;
+      }
+      throw new Error('cleanup failure must not be swallowed');
+    }
+  },
   'out-of-order writes stay invisible until commit; post-commit writes survive finish': async () => fixture(async handle => {
     const destination = await fileDestination(handle);
     const writer = await destination.open({ mode: 'create', size: 6n });
@@ -256,4 +290,4 @@ export async function reopenFile(name: string) {
   assert(await text(handle) === 'abcd');
   return destination.targetId;
 }
-export async function removeFile(name: string) { await (await navigator.storage.getDirectory()).removeEntry(name); }
+export async function removeFile(name: string) { await removeFixtureFile(await navigator.storage.getDirectory(), name); }

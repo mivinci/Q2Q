@@ -1194,3 +1194,18 @@ NoModificationAllowedError。fixture 现保留用例原始异常，避免 finall
 未添加重试、等待或 skip，不宣称文件占用问题已修复。本地 Chromium 重复运行尚未进入
 用例（缺少对应浏览器或指定系统 Chrome 路径不存在），安装对应版本尚在进行。新提交的
 远端 CI 结果待核实；本记录不是完整浏览器/UI 回归通过声明。
+
+
+PR #100 Chromium 清理竞态收尾（2026-11-09）：98a05f7 的远端运行 42506473882
+macOS WebKit job 全部成功；Chromium 两项失败均发生在用例断言成功后的临时文件删除，
+原先 open cancellation 用例本轮通过。核对 Chromium 143.0.7499.4 原生 AbortImpl：
+先发送成功回调，再删除持有原生文件锁的 writer。仅测试文件删除增加最长 2 秒的
+NoModificationAllowedError 条件等待；SDK abort/open/重新打开断言不重试，其他删除错误
+立即失败，持续占用超时仍失败。测试主异常优先保留，不吞掉正常路径的清理失败。
+新增清理边界测试覆盖短暂占用、持续占用超时、权限错误与不存在文件，Chromium/WebKit
+2 项通过；本地 Chromium 143 文件套件重复 10 轮 140 项通过；WebKit storage 57 通过、
+1 既有跳过，SDK 类型与 10 项 app-impact 通过。新增清理用例是在重复套件之后单独运行。
+macOS 原生 API 探针 300 轮未复现 Linux 的删除竞态，不把 macOS 结果等同 Linux 验收。
+Chromium 安装器解压长时间不结束，已停止自己启动的安装任务，使用完整下载归档在独立
+临时目录解压运行；早先启动失败的尝试不计为用例通过。完整 Chromium SDK 回归另行运行，
+新提交的 Linux CI 尚待核实；没有修改产品存储实现或增加 skip。
