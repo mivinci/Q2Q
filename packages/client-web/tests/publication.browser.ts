@@ -38,20 +38,23 @@ export async function receive(trackUrl:string,bytes:number[],drop=false){
 }
 
 export async function checkLifecycle(trackUrl:string){
- const client=createClient({trackUrl});let closeCount=0;let release!:()=>void;
+ const client=createClient({trackUrl});let closeCount=0;let release!:()=>void,entered!:()=>void;
  const gate=new Promise<void>(resolve=>{release=resolve;});
- const source={info:{name:'blocked.bin',size:1n},async open(){await gate;return{async read(){return new Uint8Array([1]);},async close(){closeCount++;}};}};
+ const opened=new Promise<void>(resolve=>{entered=resolve;});
+ const source={info:{name:'blocked.bin',size:1n},async open(){entered();await gate;return{async read(){return new Uint8Array([1]);},async close(){closeCount++;}};}};
  const publication=client.publish({source});let notifications=0;const unsubscribe=publication.subscribe(()=>{notifications++;throw Error('isolated observer');});
  const ready=publication.ready().then(()=>false,error=>error.code==='TASK_CANCELLED');
- await new Promise(resolve=>setTimeout(resolve,20));const closing=publication.close();
+ // Wasm loading may take longer on CI; close only once source acquisition is in flight.
+ await opened;const closing=publication.close();
  check(closing===publication.close());release();await closing;check(await ready);check(closeCount===1);check(publication.snapshot().state==='closed');
  unsubscribe();check(notifications>=2);await client.close();
 }
 export async function checkPauseDuringPreparation(trackUrl:string){
- const client=createClient({trackUrl});let opening=0,closed=0;let release!:()=>void;
+ const client=createClient({trackUrl});let opening=0,closed=0;let release!:()=>void,entered!:()=>void;
  const gate=new Promise<void>(resolve=>{release=resolve;});
- const source={info:{name:'pause.bin',size:1n},async open(){if(++opening===1)await gate;return{async read(){return new Uint8Array([7]);},async close(){closed++;}};}};
- const publication=client.publish({source});await new Promise(resolve=>setTimeout(resolve,20));
+ const opened=new Promise<void>(resolve=>{entered=resolve;});
+ const source={info:{name:'pause.bin',size:1n},async open(){if(++opening===1){entered();await gate;}return{async read(){return new Uint8Array([7]);},async close(){closed++;}};}};
+ const publication=client.publish({source});await opened;
  const pausing=publication.pause();release();await pausing;check(publication.snapshot().state==='paused');
  await publication.resume();await publication.ready();check(publication.snapshot().state==='publishing');
  await client.close();check(publication.snapshot().state==='closed');check(closed===2);

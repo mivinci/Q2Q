@@ -1179,3 +1179,18 @@ push/workflow_dispatch，PR 不接触凭据。部署 job 在自身 runner 重建
 10 项通过；Ruby YAML 解析及浏览器矩阵/参数/部署依赖断言、diff 检查通过。默认 python3
 为旧版、缺少 tomllib，改用已有 Python 3.13 后通过；actionlint 的外部 go run 被权限阻止，
 未执行。未重跑完整浏览器/UI 矩阵；未提交、推送或部署，远端新矩阵尚未执行。
+
+
+PR #100 后续 CI 排查（2026-11-09）：25d3835 远端运行 42505382281 的 macOS
+WebKit storage 57 通过、1 既有跳过，HTTP/bundle/network/RTC/partial 等已执行套件通过或
+沿用已知 skip；发布 lifecycle closing 断言失败。该测试以固定 20ms 猜测 Wasm 初始化后
+source.open 已进入，在较慢 runner 上关闭得过早。关闭与准备中暂停用例均改为等待源的
+显式 entered 信号再触发操作，不改产品生命周期语义。本地两用例重复 12 轮共 24 项通过，
+完整 WebKit 发布回归 7 通过、1 既有 native ICE 跳过，SDK 类型检查、11 项单元、10 项
+app-impact 及 diff 检查通过。
+
+同轮 Chromium storage 为 57 通过、1 失败：open cancellation 清理时 removeEntry 报
+NoModificationAllowedError。fixture 现保留用例原始异常，避免 finally 清理异常覆盖根因；
+未添加重试、等待或 skip，不宣称文件占用问题已修复。本地 Chromium 重复运行尚未进入
+用例（缺少对应浏览器或指定系统 Chrome 路径不存在），安装对应版本尚在进行。新提交的
+远端 CI 结果待核实；本记录不是完整浏览器/UI 回归通过声明。

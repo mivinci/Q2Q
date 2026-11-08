@@ -19,7 +19,13 @@ async function fixture(run: (handle: FileSystemFileHandle) => Promise<void>) {
   const root = await navigator.storage.getDirectory();
   const name = `q2q-test-${crypto.randomUUID()}`;
   const handle = await root.getFileHandle(name, { create: true });
-  try { await run(handle); } finally { await root.removeEntry(name); }
+  try { await run(handle); }
+  catch (error) {
+    // A leaked native stream can also make cleanup fail; retain the first failure.
+    try { await root.removeEntry(name); } catch { /* preserve the test failure */ }
+    throw error;
+  }
+  await root.removeEntry(name);
 }
 async function seed(handle: FileSystemFileHandle, value: string) {
   const stream = await handle.createWritable();
