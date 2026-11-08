@@ -1209,3 +1209,21 @@ macOS 原生 API 探针 300 轮未复现 Linux 的删除竞态，不把 macOS �
 Chromium 安装器解压长时间不结束，已停止自己启动的安装任务，使用完整下载归档在独立
 临时目录解压运行；早先启动失败的尝试不计为用例通过。完整 Chromium SDK 回归另行运行，
 新提交的 Linux CI 尚待核实；没有修改产品存储实现或增加 skip。
+
+
+PR #100 后续测试前置条件修复（2026-11-09）：619049d 的运行 42508233680 已通过
+Chromium 文件存储阶段，继续暴露 RTC 原生双角色用例 45 秒超时；原生 fixture 在测试计时内
+运行 cargo test --lib --no-run，冷构建与两个 worker 的 Cargo 锁等待共用测试时限。
+test:rtc 现先在 Playwright 启动前编译同一 q2q-core lib 测试二进制，不提高协商超时或 skip。
+本地 Chromium143 RTC 11 项通过（含双角色）；不能据此把 Linux 网络互通标记完成。
+
+同轮 WebKit SDK 各阶段成功，WWW 在取消场景点击菜单前下载已完成，取消菜单项从 DOM
+消失。HTTP fixture 新增按内容 key 控制的 held 来源：首块正常提供，后续请求保持在途，
+取消结束并确认不再发请求后才释放。取消流程不再依赖 200ms 响应比浏览器点击慢的假设。
+新增断言确认取消后存在已提交进度、重试不再请求首块；仍通过真实 UI 与 SDK 取消/重试。
+Chromium/WebKit 各重复 8 轮共 16 项通过，SDK 单元 11 项、脚本语法及 diff 检查通过。
+
+上一轮后台 Chromium143 完整 SDK storage/http/bundle/network/rtc/p2p/partial/publish
+156 项通过（新增 cleanup 边界用例此前独立双浏览器通过，不混入该 156 数字）。
+本轮两浏览器完整 HTTP 页面下载回归 13 通过、1 既有 WebKit CDP 配额跳过。
+未更改产品实现；远端 CI 尚待核实，未重跑其余页面矩阵，不将部分通过算全绿。

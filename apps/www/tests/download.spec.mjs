@@ -21,6 +21,7 @@ const test = base.extend({
   },
   source:[async ({},use) => {
     const requests = new Map();
+    const held = new Map(), released = new Set();
     const server = createServer((req,res) => {
       const url = new URL(req.url,'http://localhost');
       const key = url.searchParams.get('case');
@@ -34,7 +35,11 @@ const test = base.extend({
       const bytes=Buffer.from(payload.subarray(start,end+1));
       if(url.pathname==='/corrupt')bytes[0]^=255;
       const send=()=>{if(!res.destroyed)res.end(bytes);};
-      if(url.pathname==='/slow')setTimeout(send,200);else send();
+      if(url.pathname==='/held' && start>0 && !released.has(key)) {
+        // Keep the task incomplete until cancellation is observed, independent of UI speed.
+        const waiting=held.get(key) ?? new Set();held.set(key,waiting);waiting.add(send);
+        res.once('close',()=>{waiting.delete(send);if(!waiting.size)held.delete(key);});
+      } else if(url.pathname==='/slow')setTimeout(send,200);else send();
     });
     await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
     const origin=`http://127.0.0.1:${server.address().port}`;
@@ -46,7 +51,8 @@ const test = base.extend({
         const material=builder.finish_inline(name);const raw=material.seed_bytes();material.free();
         const bytes=seed_with_source(raw,`${origin}/${kind}?case=${key}&token=private-fixture`);
         return {file:{name:'transfer.q2q',mimeType:'application/octet-stream',buffer:Buffer.from(bytes)},key};
-      }, requests
+      }, requests,
+      release(key) {released.add(key);for(const send of held.get(key) ?? [])send();held.delete(key);}
     }); } finally { await new Promise(resolve=>server.close(resolve)); }
   },{scope:'worker'}]
 });
@@ -119,7 +125,7 @@ test('settings preserve language after reload, dark mode and mobile layout have 
 });
 
 test('cancel stops requests and retry creates a new SDK task using committed progress',async ({page,source})=>{
-  await ready(page);const seed=source.seed('slow','Cancel.bin');await upload(page,seed.file);
+  await ready(page);const seed=source.seed('held','Cancel.bin');await upload(page,seed.file);
   const row=page.getByRole('article',{name:'Cancel.bin',exact:true});
   await expect.poll(()=>source.requests.get(seed.key)?.length ?? 0).toBeGreaterThan(2);
   await row.getByRole('button',{name:/详情/}).click();
@@ -128,8 +134,12 @@ test('cancel stops requests and retry creates a new SDK task using committed pro
   const count=source.requests.get(seed.key).length;
   await page.waitForTimeout(450);
   expect(source.requests.get(seed.key).length).toBe(count);
+  const committed=await page.evaluate(()=>JSON.parse(Object.entries(localStorage).find(([key])=>key.startsWith('q2q-web-transfer-v1:'))[1]).committed);
+  expect(BigInt(committed)).toBeGreaterThan(0n);
+  source.release(seed.key);
   await row.getByRole('button',{name:'重试',exact:true}).click();
   await expect(row.getByText('待保存',{exact:true})).toBeVisible();
+  expect(source.requests.get(seed.key).slice(count)).not.toContain(0);
 });
 
 test('independent tabs keep both transfer records without overwriting history',async ({page,context,source})=>{
