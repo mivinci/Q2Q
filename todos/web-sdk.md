@@ -1164,3 +1164,18 @@ lint 阻止，本机1.96未提示。Wasm 32字节叶表和33字节见证改为as
 WWW 在浏览器安装前失败，ubuntu-latest 变为26.04、Playwright1.57不支持，固定该job为24.04；
 没有禁用WebKit测试或降低警告门槛。其他首轮Registry/Track/Admin/Platform/Docs检查已成功；
 修复推送后远端结果待核实，不将本地验证当CI成功。
+
+
+PR #100 WWW 第二轮 CI 修复（2026-11-09）：远端运行 42501340539 的 SDK 存储套件
+59 通过、56 失败、1 跳过，失败均在 Ubuntu WebKit。核对 Playwright 1.57.0 固定的
+WebKit 上游 revision 486de399887bc8fa8a69e2f194ebc9476589a08a，StorageAPIEnabled 与
+FileSystemEnabled 默认只在 Apple 平台启用；不是业务下载校验失败，也不能以 macOS
+本地通过声称 Linux WebKit 支持。WWW workflow 改为 Chromium/ubuntu-24.04 与
+WebKit/macos-15 双平台矩阵，各浏览器命令显式传 --project，报告按浏览器分别上传，
+不增加 skip。影响判断独立 job；部署独立 job 等待整个检查矩阵成功，只允许 main 的
+push/workflow_dispatch，PR 不接触凭据。部署 job 在自身 runner 重建，不跨平台复用构建目录。
+
+本轮本地验证：WebKit storage 57 通过、1 沿用 CDP 专属跳过；Python 3.13 app-impact
+10 项通过；Ruby YAML 解析及浏览器矩阵/参数/部署依赖断言、diff 检查通过。默认 python3
+为旧版、缺少 tomllib，改用已有 Python 3.13 后通过；actionlint 的外部 go run 被权限阻止，
+未执行。未重跑完整浏览器/UI 矩阵；未提交、推送或部署，远端新矩阵尚未执行。

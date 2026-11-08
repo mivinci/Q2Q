@@ -16,13 +16,11 @@ permissions:
   contents: read
 
 jobs:
-  check:
-    name: WWW check, build, browser tests, and deployment
-    # Playwright 1.57 supports Ubuntu 24.04, not the newer ubuntu-latest image.
+  impact:
+    name: Determine WWW impact
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    env:
-      WRANGLER_SEND_METRICS: 'false'
+    outputs:
+      run: ${{ steps.impact.outputs.run }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,77 +31,96 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base_sha }}
         run: python3 .github/scripts/app-impact.py www
+
+  check:
+    name: WWW checks (${{ matrix.browser }}, ${{ matrix.os }})
+    needs: impact
+    if: needs.impact.outputs.run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Playwright 1.57 supports Ubuntu 24.04, not newer ubuntu-latest images.
+          - os: ubuntu-24.04
+            browser: chromium
+          # This WebKit revision enables Storage API/File System only on Apple platforms.
+          - os: macos-15
+            browser: webkit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        if: steps.impact.outputs.run == 'true'
         with:
           node-version-file: '.node-version'
           cache: npm
       - run: python3 .github/scripts/test-app-impact.py
-        if: steps.impact.outputs.run == 'true'
       - run: npm ci
-        if: steps.impact.outputs.run == 'true'
       - uses: dtolnay/rust-toolchain@stable
-        if: steps.impact.outputs.run == 'true'
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-        if: steps.impact.outputs.run == 'true'
       - run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
-        if: steps.impact.outputs.run == 'true'
       - run: npm run wasm:build
-        if: steps.impact.outputs.run == 'true'
       - name: Check shared Punch endpoint contract
-        if: steps.impact.outputs.run == 'true'
         run: |
           npm run check --workspace @q2q/punch-discovery
           npm test --workspace @q2q/punch-discovery
       - run: npm run www:check
-        if: steps.impact.outputs.run == 'true'
       - run: npm run www:build
-        if: steps.impact.outputs.run == 'true'
-      - run: npx playwright install --with-deps chromium webkit
-        if: steps.impact.outputs.run == 'true'
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
       - run: npm test --workspace @q2q/client-web
-        if: steps.impact.outputs.run == 'true'
-      - run: npm run test:browser --workspace @q2q/client-web
-        if: steps.impact.outputs.run == 'true'
-      - run: npm run test:http --workspace @q2q/client-web
-        if: steps.impact.outputs.run == 'true'
-      - run: npm run test:bundle --workspace @q2q/client-web
-        if: steps.impact.outputs.run == 'true'
+      - run: npm run test:browser --workspace @q2q/client-web -- --project ${{ matrix.browser }}
+      - run: npm run test:http --workspace @q2q/client-web -- --project ${{ matrix.browser }}
+      - run: npm run test:bundle --workspace @q2q/client-web -- --project ${{ matrix.browser }}
         env:
           VITE_RESOLVE_FROM: apps/www/package.json
       - run: npm run wasm:check -- 1
-        if: steps.impact.outputs.run == 'true'
-      - run: npm run test:network --workspace @q2q/client-web
-        if: steps.impact.outputs.run == 'true'
-      - run: npm run test:rtc --workspace @q2q/client-web
-        if: steps.impact.outputs.run == 'true'
-      - run: npm run test:p2p --workspace @q2q/client-web
-        if: steps.impact.outputs.run == 'true'
-      - run: npm run test:partial --workspace @q2q/client-web
-        if: steps.impact.outputs.run == 'true'
-      - run: npm run test:publish --workspace @q2q/client-web
-        if: steps.impact.outputs.run == 'true'
-      - run: npm run www:test
-        if: steps.impact.outputs.run == 'true'
+      - run: npm run test:network --workspace @q2q/client-web -- --project ${{ matrix.browser }}
+      - run: npm run test:rtc --workspace @q2q/client-web -- --project ${{ matrix.browser }}
+      - run: npm run test:p2p --workspace @q2q/client-web -- --project ${{ matrix.browser }}
+      - run: npm run test:partial --workspace @q2q/client-web -- --project ${{ matrix.browser }}
+      - run: npm run test:publish --workspace @q2q/client-web -- --project ${{ matrix.browser }}
+      - run: npm test --workspace @q2q/www -- --project ${{ matrix.browser }}
         env:
           WWW_PREVIEW: '1'
       - uses: actions/upload-artifact@v4
-        if: always() && steps.impact.outputs.run == 'true'
+        if: always()
         with:
-          name: www-browser-reports
+          name: www-browser-reports-${{ matrix.browser }}
           path: |
             .tmp/www-playwright
             .tmp/client-web-playwright
           retention-days: 7
 
-      # Deploy only after successful checks on main. PR builds never receive Cloudflare credentials.
+  # Both browser jobs must succeed before main can deploy. PR jobs receive no credentials.
+  deploy:
+    name: Deploy WWW
+    needs: [impact, check]
+    if: >-
+      needs.impact.outputs.run == 'true' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.node-version'
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
+      - run: npm run www:build
       - name: Verify Cloudflare deployment credentials
-        if: >-
-          steps.impact.outputs.run == 'true' &&
-          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-          github.ref == 'refs/heads/main'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -118,10 +135,6 @@ jobs:
           fi
 
       - name: Deploy www Worker
-        if: >-
-          steps.impact.outputs.run == 'true' &&
-          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-          github.ref == 'refs/heads/main'
         working-directory: apps/www
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
