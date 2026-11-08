@@ -186,10 +186,7 @@ impl BlockVerifier {
       if proof_bytes.len() != seed.info.leaf_count() * 32 {
         return Err(JsError::new("proof length mismatch"));
       }
-      proof_bytes
-        .chunks_exact(32)
-        .map(|chunk| chunk.try_into().expect("exact hash chunk"))
-        .collect()
+      proof_bytes.as_chunks::<32>().0.to_vec()
     };
     if leaves.len() != seed.info.leaf_count()
       || q2q_primitives::merkle::root(&leaves) != seed.info.root

@@ -18,7 +18,8 @@ permissions:
 jobs:
   check:
     name: WWW check, build, browser tests, and deployment
-    runs-on: ubuntu-latest
+    # Playwright 1.57 supports Ubuntu 24.04, not the newer ubuntu-latest image.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       WRANGLER_SEND_METRICS: 'false'

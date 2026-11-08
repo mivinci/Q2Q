@@ -292,7 +292,9 @@ impl PeerProofVerifier {
     }
     let path = self.path(index)?;
     let nodes = witness[6..]
-      .chunks_exact(33)
+      .as_chunks::<33>()
+      .0
+      .iter()
       .zip(path)
       .map(|(chunk, (level, position))| q2q_primitives::merkle::Node {
         level,
@@ -326,7 +328,7 @@ impl PeerProofVerifier {
       return false;
     }
     let mut nodes = Vec::new();
-    for (chunk, (level, position)) in witness[6..].chunks_exact(33).zip(path) {
+    for (chunk, (level, position)) in witness[6..].as_chunks::<33>().0.iter().zip(path) {
       if chunk[0] != level as u8 {
         return false;
       }

@@ -1156,3 +1156,11 @@ SDK本地整合289通过/23跳过，Rust511通过/22ignored，Wasm/SDK单元/类
 100MiB/1GiB页面传输在本轮前段独立验通（OPFS非系统文件目标）；无线上操作、提交或部署。
 细节见web-client最终验收记录，后续不重复重新安排已完成本机项；跨设备/NAT/TURN暂跳过、真实系统
 保存/移动后台/物理磁盘故障/全部无障碍合规和公网长会话稳定性均不冒充通过，C7总体不能据此全部完成。
+
+
+PR #100 首轮 CI 修复（2026-11-09）：Rust check/wasm 被 CI Rust1.99 的新增 chunks_exact_to_as_chunks
+lint 阻止，本机1.96未提示。Wasm 32字节叶表和33字节见证改为as_chunks数组读取，长度校验与证明
+语义不变；本地workspace/wasm32严格Clippy、Wasm真实绑定与独立proof/signature检查通过。
+WWW 在浏览器安装前失败，ubuntu-latest 变为26.04、Playwright1.57不支持，固定该job为24.04；
+没有禁用WebKit测试或降低警告门槛。其他首轮Registry/Track/Admin/Platform/Docs检查已成功；
+修复推送后远端结果待核实，不将本地验证当CI成功。
