@@ -39,7 +39,7 @@ struct TokenIdentity {
   sub: String,
   service_type: String,
   public_key: String,
-  advertise_url: String,
+  endpoints: q2q_punch::endpoints::PunchEndpoints,
   identity_version: u64,
   scope: Vec<String>,
 }
@@ -94,7 +94,7 @@ impl Reporter {
         let file = std::fs::File::open(path).map_err(|_| "cannot read Registry token file")?;
         let mut bytes = Vec::new();
         file
-          .take(8194)
+          .take(32770)
           .read_to_end(&mut bytes)
           .map_err(|_| "cannot read Registry token file")?;
         String::from_utf8(bytes).map_err(|_| "Registry token file is not UTF-8")?
@@ -102,7 +102,7 @@ impl Reporter {
       (None, None) => return Err("Registry requires Q2Q_REGISTRY_TOKEN or registry.token_file"),
     };
     let token = token.trim();
-    if token.is_empty() || token.len() > 8192 {
+    if token.is_empty() || token.len() > 32768 {
       return Err("invalid Registry token length");
     }
     // This is a local configuration check, not signature verification. Registry
@@ -116,21 +116,13 @@ impl Reporter {
       .ok()
       .and_then(|bytes| serde_json::from_slice(&bytes).ok())
       .ok_or("invalid Registry token identity claims")?;
-    let advertised = Url::parse(&claims.advertise_url).map_err(|_| "invalid token Punch URL")?;
+    let _endpoints = &claims.endpoints;
     if claims.sub != node_id
       || claims.service_type != "punch"
       || claims.public_key != STANDARD.encode(public_key)
       || claims.identity_version == 0
       || claims.identity_version > 9_007_199_254_740_991
       || claims.scope != ["nodes:write:self"]
-      || advertised.scheme() != "quic"
-      || advertised.host_str().is_none()
-      || advertised.port().is_none()
-      || !advertised.username().is_empty()
-      || advertised.password().is_some()
-      || advertised.query().is_some()
-      || advertised.fragment().is_some()
-      || !matches!(advertised.path(), "" | "/")
     {
       return Err("Registry token identity does not match the running Punch configuration");
     }
@@ -347,7 +339,7 @@ mod tests {
   }
   fn token(key: [u8; 32], node: &str) -> String {
     let claims = serde_json::json!({ "sub":node, "service_type":"punch", "public_key":STANDARD.encode(key),
-      "advertise_url":"quic://punch.example:4433", "identity_version":1, "scope":["nodes:write:self"] });
+      "endpoints":["quic://punch.example:4433"], "identity_version":1, "scope":["nodes:write:self"] });
     format!(
       "e30.{}.local-test-signature",
       URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
@@ -384,6 +376,105 @@ mod tests {
     config.token_file = Some("unused".into());
     assert!(
       Reporter::prepare(&config, "punch-1", [1; 32], Some(token([1; 32], "punch-1"))).is_err()
+    );
+  }
+
+  #[test]
+  fn reporter_requires_valid_explicit_endpoint_sets_in_both_secret_sources() {
+    let original = token([1; 32], "punch-1");
+    let body: serde_json::Value = serde_json::from_slice(
+      &URL_SAFE_NO_PAD
+        .decode(original.split('.').nth(1).unwrap())
+        .unwrap(),
+    )
+    .unwrap();
+    let encode = |body: &serde_json::Value| {
+      format!(
+        "e30.{}.local-test-signature",
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(body).unwrap())
+      )
+    };
+    for endpoints in [
+      serde_json::json!(["wss://proxy.example:8443/signal?region=hk"]),
+      serde_json::json!(["ws://127.0.0.1:8080/ws"]),
+    ] {
+      let mut value = body.clone();
+      value["endpoints"] = endpoints;
+      assert!(
+        Reporter::prepare(
+          &config("http://127.0.0.1:1234".into()),
+          "punch-1",
+          [1; 32],
+          Some(encode(&value))
+        )
+        .is_ok()
+      );
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("token");
+    let mut file_config = config("http://127.0.0.1:1234".into());
+    file_config.token_file = Some(path.clone());
+    std::fs::write(&path, format!("{original}\n")).unwrap();
+    assert!(Reporter::prepare(&file_config, "punch-1", [1; 32], None).is_ok());
+    for endpoints in [
+      serde_json::json!([]),
+      serde_json::json!(["quic://punch.example:0"]),
+      serde_json::json!(["ws://public.example/ws"]),
+      serde_json::json!(["wss://proxy.example", "WSS://PROXY.example:443/"]),
+    ] {
+      let mut value = body.clone();
+      value["endpoints"] = endpoints;
+      let invalid = encode(&value);
+      assert!(
+        Reporter::prepare(
+          &config("http://127.0.0.1:1234".into()),
+          "punch-1",
+          [1; 32],
+          Some(invalid.clone())
+        )
+        .is_err()
+      );
+      std::fs::write(&path, invalid).unwrap();
+      assert!(Reporter::prepare(&file_config, "punch-1", [1; 32], None).is_err());
+    }
+    let mut old = body;
+    old.as_object_mut().unwrap().remove("endpoints");
+    old["advertise_url"] = serde_json::json!("quic://punch.example:4433");
+    assert!(
+      Reporter::prepare(
+        &config("http://127.0.0.1:1234".into()),
+        "punch-1",
+        [1; 32],
+        Some(encode(&old))
+      )
+      .is_err()
+    );
+    std::fs::write(&path, "x".repeat(32769)).unwrap();
+    assert!(Reporter::prepare(&file_config, "punch-1", [1; 32], None).is_err());
+  }
+
+  #[test]
+  fn maximum_endpoint_identity_fits_the_local_token_reader() {
+    let endpoints: Vec<_> = (0..8)
+      .map(|i| {
+        let prefix = format!("wss://signal.example/{i}?region=");
+        format!("{prefix}{}", "x".repeat(2048 - prefix.len()))
+      })
+      .collect();
+    let body = serde_json::json!({"sub":"punch-1","service_type":"punch","public_key":STANDARD.encode([1;32]),"endpoints":endpoints,"identity_version":1,"scope":["nodes:write:self"]});
+    let token = format!(
+      "e30.{}.local-test-signature",
+      URL_SAFE_NO_PAD.encode(serde_json::to_vec(&body).unwrap())
+    );
+    assert!(token.len() > 8192 && token.len() < 32768);
+    assert!(
+      Reporter::prepare(
+        &config("http://127.0.0.1:1234".into()),
+        "punch-1",
+        [1; 32],
+        Some(token)
+      )
+      .is_ok()
     );
   }
 
