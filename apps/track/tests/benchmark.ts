@@ -61,7 +61,7 @@ async function setup() {
       for (const statement of sql.split(';').map(value => value.trim()).filter(Boolean)) await db.prepare(statement).run();
     }
     const now = Math.floor(Date.now() / 1000);
-    await db.prepare("INSERT INTO nodes VALUES('benchmark-punch', 'punch', 1, 'quic://punch.invalid:443', ?, 'test', NULL, 1, NULL, ?, ?, ?)")
+    await db.prepare("INSERT INTO nodes VALUES('benchmark-punch', 'punch', 1, NULL, '[\"quic://punch.invalid:443\"]', ?, 'test', NULL, 1, NULL, ?, ?, ?)")
       .bind(base64(new Uint8Array(32)), now, now, now + 90).run();
     // Long profiles refresh real Registry leases; this is the equivalent of native reports.
     renewal = setInterval(() => {
@@ -96,7 +96,7 @@ async function run(profile: Profile) {
       const now = BigInt(Math.floor(Date.now() / 1000));
       const ticket = {v: 2n, iss: client.id, pub: client.pub, iat: now, exp: now + 60n, aud: 'track', sig: ''};
       ticket.sig = base64(new Uint8Array(await crypto.subtle.sign('Ed25519', client.key, Uint8Array.from(canonicalTicket(ticket)).buffer)));
-      const body = stringifyWire({token: ticket, ttl: profile.renewal_mode ? 300n : 3600n, add: hashes, complete: hashes});
+      const body = stringifyWire({punch_schemes: ['quic','wss','ws'], token: ticket, ttl: profile.renewal_mode ? 300n : 3600n, add: hashes, complete: hashes});
       const started = performance.now();
       const response = await runtime.entries[index % profile.entries]!.fetch(`https://track.invalid/peers/${client.id}/files`, {
         method: 'PUT', headers: {'Content-Type': 'application/json', 'CF-Connecting-IP': client.ip}, body

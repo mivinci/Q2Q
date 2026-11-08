@@ -180,4 +180,27 @@ Admin 通过独立 Service Binding 入口 `PunchManagement` 调用 `listPunches`
 
 修改携带管理员身份、原因、请求 ID 和策略 revision。策略与 `punch_operation` 审计在同一 D1 batch 中提交，重复请求返回原结果，旧 revision 或相同请求 ID 的不同内容被拒绝。查询结果不包含服务 token 或私钥。Admin 的待确认记录是请求意图/结果缓存，Registry 的审计才是实际执行依据。
 
-停止发现不会断开连接或终止节点，Workers Track 缓存可能继续使用最多 60 秒；旧地址和已分发的 Peer/Punch 信息不因此撤销。部署流水线会验证管理表存在；CI 不自动迁移远端数据库。
+停止发现不会断开连接或终止节点，Workers Track 缓存可能继续使用最多 60 秒；旧地址和已分发的 Peer/Punch 信息不因此撤销。部署流水线会只读核对 Registry 管理的表、索引和触发器定义；CI 不自动迁移远端数据库。
+
+
+## Punch 端点列表
+
+Punch 签名 claims 使用 `endpoints: string[]`，例如 `["quic://punch.example.com:4433", "wss://signal.example.com/punch?region=hk"]`。发现和管理接口返回同一规范列表，不返回旧单值字段。允许 QUIC/WSS，WS 仅 loopback；列表 1–8 项、每项最多 2048 字符，拒绝 userinfo、fragment、非法端口和规范化后重复，保留 WebSocket 路径/query。服务 token 上限为 32 KiB，覆盖最大端点集合；通用 keygen 保留调用者 claims，不替调用者推断业务字段。
+
+列表排序不影响身份；增删改须提高 `identity_version`。注册先验证原始 JWT 签名，再规范化列表并在单个 SQL upsert 中检查版本与同版本身份一致性。心跳不能覆盖地址。原生 Track 自身的 HTTPS `advertise_url` 保留，不与 Punch 混用。
+
+原生和浏览器 WSS 验证公共 CA/域名/有效期，QUIC 保留节点公钥 pinning。Registry RPC 传完整列表，Track 按 `punch_schemes` 与对应容量分配；候选不会因为对方绑定的传输不同被误过滤。
+
+**上线不兼容旧 schema/凭据。** 初始 `0001_nodes.sql` 改用 `endpoints_json`；移除未上线的 0004 WebSocket 增列迁移。不可向旧生产库直接执行新初始建表或只依赖历史 migration 记录。需另行确认具体 Registry D1、Track DO/缓存/索引重置范围，重新初始化并签发凭据，再协调服务与 SDK 更新。CI 通过 `scripts/check-schema.ts --remote` 只读查询 sqlite_master，并与当前初始迁移生成的表/索引/触发器定义核对（忽略定义外的空白与注释，不忽略字符串值）。它不只检查新列存在：旧 NOT NULL、旧 websocket_url 列、缺失约束/索引、额外触发器和半迁移状态均阻止部署。只检查 `nodes`、`report_limits`、`punch_policy`、`punch_operation` 及其附属定义，不读取节点/凭据/审计内容，不执行远端返回的 SQL，也不自动重建数据库或执行迁移。
+
+
+## 不覆盖旧 Secret 的追加签发公钥
+
+可选 `REGISTRY_ADDITIONAL_JWKS` 使用与 `REGISTRY_JWKS` 相同的 public Ed25519 JWKS 格式。
+认证时先校验两份配置，再合并可信公钥；原配置仍必需且保留。新增项只能包含公钥，不能上传
+JWK 的 d 或签发私钥。两份合计最多 16 把、kid 不得冲突；非法附加配置或重复 kid 明确失败，
+不能静默覆盖。未配置附加项时保持原行为，配置变更会刷新认证缓存。
+
+此方式适用于原 JWKS 放在 Cloudflare Secret、不能取回其值时的安全追加轮换；不要为更新
+一台节点直接覆盖原 REGISTRY_JWKS，导致其他服务 token 失信。移除旧信任需先完成对应服务
+凭据迁移并单独授权。Worker 版本回滚到不读取附加配置的代码后，新签发 token 将不再受信任。

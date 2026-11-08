@@ -58,7 +58,7 @@ struct Page {
 #[derive(Deserialize)]
 struct Node {
   punch_id: String,
-  url: String,
+  endpoints: q2q_track::endpoints::PunchEndpoints,
   public_key: String,
   identity_version: u64,
   accepting_new_connections: bool,
@@ -76,6 +76,7 @@ struct Metrics {
 struct LeasedNode {
   assignment: PunchAssignment,
   assignable: bool,
+  schemes: Vec<q2q_track::endpoints::PunchScheme>,
   expires_at: Instant,
 }
 struct Cache {
@@ -513,28 +514,38 @@ impl RegistryPunchDirectory {
         {
           return Err(FetchError::Invalid);
         }
-        let url = Url::parse(&node.url).map_err(|_| FetchError::Invalid)?;
-        if url.scheme() != "quic"
-          || url.host_str().is_none()
-          || url.port().is_none()
-          || !url.username().is_empty()
-          || url.password().is_some()
-          || url.query().is_some()
-          || url.fragment().is_some()
-          || !matches!(url.path(), "" | "/")
-        {
-          return Err(FetchError::Invalid);
-        }
-        let full = node.metrics.as_ref().is_some_and(|metrics| {
-          transport_full(metrics.quic_connections, metrics.quic_connection_capacity)
-            && transport_full(
-              metrics.websocket_connections,
-              metrics.websocket_connection_capacity,
-            )
-        });
+        use q2q_track::endpoints::PunchScheme;
+        let schemes: Vec<_> = node
+          .endpoints
+          .as_slice()
+          .iter()
+          .filter_map(|url| {
+            let (scheme, full) = if url.starts_with("quic:") {
+              (
+                PunchScheme::Quic,
+                node
+                  .metrics
+                  .as_ref()
+                  .is_some_and(|m| transport_full(m.quic_connections, m.quic_connection_capacity)),
+              )
+            } else {
+              (
+                if url.starts_with("wss:") {
+                  PunchScheme::Wss
+                } else {
+                  PunchScheme::Ws
+                },
+                node.metrics.as_ref().is_some_and(|m| {
+                  transport_full(m.websocket_connections, m.websocket_connection_capacity)
+                }),
+              )
+            };
+            (!full).then_some(scheme)
+          })
+          .collect();
         let assignment = PunchAssignment {
           punch_id: node.punch_id,
-          url: node.url,
+          endpoints: node.endpoints.as_slice().to_vec(),
           public_key: key,
         };
         identities.insert(
@@ -543,7 +554,8 @@ impl RegistryPunchDirectory {
         );
         nodes.push(LeasedNode {
           assignment,
-          assignable: node.accepting_new_connections && !full,
+          assignable: node.accepting_new_connections && !schemes.is_empty(),
+          schemes,
           expires_at: now + remaining,
         });
         if nodes.len() > 10_000 {
@@ -587,10 +599,19 @@ impl RegistryPunchDirectory {
 
 /// Rendezvous hashing keeps a Peer on the same Punch while the eligible set is
 /// unchanged, and gives all Track replicas the same answer without shared counters.
-fn rendezvous(nodes: &[LeasedNode], peer: &PeerId, now: Instant) -> Option<PunchAssignment> {
+fn rendezvous(
+  nodes: &[LeasedNode],
+  peer: &PeerId,
+  now: Instant,
+  schemes: &[q2q_track::endpoints::PunchScheme],
+) -> Option<PunchAssignment> {
   nodes
     .iter()
-    .filter(|node| node.assignable && node.expires_at > now)
+    .filter(|node| {
+      node.assignable
+        && node.expires_at > now
+        && node.schemes.iter().any(|scheme| schemes.contains(scheme))
+    })
     .max_by(|a, b| {
       let score = |node: &LeasedNode| {
         q2q_primitives::mac::sha256(
@@ -610,7 +631,11 @@ fn rendezvous(nodes: &[LeasedNode], peer: &PeerId, now: Instant) -> Option<Punch
 }
 
 impl PunchDirectory for RegistryPunchDirectory {
-  fn assign(&self, peer: &PeerId) -> Result<Option<PunchAssignment>, DirectoryError> {
+  fn assign_for(
+    &self,
+    peer: &PeerId,
+    schemes: &[q2q_track::endpoints::PunchScheme],
+  ) -> Result<Option<PunchAssignment>, DirectoryError> {
     let guard = self
       .cache
       .read()
@@ -619,7 +644,7 @@ impl PunchDirectory for RegistryPunchDirectory {
       .as_ref()
       .filter(|cache| cache.expires_at > Instant::now())
       .ok_or(DirectoryError::Unavailable)?;
-    Ok(rendezvous(&cache.nodes, peer, Instant::now()))
+    Ok(rendezvous(&cache.nodes, peer, Instant::now(), schemes))
   }
 
   fn snapshot(&self) -> Result<DirectorySnapshot, DirectoryError> {

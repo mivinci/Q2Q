@@ -14,7 +14,7 @@ import type { NewSession } from '../src/peer-state.ts';
 
 const hash = (n: number) => `sha256:${n.toString(16).padStart(2, '0').repeat(32)}`;
 const fixturePeer = JSON.parse(vectors.tickets[0]!.body_json).iss as string;
-const punch = { punch_id: 'fixture-punch', url: 'quic://punch.invalid:443', public_key: base64(new Uint8Array(32).fill(9)) };
+const punch = { punch_id: 'fixture-punch', endpoints: ['quic://punch.invalid:443'], public_key: base64(new Uint8Array(32).fill(9)) };
 app.get('/contract-error', async context => {
   await context.env.PEERS.getByName(`peer:${fixturePeer}`).authenticate({ peer_id: fixturePeer, seq: '1', timestamp: String(seconds()), mac: '' }, false);
   return context.json({ unexpected: true });
@@ -147,7 +147,7 @@ export class StoreHarness extends DurableObject<Bindings> {
       await error(() => file.apply(other)); equal(file.page(null, 64, 100), [{ peer_id: fixturePeer, revision: '1' }]);
     } else if (name === 'future-schema') {
       store.announce(record(7, 300), [], [], []);
-      this.ctx.storage.sql.exec('UPDATE peer_meta SET version=2');
+      this.ctx.storage.sql.exec('UPDATE peer_meta SET version=3');
       await error(() => store.session()); await error(() => store.announce(record(8, 400), [], [], []));
     } else if (name === 'file-future-schema') {
       const file = new FileStore(this.ctx.storage, config); file.apply(event('1'));
@@ -179,6 +179,7 @@ export class TestPeer extends PeerState {
     if (!session) throw new Error('missing test session');
     store.announce({...session, expires_at: seconds() + 300}, [], [hash], []);
   }
+  legacyIdentityForTest() { this.ctx.storage.sql.exec('UPDATE peer_meta SET version=1'); }
   expireForTest() {this.ctx.storage.sql.exec('UPDATE session SET expires_at=0');}
 
   async inspectForTest() { const store = new PeerStore(this.ctx.storage, limits(this.env)); return { session: store.session(), pending: store.pending(), alarm: await this.ctx.storage.getAlarm(), tables: tables(this.ctx.storage) }; }
@@ -205,10 +206,18 @@ export class FaultFile extends FileIndex {
 }
 export class TestDirectory extends DiscoveryState {
   async refreshForTest() {await this.ctx.storage.delete('discovery-retry'); await this.alarm();}
+  legacyIdentityForTest() { this.ctx.storage.sql.exec('UPDATE discovery_meta SET version=1'); }
   expireForTest() {this.ctx.storage.sql.exec("UPDATE discovery_snapshot SET payload=json_set(payload, '$.expires_at', 0)");}
+  identitiesForTest() {
+    return {
+      rows:this.ctx.storage.sql.exec('SELECT * FROM discovery_identities ORDER BY id').toArray(),
+      version:this.ctx.storage.sql.exec('SELECT version FROM discovery_meta WHERE id=1').one(),
+      columns:this.ctx.storage.sql.exec('PRAGMA table_info(discovery_identities)').toArray().map(row=>row.name),
+    };
+  }
   async statusForTest() {return {alarm: await this.ctx.storage.getAlarm(), retry: await this.ctx.storage.get('discovery-retry')};}
 
-  futureVersionForTest() { this.ctx.storage.sql.exec('UPDATE discovery_meta SET version=2'); }
+  futureVersionForTest() { this.ctx.storage.sql.exec('UPDATE discovery_meta SET version=3'); }
 }
 interface TestBindings extends Bindings {
   PEERS: DurableObjectNamespace<TestPeer>;
@@ -226,7 +235,7 @@ async function request(who: Awaited<ReturnType<typeof identity>>, add: string[] 
   const now = BigInt(seconds());
   const ticket = { v: 2n, iss: who.id, pub: who.pub, iat: now, exp: now + 60n, aud: 'track', sig: '' };
   ticket.sig = base64(new Uint8Array(await crypto.subtle.sign('Ed25519', who.keys.privateKey, Uint8Array.from(canonicalTicket(ticket)).buffer)));
-  return { peer_id: who.id, token: stringifyWire(ticket), add, del, complete: add, ttl: '300', punch };
+  return { peer_id: who.id, punch_schemes: ['quic','wss','ws'], token: stringifyWire(ticket), add, del, complete: add, ttl: '300', punch };
 }
 async function until(check: () => Promise<boolean>, timeout = 4000): Promise<void> {
   const end = Date.now() + timeout;
@@ -334,9 +343,119 @@ async function actorChecks(env: TestBindings): Promise<string[]> {
   return passed;
 }
 
+async function endpointChecks(env: TestBindings, scenario: string): Promise<string[]> {
+  const directory = env.DISCOVERY.getByName(DISCOVERY_NAME);
+  const endpoints = ['quic://punch.invalid:443', 'ws://127.0.0.1:8080/signal?region=local', 'wss://proxy.invalid/signal?region=hk'];
+  const metrics = {quic_connections:0,quic_connection_capacity:10,websocket_connections:0,websocket_connection_capacity:10,
+    live_bindings:0,signalling_sessions:0,signalling_session_capacity:null};
+  const node = { ...punch, endpoints, identity_version:1, accepting_new_connections:true, metrics, expires_at:seconds()+90 };
+  const publish = (nodes: Parameters<DiscoveryState['publish']>[0]['nodes']) => directory.publish({expires_at:seconds()+60,nodes});
+  let calls = 0;
+  async function announce(who: Awaited<ReturnType<typeof identity>>, schemes: unknown, add: string[] = [], extra = {}) {
+    const signed = await request(who,add);
+    const response = await app.request(`https://track.invalid/peers/${who.id}/files`, {method:'PUT',headers:{'Content-Type':'application/json','CF-Connecting-IP':`192.0.${++calls}.1`},
+      body:JSON.stringify({token:JSON.parse(signed.token),ttl:300,add,complete:add,punch_schemes:schemes,...extra})}, env);
+    const value = await response.json() as {code?:string;session_key:string;punch:typeof punch};
+    return {response,value};
+  }
+  async function checkAllocation(schemes: unknown, accepted: boolean, expected = 'no_available_punch', extra = {}) {
+    const who=await identity(), {response,value}=await announce(who,schemes,[],extra);
+    equal(response.status,accepted?200:expected==='unprocessable_entity'?422:503);
+    if(accepted)equal(value.punch.endpoints,endpoints);
+    else {
+      equal(value.code,expected);
+      equal((await env.PEERS.getByName(`peer:${who.id}`).inspectForTest()).session,null);
+    }
+  }
+  if(scenario==='allocation') {
+    await publish([node]);
+    for(const schemes of [['quic'],['wss'],['ws'],['wss','quic'],['ws','wss']])await checkAllocation(schemes,true);
+    await publish([{...node,metrics:{...metrics,quic_connections:10}}]);
+    await checkAllocation(['quic'],false);await checkAllocation(['wss'],true);
+    await publish([{...node,metrics:{...metrics,websocket_connections:10}}]);
+    await checkAllocation(['wss'],false);await checkAllocation(['ws'],false);await checkAllocation(['quic'],true);
+    await publish([{...node,metrics:{...metrics,quic_connections:10,websocket_connections:10}}]);
+    await checkAllocation(['quic','wss','ws'],false);
+    await publish([{...node,metrics:{...metrics,quic_connections:10,quic_connection_capacity:null}}]);
+    await checkAllocation(['quic'],true);
+    await publish([{...node,accepting_new_connections:false}]);await checkAllocation(['quic','wss'],false);
+    await publish([{...node,identity_version:2,endpoints:['wss://proxy.invalid/signal?region=hk']}]);
+    await checkAllocation(['quic'],false);await checkAllocation(['ws'],false);
+    const available={...node,punch_id:'available'};
+    await publish([{...node,identity_version:3,metrics:{...metrics,websocket_connections:10}},available]);
+    const who=await identity();
+    const first=await announce(who,['wss']);equal(first.response.status,200);equal(first.value.punch.punch_id,'available');
+    await publish([available,{...node,identity_version:3,metrics:{...metrics,websocket_connections:10}}]);
+    const reordered=await announce(who,['wss']);equal(reordered.response.status,200);equal(reordered.value.punch.punch_id,'available');
+    return ['scheme-intersection','per-transport-capacity','shared-ws-capacity','unknown-capacity','paused-node','failed-allocation-no-session','eligible-node-among-full','directory-order-stable'];
+  }
+  if(scenario==='invalid') {
+    await publish([node]);
+    for(const schemes of [undefined,[],['quic','quic'],['websocket'],['https'],['QUIC'],null])await checkAllocation(schemes,false,'unprocessable_entity');
+    await checkAllocation(['wss'],false,'unprocessable_entity',{punch_transport:'websocket'});
+    return ['required-schemes','duplicate-schemes','unknown-schemes','old-transport-rejected'];
+  }
+  if(scenario==='sessions') {
+    await publish([node]);
+    const publisher=await identity(),reader=await identity(),content=hash(81);
+    const first=await announce(publisher,['quic'],[content]);equal(first.response.status,200);
+    const second=await announce(reader,['wss']);equal(second.response.status,200);
+    const key=decodeBase64(second.value.session_key,32);
+    const auth=async(seq:bigint)=>{const timestamp=BigInt(seconds());return{seq,timestamp,mac:await sessionMac(key,reader.id,seq,timestamp)};};
+    const heartbeat=async(seq:bigint)=>app.request(`https://track.invalid/peers/${reader.id}/heartbeat`,{method:'POST',headers:{'Content-Type':'application/json'},body:stringifyWire(await auth(seq))},env);
+    const query=async(seq:bigint)=>{
+      const signed=await auth(seq);const params=new URLSearchParams({peer_id:reader.id,seq:String(seq),timestamp:String(signed.timestamp),mac:signed.mac});
+      const response=await app.request(`https://track.invalid/files/${content}/peers?${params}`,{},env);equal(response.status,200);
+      return await response.json() as {peers:{peer_id:string;punch:typeof punch}[]};
+    };
+    equal((await query(1n)).peers.map(peer=>peer.peer_id),[publisher.id]);
+    await publish([{...node,endpoints:[...endpoints].reverse()}]);equal((await heartbeat(2n)).status,200);
+    await publish([{...node,identity_version:2,endpoints:[endpoints[0]!,endpoints[1]!,'wss://proxy.invalid/signal?region=eu']}]);
+    equal((await heartbeat(3n)).status,401);
+    equal((await env.PEERS.getByName(`peer:${reader.id}`).inspectForTest()).session!.last_seq,'2');
+    equal((await query(3n)).peers,[]); // stale publisher identity is excluded even while its file index is live.
+    await publish([{...node,identity_version:3}]);equal((await heartbeat(4n)).status,200);
+    const after=await query(5n);equal(after.peers.map(peer=>peer.peer_id),[publisher.id]);equal(after.peers[0]!.punch.endpoints,endpoints);
+    await publish([{...node,identity_version:4,endpoints:endpoints.slice(0,1)}]);equal((await heartbeat(6n)).status,401);
+    await publish([{...node,identity_version:5,public_key:base64(new Uint8Array(32).fill(8))}]);equal((await heartbeat(6n)).status,401);
+    await publish([{...node,identity_version:6}]);equal((await heartbeat(6n)).status,200);
+    await publish([]);equal((await heartbeat(7n)).status,401);
+    await publish([{...node,identity_version:7}]);equal((await heartbeat(7n)).status,200);
+    return ['cross-binding-candidate','reorder-preserves-session','query-change-invalidates','stale-candidate-hidden','rejected-heartbeat-preserves-sequence','delete-key-retirement-invalidate'];
+  }
+  if(scenario==='ledger') {
+    const other={...node,punch_id:'other'};
+    await publish([{...node,identity_version:2},{...other,identity_version:2}]);
+    const before=await directory.snapshot(),ledger=await directory.identitiesForTest();
+    equal(ledger.version,{version:2});equal(ledger.columns,['id','version','endpoints_json','public_key']);
+    await error(()=>publish([{...node,identity_version:3,endpoints:['wss://new.invalid/ws']},{...other,identity_version:2,endpoints:['wss://conflict.invalid/ws']}]),'discovery_unavailable');
+    equal(await directory.snapshot(),before);equal(await directory.identitiesForTest(),ledger);
+    await publish([{...node,identity_version:2,endpoints:[...endpoints].reverse()},{...other,identity_version:2}]);
+    equal(await directory.identitiesForTest(),ledger);
+    for(const invalid of [[],[endpoints[0]!,endpoints[0]!],['ws://public.invalid/ws']]) {
+      await error(()=>publish([{...node,identity_version:3,endpoints:invalid}]),'bad_request');
+      equal(await directory.identitiesForTest(),ledger);
+    }
+    return ['list-only-ledger-schema','atomic-ledger-and-snapshot','reorder-same-version','invalid-list-preserves-ledger'];
+  }
+  if(scenario==='old-state') {
+    await publish([node]);await directory.legacyIdentityForTest();
+    await error(()=>directory.snapshot());await error(()=>publish([node]));
+    const who=await identity(),peer=env.PEERS.getByName(`peer:${who.id}`);
+    await peer.announce(await request(who));await peer.legacyIdentityForTest();
+    await error(()=>peer.inspectForTest());await error(async()=>peer.announce(await request(who)));
+    return ['old-discovery-rejected','old-peer-rejected'];
+  }
+  throw new Error('unknown endpoint test scenario');
+}
+
 export default {
   async fetch(incoming: Request, env: TestBindings): Promise<Response> {
     const path = new URL(incoming.url).pathname;
+    if(path==='/endpoint-checks') {
+      try {return Response.json({passed:await endpointChecks(env,new URL(incoming.url).searchParams.get('scenario')??'')});}
+      catch(cause){return Response.json({error:String(cause),stack:(cause as Error).stack},{status:500});}
+    }
     if (path === '/performance-checks') {
       const scan = await env.HARNESS.getByName('file-scan-budget').scanBudgetForTest();
       const who = await identity(), peer = env.PEERS.getByName(`peer:${who.id}`);
@@ -353,7 +472,9 @@ export default {
       try {
         const operation = new URL(incoming.url).searchParams.get('operation');
         if (operation === 'refresh') {await directory.refreshForTest(); return Response.json({refreshed: true});}
+        if (operation === 'legacy-identity') {await directory.legacyIdentityForTest(); return Response.json({legacy: true});}
         if (operation === 'expire') {await directory.expireForTest(); return Response.json({expired: true});}
+        if (operation === 'identities') return Response.json(await directory.identitiesForTest());
         if (operation === 'status') return Response.json(await directory.statusForTest());
         if (operation === 'write') {
           const binding = env.REGISTRY as unknown as {report(): Promise<unknown>};
@@ -432,6 +553,7 @@ export default {
     }
     if (path === '/http-checks') {
       try {
+        const websocketUrl = 'wss://proxy.invalid/punch';
         let passed = 0;
         for (const scenario of vectors.http) {
           const response = await app.request('https://track.invalid' + scenario.uri, {
@@ -442,15 +564,16 @@ export default {
           if (scenario.error) equal((await response.json() as {code:string}).code, scenario.error);
           passed++;
         }
-        await env.DISCOVERY.getByName(DISCOVERY_NAME).publish({expires_at: seconds() + 60, nodes: [{...punch, accepting_new_connections: true, expires_at: seconds() + 90}]});
+        await env.DISCOVERY.getByName(DISCOVERY_NAME).publish({expires_at: seconds() + 60, nodes: [{...punch, endpoints: [...punch.endpoints,websocketUrl], accepting_new_connections: true, expires_at: seconds() + 90}]});
         const publisher = await identity(), reader = await identity(), content = hash(72);
         async function announce(who: Awaited<ReturnType<typeof identity>>, add: string[]) {
           const value = await request(who, add);
           const response = await app.request(`https://track.invalid/peers/${who.id}/files`, {method: 'PUT', headers: {'Content-Type': 'application/json'},
-            body: `{"token":${value.token},"ttl":300,"add":${JSON.stringify(add)},"complete":${JSON.stringify(add)}}`}, env);
+            body: `{"punch_schemes":["quic","wss","ws"],"token":${value.token},"ttl":300,"add":${JSON.stringify(add)},"complete":${JSON.stringify(add)}}`}, env);
           equal(response.status, 200);
           const result = await response.json() as {session_key:string; punch:unknown; heartbeat_interval:number; turn:{credential:string; username:string}};
           equal((result.punch as {punch_id:string}).punch_id, punch.punch_id); equal(result.heartbeat_interval, 30);
+          equal((result.punch as {endpoints:string[]}).endpoints.at(-1), websocketUrl);
           equal(result.turn.credential, await turnCredential(env.TURN_SECRET!, result.turn.username));
           return decodeBase64(result.session_key, 32);
         }
@@ -463,16 +586,21 @@ export default {
         const params = new URLSearchParams({peer_id: reader.id, seq: '2', timestamp: String(timestamp), mac: await sessionMac(key, reader.id, 2n, timestamp)});
         const queried = await app.request(`https://track.invalid/files/${content}/peers?${params}`, {}, env);
         equal(queried.status, 200);
-        const result = await queried.json() as {peers:{peer_id:string}[]; next_cursor:string|null};
-        equal(result.peers.map(peer => peer.peer_id), [publisher.id]); equal(result.next_cursor, null);
+        const result = await queried.json() as {peers:{peer_id:string; punch:{endpoints:string[]}}[]; next_cursor:string|null};
+        equal(result.peers.map(peer => peer.peer_id), [publisher.id]); equal(result.next_cursor, null); equal(result.peers[0]!.punch.endpoints.at(-1), websocketUrl);
+        // A WSS-only endpoint change is an identity change as well; rejection
+        // must not consume the authenticated sequence before reannounce.
+        await env.DISCOVERY.getByName(DISCOVERY_NAME).publish({expires_at: seconds() + 60, nodes: [{...punch, endpoints: [...punch.endpoints,'wss://rotated.invalid/punch'], accepting_new_connections: true, expires_at: seconds() + 90}]});
+        const staleWss = await app.request(`https://track.invalid/peers/${reader.id}/heartbeat`, {method:'POST',headers:{'Content-Type':'application/json'},body:stringifyWire({seq:3n,timestamp,mac:await sessionMac(key,reader.id,3n,timestamp)})},env);
+        equal(staleWss.status,401);
         // Management pauses new assignments while retaining known identity.
-        await env.DISCOVERY.getByName(DISCOVERY_NAME).publish({expires_at: seconds() + 60, nodes: [{...punch, accepting_new_connections: false, expires_at: seconds() + 90}]});
+        await env.DISCOVERY.getByName(DISCOVERY_NAME).publish({expires_at: seconds() + 60, nodes: [{...punch, endpoints: [...punch.endpoints,websocketUrl], accepting_new_connections: false, expires_at: seconds() + 90}]});
         const retained = await app.request(`https://track.invalid/peers/${reader.id}/heartbeat`, {method:'POST',headers:{'Content-Type':'application/json'},body:stringifyWire({seq:3n,timestamp,mac:await sessionMac(key,reader.id,3n,timestamp)})},env);
         equal(retained.status,200);
         const newcomer=await identity();const attempted=await request(newcomer,[]);
-        const paused=await app.request(`https://track.invalid/peers/${newcomer.id}/files`,{method:'PUT',headers:{'Content-Type':'application/json'},body:`{"token":${attempted.token},"ttl":300,"add":[]}`},env);
+        const paused=await app.request(`https://track.invalid/peers/${newcomer.id}/files`,{method:'PUT',headers:{'Content-Type':'application/json'},body:`{"punch_schemes":["quic","wss","ws"],"token":${attempted.token},"ttl":300,"add":[]}`},env);
         equal(paused.status,503);equal((await paused.json() as {code:string}).code,'no_available_punch');
-        await env.DISCOVERY.getByName(DISCOVERY_NAME).publish({expires_at: seconds() + 60, nodes: [{...punch, url: 'quic://changed.invalid:443', accepting_new_connections: true, expires_at: seconds() + 90}]});
+        await env.DISCOVERY.getByName(DISCOVERY_NAME).publish({expires_at: seconds() + 60, nodes: [{...punch, endpoints: ['quic://changed.invalid:443',websocketUrl], accepting_new_connections: true, expires_at: seconds() + 90}]});
         const moved = await app.request(`https://track.invalid/peers/${reader.id}/heartbeat`, {method: 'POST', headers: {'Content-Type': 'application/json'},
           body: stringifyWire({seq: 4n, timestamp, mac: await sessionMac(key, reader.id, 4n, timestamp)})}, env);
         equal(moved.status, 401);

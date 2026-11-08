@@ -10,11 +10,7 @@ use q2q_primitives::identity::PeerId;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub type UnixSeconds = u64;
-/// Bumped on ICE restart, so a heartbeat minted before a network switch cannot
-/// be replayed afterwards to keep a stale NAT mapping alive.
-pub type Generation = u64;
-
+pub use crate::{Generation, UnixSeconds};
 pub fn now() -> UnixSeconds {
   SystemTime::now()
     .duration_since(UNIX_EPOCH)

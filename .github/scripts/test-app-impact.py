@@ -21,6 +21,8 @@ class ImpactTests(unittest.TestCase):
     def decision(self, app, paths, npm_changed=False, cargo_changed=False):
         def npm(ref, name):
             workspaces = [f'apps/{name}']
+            if name == 'www':
+                workspaces += ['packages/ui', 'packages/client-web', 'crates/q2q-wasm', 'apps/track', 'apps/registry', 'packages/punch-discovery']
             if name in ('admin', 'platform'):
                 workspaces += ['packages/ui','packages/plans','packages/accounts']
             if name in ('admin','registry','track'):
@@ -32,7 +34,8 @@ class ImpactTests(unittest.TestCase):
             return ('changed' if ref == 'HEAD' and npm_changed else 'same', workspaces)
 
         def cargo(ref, roots=('q2q-wasm',)):
-            return json.dumps([{'name': 'q2q-core', 'version': 'changed' if ref == 'HEAD' and cargo_changed else 'same'}])
+            names = ('q2q-wasm', 'q2q-primitives', 'q2q-punch', 'q2q-track') if roots == ('q2q-wasm',) else ('q2q-core','q2q-track-server','q2q-punch-server','q2q-track','q2q-punch','q2q-primitives')
+            return json.dumps([{'name': name, 'version': 'changed' if ref == 'HEAD' and cargo_changed else 'same'} for name in names])
 
         with tempfile.TemporaryDirectory() as directory:
             output, summary = Path(directory) / 'output', Path(directory) / 'summary'
@@ -60,8 +63,19 @@ class ImpactTests(unittest.TestCase):
 
     def test_native_control_sources_and_shared_fixtures(self):
         self.assertTrue(self.decision('track', ['crates/q2q-core/src/control.rs']))
+        self.assertTrue(self.decision('www', ['crates/q2q-punch-server/src/main.rs']))
+        self.assertTrue(self.decision('www', ['Cargo.lock'], cargo_changed=True))
         self.assertTrue(self.decision('track', ['tests/fixtures/track/v1.json']))
         self.assertFalse(self.decision('track', ['crates/q2q-cli/src/main.rs']))
+
+    def test_endpoint_contract_fixtures_trigger_all_executing_workflows(self):
+        for app in ('registry', 'track', 'www'):
+            for path in ('tests/fixtures/punch/endpoints.json', 'tests/fixtures/punch/credential.json',
+                         'packages/punch-discovery/endpoints.ts', '.github/scripts/test-app-impact.py'):
+                with self.subTest(app=app, path=path):
+                    self.assertTrue(self.decision(app, [path]))
+        for app in ('platform', 'admin', 'seed-processing'):
+            self.assertFalse(self.decision(app, ['tests/fixtures/punch/endpoints.json']))
 
     def test_track_deployment_gate_changes_trigger_track(self):
         self.assertTrue(self.decision('track', ['.github/scripts/wait-registry.py']))
@@ -84,6 +98,17 @@ class ImpactTests(unittest.TestCase):
         self.assertTrue(self.decision('platform', ['packages/ui/src/assets/logo-light.svg']))
         self.assertTrue(self.decision('seed-processing', ['apps/platform/migrations/0001.sql']))
         self.assertFalse(self.decision('registry', ['docs/en/guide/track.md']))
+
+
+    def test_www_tracks_sdk_ui_wasm_and_integration_services(self):
+        for path in ['apps/www/src/routes/+page.svelte', 'packages/client-web/src/client.ts',
+                     'packages/ui/src/theme.css', 'crates/q2q-wasm/src/lib.rs',
+                     'crates/q2q-primitives/src/seed.rs', 'crates/q2q-punch/src/message.rs',
+                     'crates/q2q-track/src/auth.rs', 'crates/q2q-core/tests/browser_rtc.rs', 'docs/public/favicon.svg']:
+            with self.subTest(path=path):
+                self.assertTrue(self.decision('www', [path]))
+        self.assertTrue(self.decision('www', ['apps/registry/src/nodes.ts']))
+        self.assertFalse(self.decision('www', ['apps/admin/src/routes/+page.svelte']))
 
 
 if __name__ == '__main__':

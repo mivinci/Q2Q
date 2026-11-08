@@ -58,3 +58,7 @@ mod test_destination;
 #[cfg(test)]
 #[path = "../tests/upload_cache_bench.rs"]
 mod upload_cache_bench;
+
+#[cfg(test)]
+#[path = "../tests/browser_publisher.rs"]
+mod browser_publisher;

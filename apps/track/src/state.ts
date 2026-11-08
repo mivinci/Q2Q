@@ -1,3 +1,4 @@
+import { punchAssignmentSchema } from '@q2q/punch-discovery';
 import { z } from 'zod';
 import type { PunchDiscoveryService } from '@q2q/punch-discovery';
 import type { RateLimiter } from './rate-limit.ts';
@@ -52,10 +53,7 @@ export function queryTime(input: QueryContext, hash: string, config: Limits): nu
   if (value.deadline <= Date.now()) unavailable();
   return value.now;
 }
-export const punchSchema = z.object({
-  punch_id: z.string().min(1).max(128), url: z.string().max(2048).url().refine(value => new URL(value).protocol === 'quic:'),
-  public_key: z.string().refine(value => { try { decodeBase64(value, 32); return true; } catch { return false; } })
-});
+export const punchSchema = punchAssignmentSchema;
 export type Punch = z.infer<typeof punchSchema>;
 export const eventSchema = z.object({
   peer_id: peerSchema, info_hash: hashSchema, revision: decimalSchema,

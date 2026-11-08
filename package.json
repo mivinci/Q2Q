@@ -35,7 +35,11 @@
     "admin:check": "npm run check --workspace @q2q/admin",
     "admin:build": "npm run build --workspace @q2q/admin",
     "admin:test": "npm test --workspace @q2q/admin",
-    "platform:check:accounts": "npm run check:accounts --workspace @q2q/platform"
+    "platform:check:accounts": "npm run check:accounts --workspace @q2q/platform",
+    "www:dev": "npm run dev --workspace @q2q/www",
+    "www:check": "npm run check --workspace @q2q/www",
+    "www:build": "npm run build --workspace @q2q/www",
+    "www:test": "npm test --workspace @q2q/www"
   },
   "devDependencies": {
     "playwright-core": "^1.57.0"

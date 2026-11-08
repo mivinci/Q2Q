@@ -235,7 +235,7 @@ fn run() -> Result<()> {
     } => {
       let (key, kid) = load_signer(&key, kid)?;
       let bytes = fs::read(input)?;
-      if bytes.len() > 16 * 1024 {
+      if bytes.len() > 32 * 1024 {
         return Err("claims file is too large".into());
       }
       let body: Value = serde_json::from_slice(&bytes).map_err(|_| "invalid claims JSON")?;
@@ -305,6 +305,46 @@ mod tests {
         );
       }
     }
+  }
+
+  #[test]
+  fn list_endpoint_credential_preserves_caller_claims_and_matches_shared_signer() {
+    let vector: Value = serde_json::from_str(include_str!(concat!(
+      env!("CARGO_MANIFEST_DIR"),
+      "/../../tests/fixtures/punch/credential.json"
+    )))
+    .unwrap();
+    let key = SigningKey::from_bytes(&[42; 32]);
+    assert_eq!(
+      B64.encode(key.verifying_key().as_bytes()),
+      vector["public_jwk"]["x"]
+    );
+    let original = vector["token"].as_str().unwrap();
+    let (input, signature) = original.rsplit_once('.').unwrap();
+    assert_eq!(B64.encode(key.sign(input.as_bytes()).to_bytes()), signature);
+
+    let mut input_claims = vector["claims"].clone();
+    for name in ["iat", "exp", "jti"] {
+      input_claims.as_object_mut().unwrap().remove(name);
+    }
+    let body = claims(input_claims.clone(), 1, 1_800_000_000).unwrap();
+    for (name, value) in input_claims.as_object().unwrap() {
+      assert_eq!(&body[name], value);
+    }
+    assert!(body.get("advertise_url").is_none());
+    assert!(body.get("websocket_url").is_none());
+    let token = sign(&key, "endpoint-fixture", &body).unwrap();
+    let (input, signature) = token.rsplit_once('.').unwrap();
+    let signature = Signature::from_slice(&B64.decode(signature).unwrap()).unwrap();
+    key
+      .verifying_key()
+      .verify(input.as_bytes(), &signature)
+      .unwrap();
+    let (_, encoded_body) = input.split_once('.').unwrap();
+    assert_eq!(
+      serde_json::from_slice::<Value>(&B64.decode(encoded_body).unwrap()).unwrap(),
+      body
+    );
   }
 
   #[test]

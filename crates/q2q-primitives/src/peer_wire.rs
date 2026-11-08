@@ -258,3 +258,97 @@ mod tests {
     assert!(Control::decode(&vec![0; MAX_CONTROL_BYTES + 1]).is_err());
   }
 }
+
+pub struct PieceAssembly {
+  bytes: Vec<u8>,
+  present: Vec<bool>,
+  received: usize,
+}
+impl PieceAssembly {
+  pub fn new(length: usize) -> Result<Self, WireError> {
+    if length == 0 || length > crate::seed::MAX_BLOCK_SIZE as usize {
+      return Err(WireError("invalid block length"));
+    }
+    Ok(Self {
+      bytes: vec![0; length],
+      present: vec![false; length.div_ceil(PIECE_SIZE)],
+      received: 0,
+    })
+  }
+  pub fn received(&self) -> usize {
+    self.received
+  }
+  pub fn piece_count(&self) -> usize {
+    self.present.len()
+  }
+  pub fn bytes(&self) -> &[u8] {
+    &self.bytes
+  }
+  pub fn into_bytes(self) -> Vec<u8> {
+    self.bytes
+  }
+  pub fn insert(&mut self, offset: u32, data: &[u8]) -> Result<bool, WireError> {
+    let offset = offset as usize;
+    if !offset.is_multiple_of(PIECE_SIZE)
+      || offset >= self.bytes.len()
+      || data.len() != (self.bytes.len() - offset).min(PIECE_SIZE)
+    {
+      return Err(WireError("piece length or offset disagrees with seed"));
+    }
+    let slot = offset / PIECE_SIZE;
+    if self.present[slot] {
+      if self.bytes[offset..offset + data.len()] != *data {
+        return Err(WireError("conflicting duplicate piece"));
+      }
+      return Ok(false);
+    }
+    self.bytes[offset..offset + data.len()].copy_from_slice(data);
+    self.present[slot] = true;
+    self.received += 1;
+    Ok(true)
+  }
+  pub fn complete(&self) -> bool {
+    self.received == self.present.len()
+  }
+  pub fn missing(&self) -> Vec<(u32, u32)> {
+    let mut ranges: Vec<(u32, u32)> = Vec::new();
+    for (index, present) in self.present.iter().enumerate() {
+      if *present {
+        continue;
+      }
+      let offset = index * PIECE_SIZE;
+      let len = (self.bytes.len() - offset).min(PIECE_SIZE) as u32;
+      if let Some((start, length)) = ranges.last_mut() {
+        if *start + *length == offset as u32 {
+          *length += len;
+          continue;
+        }
+      }
+      ranges.push((offset as u32, len));
+    }
+    ranges
+  }
+}
+
+/// Peer availability is MSB-first; storage checkpoint formats may differ.
+pub fn decode_bitfield(message: Control, count: usize) -> Result<Vec<u8>, WireError> {
+  use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+  if count > MAX_BLOCKS {
+    return Err(WireError("bitfield exceeds block budget"));
+  }
+  let Control::Bitfield { bits } = message else {
+    return Err(WireError("expected initial bitfield"));
+  };
+  let bits = B64
+    .decode(bits)
+    .map_err(|_| WireError("bitfield is not base64"))?;
+  if bits.len() != count.div_ceil(8)
+    || !count.is_multiple_of(8)
+      && bits
+        .last()
+        .is_some_and(|byte| *byte & ((1 << (8 - count % 8)) - 1) != 0)
+  {
+    return Err(WireError("bitfield length or padding is invalid"));
+  }
+  Ok(bits)
+}

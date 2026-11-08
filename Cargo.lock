@@ -1908,6 +1908,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "url",
+ "webpki-roots 1.0.9",
  "webrtc",
  "x509-parser 0.18.1",
 ]
@@ -2020,6 +2021,7 @@ dependencies = [
  "hmac 0.13.0",
  "parking_lot",
  "q2q-primitives",
+ "q2q-punch",
  "redis",
  "serde",
  "serde_json",
@@ -2055,7 +2057,11 @@ dependencies = [
 name = "q2q-wasm"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
+ "ed25519-dalek",
  "q2q-primitives",
+ "q2q-punch",
+ "q2q-track",
  "serde_json",
  "wasm-bindgen",
 ]

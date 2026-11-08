@@ -47,6 +47,11 @@ jobs:
         if: steps.impact.outputs.run == 'true'
       - run: node apps/track/scripts/check-config.mjs
         if: steps.impact.outputs.run == 'true'
+      - name: Check shared Punch endpoint contract
+        if: steps.impact.outputs.run == 'true'
+        run: |
+          npm run check --workspace @q2q/punch-discovery
+          npm test --workspace @q2q/punch-discovery
       - run: npm run check --workspace @q2q/track
         if: steps.impact.outputs.run == 'true'
       - run: npm test --workspace @q2q/track

@@ -12,3 +12,6 @@ pub mod state;
 pub mod wire;
 
 pub mod selection;
+
+/// Punch-owned endpoint identity shared by Track hosts.
+pub use q2q_punch::endpoints;

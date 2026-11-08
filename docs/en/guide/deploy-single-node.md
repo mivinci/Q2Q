@@ -34,7 +34,7 @@ Assume the server's public IP is `203.0.113.10`. Replace the example domains and
 | --- | --- | --- |
 | Registry | `https://registry.example.com` | A domain in a Cloudflare zone routes directly to the Worker; no server-side reverse proxy |
 | Track | `https://track.example.com` | HTTPS on TCP 443 forwards every HTTP path to local `127.0.0.1:8080` |
-| Punch | `quic://punch.example.com:4433` | The same instance directly serves QUIC on `4433/udp` and WSS on `4433/tcp`, with TLS provided by Punch |
+| Punch | `quic://punch.example.com:4433` | QUIC reaches `4433/udp` directly; WSS uses a public-CA reverse proxy and a controlled WS upstream |
 | TURN | `turn:turn.example.com:3478` | Direct TURN access on `3478/udp`, `3478/tcp` and relay range `49160–49200/udp` |
 
 Track, Punch and TURN domains resolve to the server's public IP. Use DNS-only records for Punch and TURN, with transport ports reaching the services directly.
@@ -159,6 +159,8 @@ For an existing Punch migrating to Registry, securely back up its original certi
 
 ## 5. Complete configuration and node credentials
 
+The endpoint-list protocol is incompatible with old credentials and schemas. Upgrades require an explicitly scoped Registry D1 / Track DO / Redis reset and credential reissue. These are fresh-deployment instructions, not permission to run initial SQL against an existing production database.
+
 On the management machine, save `$HOME/.q2q-signing/punch-1.claims.json`, replacing `public_key` with the Base64 output above:
 
 ```json
@@ -168,7 +170,7 @@ On the management machine, save `$HOME/.q2q-signing/punch-1.claims.json`, replac
   "sub": "punch-1",
   "service_type": "punch",
   "scope": ["nodes:write:self"],
-  "advertise_url": "quic://punch.example.com:4433",
+  "endpoints": ["quic://punch.example.com:4433", "wss://signal.example.com/punch"],
   "public_key": "REPLACE_WITH_PUNCH_BASE64_PUBLIC_KEY",
   "identity_version": 1
 }
@@ -188,7 +190,7 @@ Save `$HOME/.q2q-signing/track-1.claims.json` alongside it:
 }
 ```
 
-Punch's `sub` must match its configured `punch_id`; Track takes its node ID from the token. Use each service's client-facing endpoint for `advertise_url`. Omit `iat`, `exp` and `jti` from input files; the tool generates them.
+Punch's `sub` must match its configured `punch_id`; Track takes its node ID from the token. Use a canonical sorted `endpoints` list for Punch; Track retains its own HTTPS `advertise_url`. WSS must use a public-CA proxy certificate, not the self-signed node certificate. Omit `iat`, `exp` and `jti` from input files; the tool generates them.
 
 Issue separate 90-day tokens on the management machine:
 
@@ -347,7 +349,7 @@ Confirm `Registry Punch discovery refreshed` and `Registry Track reporting activ
 curl --fail https://track.example.com/health
 ```
 
-Track rate limits use the source address seen by its backend; requests sharing a proxy egress share that quota. Punch QUIC/WSS remain directly available on UDP/TCP 4433, outside the Track HTTP proxy.
+Track rate limits use the source address seen by its backend; requests sharing a proxy egress share that quota. Punch QUIC reaches UDP 4433 directly; WSS uses a separate public-CA proxy endpoint listed in endpoints. Do not expose the controlled plain WS upstream publicly.
 
 Compose restart policies recover containers. Enable Docker at boot and persist `/srv/q2q/identity`. For later image/mount changes, use `pull` and `up -d` to recreate the target service.
 

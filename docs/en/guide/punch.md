@@ -20,22 +20,22 @@ The control channel is QUIC rather than TCP, for two reasons:
    mapping alive, which only periodic UDP packets can do. QUIC is UDP, so no
    second path is needed.
 
-QUIC remains the preferred transport. Punch listens for UDP/QUIC and TCP/WebSocket on
-the same `bind` address. Direct WSS requires the TLS setting below. The SDK derives `wss://host:port/` from Track's
-`quic://host:port` address, tries QUIC first, and falls back to WebSocket over
-TLS when the QUIC link cannot be established. Track needs no separate WSS URL.
+Native clients prefer QUIC; browsers use WebSocket. Track returns an explicit
+`endpoints` URL list. WSS addresses are never derived from a QUIC address. The
+canonical sorted list describes identity, not connector preference. Native
+connection attempts share a 20-second total budget and only transport failures
+permit fallback; authentication failures stop immediately. An HTTP 401/403 from
+the proxy handshake is also an authentication failure and never tries another endpoint.
 
-Heartbeats use reliable QUIC streams so a transient lost packet does not end a
-long-running publication. On WSS, heartbeats are ordinary bounded WebSocket
-frames. Everything else (`join`, `exit`, and all signalling) also uses reliable
-messages on both transports. Both endpoints use the same Punch identity key
-published by Track, so the fallback does not weaken server authentication.
+QUIC pins the node key supplied by Track. Native and browser WSS validate public
+CA trust, hostname and certificate validity. QUIC heartbeats use reliable streams;
+WebSocket heartbeats use bounded frames. Tickets, MACs and peer/DTLS identity
+binding remain unchanged.
 
-This fallback covers Punch's binding and signalling control plane and uses the
-WebSocket root path (`/`). Peer file data still uses WebRTC DataChannels and its
-own ICE path; WSS alone does not make a transfer work when UDP is blocked. See
-[Deploy](./deploy-single-node) for the listener configuration. Supporting file transfers on UDP-blocked networks
-requires a separate data-plane path such as TURN over TCP/TLS.
+WebSocket URLs may use independent ports, paths and queries, such as
+`wss://signal.example.com:8443/punch/ws?region=hk`. Plain WS is restricted to
+loopback tests. This is signalling only: file data still uses WebRTC. UDP-restricted
+networks require separate TURN/TCP or TURN/TLS validation.
 
 ## WebSocket TLS configuration
 
@@ -48,7 +48,11 @@ websocket_tls = false
 
 The proxy serves WSS with a browser-trusted certificate and forwards plain WebSocket traffic, including the Upgrade handshake. Keep the plaintext upstream on loopback, a private network, or a trusted tunnel. TCP and UDP currently share `bind`; when QUIC is public, restrict upstream TCP access separately with a firewall.
 
-For direct native SDK WSS fallback, set `websocket_tls = true` to retain TLS using the existing Punch identity. Existing deployments requiring direct WSS must explicitly enable this setting when upgrading. The native SDK still derives a WSS URL and pins the Punch public key supplied by Track: it cannot connect directly to plain WS or accept an ordinary proxy certificate as the node identity. Separate browser WSS discovery and node authentication remain part of the Web SDK design.
+`websocket_tls = true` still lets Punch terminate TLS, but its self-signed node
+certificate does not satisfy the SDK's public WSS trust checks. Prefer a reverse
+proxy with a publicly trusted certificate and put its complete WSS URL in the
+signed `endpoints` list. The proxy does not receive the Punch identity private key;
+QUIC retains its persistent identity and key pinning.
 
 ## Bindings
 

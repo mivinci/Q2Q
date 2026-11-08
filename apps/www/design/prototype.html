@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Q2Q · 主站设计预览</title>
+  <link rel="icon" href="assets/logo-light.svg" />
+  <link rel="stylesheet" href="prototype.css" />
+  <script src="prototype.js" defer></script>
+</head>
+<body>
+  <div class="preview-tools" aria-label="设计稿控制">
+    <div class="preview-caption"><span class="preview-dot"></span>设计预览 <span>所有文件与进度均为示意</span></div>
+    <div class="preview-controls">
+      <label>状态 <select id="scene"><option value="empty">首次打开</option><option value="active">传输中</option><option value="paused">已暂停</option><option value="ready">待保存</option><option value="error">下载失败</option></select></label>
+      <div class="segmented" aria-label="预览尺寸"><button type="button" data-view="desktop" aria-pressed="true">桌面</button><button type="button" data-view="mobile" aria-pressed="false">手机</button></div>
+      <button type="button" class="tool-button" id="preview-theme" aria-label="切换预览主题"><svg class="icon"><use href="assets/icons.svg#moon"/></svg></button>
+    </div>
+  </div>
+  <div class="preview-viewport" id="viewport">
+    <div class="client">
+      <header class="site-header">
+        <a class="brand" href="#" aria-label="Q2Q 首页"><img class="logo-light" src="assets/logo-light.svg" alt="" /><img class="logo-dark" src="assets/logo-dark.svg" alt="" /><span>Q2Q</span></a>
+        <nav aria-label="主导航"><a href="https://docs.q2q.app" target="_blank" rel="noopener" data-text="docs">文档</a><a href="https://platform.q2q.app" target="_blank" rel="noopener" data-text="console">控制台</a><button type="button" id="settings-button" class="icon-button" aria-label="设置" aria-haspopup="dialog"><svg class="icon"><use href="assets/icons.svg#settings-2"/></svg></button></nav>
+      </header>
+      <main>
+        <section class="welcome" id="welcome" aria-labelledby="welcome-title">
+          <div class="intro-mark"><svg class="icon"><use href="assets/icons.svg#arrow-up"/></svg><svg class="icon"><use href="assets/icons.svg#arrow-down"/></svg></div>
+          <h1 id="welcome-title" data-text="title">你的内容，随处可达。</h1>
+          <p class="intro" data-text="intro">分享一个文件，或打开种子开始下载。</p>
+          <div class="drop-surface" id="drop-surface">
+            <div class="action-pair"><button class="button primary" type="button" data-action="share"><svg class="icon"><use href="assets/icons.svg#arrow-up"/></svg><span data-text="share">分享文件</span></button><button class="button secondary" type="button" data-action="download"><svg class="icon"><use href="assets/icons.svg#arrow-down"/></svg><span data-text="download">打开种子</span></button></div>
+            <p class="drop-hint" data-text="drop">也可以将文件或 .q2q 种子拖到这里</p>
+          </div>
+          <div class="assurances"><span><svg class="icon"><use href="assets/icons.svg#hard-drive"/></svg><span data-text="local">从本机分享</span></span><span><svg class="icon"><use href="assets/icons.svg#shield-check"/></svg><span data-text="verify">内容校验</span></span><span><svg class="icon"><use href="assets/icons.svg#check"/></svg><span data-text="noLogin">无需登录</span></span></div>
+        </section>
+        <section class="transfers" id="transfers" aria-labelledby="transfers-title" hidden>
+          <div class="section-heading"><div><h1 id="transfers-title" data-text="tasks">传输任务</h1><p data-text="device">当前设备上的分享与下载。</p></div><div class="toolbar-actions"><button class="button primary compact" type="button" data-action="share"><svg class="icon"><use href="assets/icons.svg#plus"/></svg><span data-text="share">分享文件</span></button><button class="button secondary compact" type="button" data-action="download"><svg class="icon"><use href="assets/icons.svg#arrow-down"/></svg><span data-text="download">打开种子</span></button></div></div>
+          <div class="list-labels" aria-hidden="true"><span data-text="filename">文件</span><span data-text="status">传输状态</span></div>
+          <div class="task-list" id="task-list" aria-live="polite"></div>
+          <p class="task-note"><svg class="icon"><use href="assets/icons.svg#info"/></svg><span data-text="keepOpen">请保持页面打开，传输才能继续。</span></p>
+        </section>
+      </main>
+      <footer class="site-footer"><span data-text="footer">让内容在设备之间自由流动。</span><span>Q2Q <span aria-hidden="true">·</span> <a href="https://docs.q2q.app/guide/what-is-q2q" target="_blank" rel="noopener" data-text="about">了解更多<svg class="icon"><use href="assets/icons.svg#arrow-up-right"/></svg></a></span></footer>
+    </div>
+  </div>
+  <dialog id="flow-dialog" aria-labelledby="flow-title"><form method="dialog"><button class="icon-button close-dialog" aria-label="关闭"><svg class="icon"><use href="assets/icons.svg#x"/></svg></button></form><div id="flow-content"></div></dialog>
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <form method="dialog"><button class="icon-button close-dialog" aria-label="关闭"><svg class="icon"><use href="assets/icons.svg#x"/></svg></button></form>
+    <h2 id="settings-title" data-text="settings">设置</h2><p class="dialog-description" data-text="preferences">让 Q2Q 更适合你的使用习惯。</p>
+    <div class="setting-section"><h3 data-text="appearance">外观</h3><div class="theme-options"><button type="button" data-mode="light"><svg class="icon"><use href="assets/icons.svg#sun"/></svg><span data-text="light">浅色</span><svg class="icon theme-check"><use href="assets/icons.svg#check"/></svg></button><button type="button" data-mode="dark"><svg class="icon"><use href="assets/icons.svg#moon"/></svg><span data-text="dark">深色</span><svg class="icon theme-check"><use href="assets/icons.svg#check"/></svg></button><button type="button" data-mode="system"><svg class="icon"><use href="assets/icons.svg#monitor"/></svg><span data-text="system">跟随系统</span><svg class="icon theme-check"><use href="assets/icons.svg#check"/></svg></button></div></div>
+    <div class="language-row"><label for="language" data-text="language">语言</label><select id="language"><option value="zh-CN">简体中文</option><option value="en">English</option></select></div>
+    <p class="settings-footnote" data-text="settingsNote">外观与语言预览。</p>
+  </dialog>
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>

@@ -176,9 +176,16 @@ struct WebSocketPunchTransport {
 impl WebSocketPunchTransport {
   async fn connect(assignment: &PunchWire) -> Result<Self, ControlError> {
     let address = websocket_url(assignment)?;
-    let public_key = decode_key(&assignment.public_key, "Punch public_key")?;
-    let pin_rejected = Arc::new(AtomicBool::new(false));
-    let tls = client_tls_config(public_key, pin_rejected.clone())?;
+    // Select the provider explicitly: the WebRTC dependency enables ring while
+    // native QUIC uses aws-lc. Never mutate the application's global provider.
+    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+      rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|_| ControlError::Transport("WSS TLS initialization failed".into()))?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
     let ws_config = WebSocketConfig::default()
       .max_message_size(Some(MAX_RESPONSE_BYTES))
       .max_frame_size(Some(MAX_RESPONSE_BYTES));
@@ -193,12 +200,23 @@ impl WebSocketPunchTransport {
     )
     .await
     .map_err(|_| ControlError::Transport("Punch WebSocket handshake timed out".into()))?;
-    let (socket, _) = connected.map_err(|error| {
-      if pin_rejected.load(Ordering::Acquire) {
-        ControlError::Authentication("Punch public key does not match Track".into())
-      } else {
-        ControlError::Transport(error.to_string())
+    let (socket, _) = connected.map_err(|error| match error {
+      tokio_tungstenite::tungstenite::Error::Tls(_) => {
+        ControlError::Authentication("Punch WSS certificate validation failed".into())
       }
+      tokio_tungstenite::tungstenite::Error::Io(ref io)
+        if io
+          .get_ref()
+          .is_some_and(|inner| inner.is::<rustls::Error>()) =>
+      {
+        ControlError::Authentication("Punch WSS certificate validation failed".into())
+      }
+      tokio_tungstenite::tungstenite::Error::Http(ref response)
+        if matches!(response.status().as_u16(), 401 | 403) =>
+      {
+        ControlError::Authentication("Punch WebSocket authorization rejected".into())
+      }
+      _ => ControlError::Transport("Punch WebSocket handshake failed".into()),
     })?;
     Ok(Self::from_socket(socket))
   }
@@ -493,38 +511,69 @@ async fn connect_transport(
   assignment: &PunchWire,
 ) -> Result<Arc<dyn PunchTransport>, ControlError> {
   connect_transport_with(
-    || async {
-      QuicPunchTransport::connect(assignment)
+    assignment,
+    |one| async move {
+      QuicPunchTransport::connect(&one)
         .await
-        .map(|transport| Arc::new(transport) as Arc<dyn PunchTransport>)
+        .map(|value| Arc::new(value) as Arc<dyn PunchTransport>)
     },
-    || async {
-      WebSocketPunchTransport::connect(assignment)
+    |one| async move {
+      WebSocketPunchTransport::connect(&one)
         .await
-        .map(|transport| Arc::new(transport) as Arc<dyn PunchTransport>)
+        .map(|value| Arc::new(value) as Arc<dyn PunchTransport>)
     },
   )
   .await
 }
 
 async fn connect_transport_with<Q, QFut, W, WFut>(
-  connect_quic: Q,
-  connect_websocket: W,
+  assignment: &PunchWire,
+  mut connect_quic: Q,
+  mut connect_websocket: W,
 ) -> Result<Arc<dyn PunchTransport>, ControlError>
 where
-  Q: FnOnce() -> QFut,
+  Q: FnMut(PunchWire) -> QFut,
   QFut: Future<Output = Result<Arc<dyn PunchTransport>, ControlError>>,
-  W: FnOnce() -> WFut,
+  W: FnMut(PunchWire) -> WFut,
   WFut: Future<Output = Result<Arc<dyn PunchTransport>, ControlError>>,
 {
-  match connect_quic().await {
-    Ok(transport) => Ok(transport),
-    Err(error) if matches!(&error, ControlError::Transport(_)) => {
-      tracing::info!(%error, "QUIC unavailable; trying Punch WebSocket fallback");
-      connect_websocket().await
+  // Identity order is not connector preference. Only transport failures may
+  // fall through; certificate, protocol and remote authorization failures stop.
+  let work = async {
+    let mut endpoints = assignment.endpoints.as_slice().to_vec();
+    endpoints.sort_by_key(|url| {
+      if url.starts_with("quic:") {
+        0
+      } else if url.starts_with("wss:") {
+        1
+      } else {
+        2
+      }
+    });
+    let mut last = ControlError::Transport("no supported Punch endpoint".into());
+    for url in endpoints {
+      let quic = url.starts_with("quic:");
+      let one = PunchWire {
+        punch_id: assignment.punch_id.clone(),
+        public_key: assignment.public_key.clone(),
+        endpoints: vec![url].try_into().expect("validated endpoint"),
+      };
+      let result = if quic {
+        connect_quic(one).await
+      } else {
+        connect_websocket(one).await
+      };
+      match result {
+        Ok(value) => return Ok(value),
+        Err(error @ ControlError::Transport(_)) => last = error,
+        Err(error) => return Err(error),
+      }
     }
-    Err(error) => Err(error),
-  }
+    Err(last)
+  };
+  tokio::time::timeout(Duration::from_secs(20), work)
+    .await
+    .map_err(|_| ControlError::Transport("Punch endpoint connection budget exhausted".into()))?
 }
 
 async fn connect_and_join(
@@ -540,11 +589,35 @@ async fn connect_and_join(
     {
       tracing::info!(punch = %assignment.punch_id, %error, "QUIC join failed; retrying Punch join over WebSocket");
       transport.close().await;
-      let fallback = Arc::new(WebSocketPunchTransport::connect(assignment).await?);
-      let joined = join_transport(identity, assignment, fallback.as_ref()).await?;
+      let endpoints = assignment
+        .endpoints
+        .as_slice()
+        .iter()
+        .filter(|url| !url.starts_with("quic:"))
+        .cloned()
+        .collect::<Vec<_>>();
+      if endpoints.is_empty() {
+        return Err(error);
+      }
+      let fallback_assignment = PunchWire {
+        punch_id: assignment.punch_id.clone(),
+        public_key: assignment.public_key.clone(),
+        endpoints: endpoints.try_into().expect("validated endpoints"),
+      };
+      let fallback = connect_transport(&fallback_assignment).await?;
+      let joined = match join_transport(identity, assignment, fallback.as_ref()).await {
+        Ok(joined) => joined,
+        Err(error) => {
+          fallback.close().await;
+          return Err(error);
+        }
+      };
       Ok((fallback, joined))
     }
-    Err(error) => Err(error),
+    Err(error) => {
+      transport.close().await;
+      Err(error)
+    }
   }
 }
 
@@ -763,8 +836,14 @@ async fn connect_quic(
   assignment: &PunchWire,
 ) -> Result<(quinn::Endpoint, quinn::Connection), ControlError> {
   let public_key = decode_key(&assignment.public_key, "Punch public_key")?;
-  let url = Url::parse(&assignment.url)
-    .map_err(|e| ControlError::Protocol(format!("invalid Punch URL: {e}")))?;
+  let address = assignment
+    .endpoints
+    .as_slice()
+    .iter()
+    .find(|url| url.starts_with("quic:"))
+    .ok_or_else(|| ControlError::Transport("Punch has no QUIC endpoint".into()))?;
+  let url =
+    Url::parse(address).map_err(|e| ControlError::Protocol(format!("invalid Punch URL: {e}")))?;
   if url.scheme() != "quic" {
     return Err(ControlError::Protocol("Punch URL must use quic://".into()));
   }
@@ -774,7 +853,7 @@ async fn connect_quic(
   let port = url
     .port()
     .ok_or_else(|| ControlError::Protocol("Punch URL has no port".into()))?;
-  let addr = tokio::net::lookup_host((host, port))
+  let addr = tokio::net::lookup_host((host.trim_matches(['[', ']']), port))
     .await
     .map_err(|e| ControlError::Transport(e.to_string()))?
     .next()
@@ -797,21 +876,20 @@ async fn connect_quic(
 }
 
 fn websocket_url(assignment: &PunchWire) -> Result<String, ControlError> {
-  let mut url = Url::parse(&assignment.url)
-    .map_err(|e| ControlError::Protocol(format!("invalid Punch URL: {e}")))?;
-  if url.scheme() != "quic" {
-    return Err(ControlError::Protocol("Punch URL must use quic://".into()));
-  }
-  url
-    .set_username("")
-    .map_err(|_| ControlError::Protocol("invalid credentials in Punch URL".into()))?;
-  url
-    .set_password(None)
-    .map_err(|_| ControlError::Protocol("invalid credentials in Punch URL".into()))?;
-  url.set_path("/");
-  url.set_query(None);
-  url.set_fragment(None);
-  Ok(url.to_string().replacen("quic://", "wss://", 1))
+  assignment
+    .endpoints
+    .as_slice()
+    .iter()
+    .find(|url| url.starts_with("wss:"))
+    .or_else(|| {
+      assignment
+        .endpoints
+        .as_slice()
+        .iter()
+        .find(|url| url.starts_with("ws:"))
+    })
+    .cloned()
+    .ok_or_else(|| ControlError::Transport("Punch has no WebSocket endpoint".into()))
 }
 
 async fn send_signal(

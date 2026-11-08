@@ -34,7 +34,7 @@ flowchart LR
 | --- | --- | --- |
 | Registry | `https://registry.example.com` | 域名位于 Cloudflare zone，通过自定义域名接入 Worker，无需本机反代 |
 | Track | `https://track.example.com` | 443/tcp 上提供 HTTPS，将全部 HTTP 路径转发到本机 `127.0.0.1:8080` |
-| Punch | `quic://punch.example.com:4433` | 同一实例直接接收 `4433/udp` 的 QUIC 和 `4433/tcp` 的 WSS，由 Punch 提供 TLS |
+| Punch | `quic://punch.example.com:4433` | `4433/udp` 直达 QUIC；WSS 使用公共 CA 证书的反向代理，受控上游转发 WS |
 | TURN | `turn:turn.example.com:3478` | 直连 TURN 服务，开放 `3478/udp`、`3478/tcp` 和 `49160–49200/udp` 中继端口 |
 
 Track、Punch、TURN 域名指向服务器公网 IP；Punch 和 TURN 使用仅 DNS 解析，传输端口直达服务。
@@ -159,6 +159,8 @@ q2q-punch-server "$HOME/.q2q-signing/punch-1.init.toml" --init-identity \
 
 ## 5. 完成配置与节点凭据
 
+端点列表协议不兼容旧节点凭据与 schema；升级需先确认 Registry D1、Track DO/Redis 的精确重置范围，再协调初始化与凭据重签。以下是新部署配置，不是对旧库直接执行初始 SQL 的升级步骤。
+
 在管理机保存 `$HOME/.q2q-signing/punch-1.claims.json`，将 `public_key` 替换为上一步的 Base64 输出：
 
 ```json
@@ -168,7 +170,7 @@ q2q-punch-server "$HOME/.q2q-signing/punch-1.init.toml" --init-identity \
   "sub": "punch-1",
   "service_type": "punch",
   "scope": ["nodes:write:self"],
-  "advertise_url": "quic://punch.example.com:4433",
+  "endpoints": ["quic://punch.example.com:4433", "wss://signal.example.com/punch"],
   "public_key": "REPLACE_WITH_PUNCH_BASE64_PUBLIC_KEY",
   "identity_version": 1
 }
@@ -188,7 +190,7 @@ q2q-punch-server "$HOME/.q2q-signing/punch-1.init.toml" --init-identity \
 }
 ```
 
-Punch 的 `sub` 必须匹配配置中的 `punch_id`；Track 的节点 ID 由其 token 提供。`advertise_url` 填各服务面向客户端的地址。保持 `iat`、`exp`、`jti` 不在输入文件中，它们由工具生成。
+Punch 的 `sub` 必须匹配配置中的 `punch_id`；Track 的节点 ID 由其 token 提供。Punch 的 `endpoints` 填规范排序的完整入口列表，Track 的 `advertise_url` 仍填自身 HTTPS 地址。WSS 由公共 CA 证书的代理认证，不能使用自签节点证书冒充代理域名。保持 `iat`、`exp`、`jti` 不在输入文件中，它们由工具生成。
 
 在管理机分别签发 90 天凭据：
 
@@ -347,7 +349,7 @@ docker compose -f compose.yml logs --tail=50 track
 curl --fail https://track.example.com/health
 ```
 
-Track 的来源限流按后端看到的地址计算，同一代理出口会共享配额。Punch 的 QUIC 和 WSS 继续使用直接开放的 UDP／TCP 4433，不经过 Track 的 HTTP 代理。
+Track 的来源限流按后端看到的地址计算，同一代理出口会共享配额。Punch QUIC 直接使用 UDP 4433；WSS 使用独立的公信证书反向代理入口，完整 URL 写入 endpoints。受控 WS 上游不得直接暴露公网。
 
 Compose 的重启策略负责容器恢复；安排 Docker 开机启动，并持久保存 `/srv/q2q/identity`。之后更新镜像和挂载配置时用 `pull` 与 `up -d` 重建目标服务。
 

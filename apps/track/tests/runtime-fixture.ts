@@ -4,7 +4,7 @@ import { build } from 'esbuild';
 import { Miniflare, Log, LogLevel } from 'miniflare';
 import type { MiniflareOptions, MiniflareWorkerConfig } from 'miniflare';
 
-export async function runtime(timeout = '5000', registry?: {punch_id:string; url:string; public_key:string}): Promise<Miniflare> {
+export async function runtime(timeout = '5000', registry?: {punch_id:string; endpoints:string[]; public_key:string}): Promise<Miniflare> {
   const bundle = await build({ entryPoints: [fileURLToPath(new URL('./state-worker.ts', import.meta.url))],
     bundle: true, write: false, format: 'esm', platform: 'browser', target: 'es2022', external: ['cloudflare:workers'] });
   function config(name: string, target = name): MiniflareWorkerConfig {
@@ -49,8 +49,8 @@ export async function runtime(timeout = '5000', registry?: {punch_id:string; url
         for (const statement of sql.split(';').map(value => value.trim()).filter(Boolean)) await db.prepare(statement).run();
       }
       const now = Math.floor(Date.now() / 1000);
-      await db.prepare("INSERT INTO nodes VALUES(?, 'punch', 1, ?, ?, 'sdk-test', NULL, 1, NULL, ?, ?, ?)")
-        .bind(registry.punch_id, registry.url, registry.public_key, now, now, now + 90).run();
+      await db.prepare("INSERT INTO nodes VALUES(?, 'punch', 1, NULL, ?, ?, 'sdk-test', NULL, 1, NULL, ?, ?, ?)")
+        .bind(registry.punch_id, JSON.stringify(registry.endpoints), registry.public_key, now, now, now + 90).run();
     } catch (error) {await mf.dispose(); throw error;}
   }
   return mf;

@@ -14,7 +14,7 @@ const nativeFetch = globalThis.fetch;
 const node = (id, kind, online) => ({node_id: id, service_type: kind, region: null, online, accepting_new_connections: true,
   metrics: kind === 'punch' ? displayMetrics : null, last_seen: online ? 100 : 1, expires_at: online ? 180 : 90,
   // Deliberately present upstream fields must not become platform page data.
-  public_key: 'private-to-discovery', advertise_url: 'quic://hidden.invalid:443', token: 'must-not-leak'});
+  public_key: 'private-to-discovery', endpoints: ['quic://hidden.invalid:443'], token: 'must-not-leak'});
 test('mixed pagination validates all rows but counts/displays only Punch nodes', async t => {
   t.after(() => {globalThis.fetch = nativeFetch;});
   const paths = [];

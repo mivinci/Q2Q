@@ -5,8 +5,8 @@ use crate::error::TransferError;
 use crate::peer::PeerSession;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use q2q_primitives::block::PIECE_SIZE;
 use q2q_primitives::merkle::Proof;
+use q2q_primitives::peer_wire::PieceAssembly as Assembly;
 use q2q_primitives::peer_wire::{Control, Piece};
 use q2q_primitives::seed::Seed;
 use std::collections::HashSet;
@@ -66,7 +66,7 @@ impl PeerSession {
     count: usize,
     observation: Option<&crate::download_progress::Connection>,
   ) -> Result<(Vec<u8>, Proof), TransferError> {
-    let mut assembly = Assembly::new(length);
+    let mut assembly = Assembly::new(length)?;
     let mut proof = None;
     let mut retries = 0u32;
     let mut last_progress = tokio::time::Instant::now();
@@ -78,7 +78,7 @@ impl PeerSession {
     loop {
       tokio::select! {
         _ = &mut deadline => {
-          tracing::debug!(block_index = index, received_pieces = assembly.received, missing_pieces = assembly.present.len() - assembly.received, proof_received = proof.is_some(), retries, idle_ms = last_progress.elapsed().as_millis() as u64, stage = "block_receive", "Peer transfer timed out");
+          tracing::debug!(block_index = index, received_pieces = assembly.received(), missing_pieces = assembly.piece_count() - assembly.received(), proof_received = proof.is_some(), retries, idle_ms = last_progress.elapsed().as_millis() as u64, stage = "block_receive", "Peer transfer timed out");
           return Err(TransferError::Timeout);
         },
         control = receive(&*self.control) => match control? {
@@ -106,10 +106,10 @@ impl PeerSession {
             let piece = Piece::decode(&message.data)?;
             if completed.contains(&piece.block_index) { continue; }
             if piece.block_index != index as u64 { return Err(protocol("unsolicited block")); }
-            let fresh = assembly.insert(piece.piece_offset, piece.data)?;
+            let fresh = assembly.insert(piece.piece_offset, piece.data).map_err(|e| protocol(e.to_string()))?;
             if let Some(observation) = observation { observation.received(piece.data.len()); }
             if fresh {
-              if assembly.received == 1 { tracing::debug!(block_index = index, "First block piece received"); }
+              if assembly.received() == 1 { tracing::debug!(block_index = index, "First block piece received"); }
               retries = 0;
               let now = tokio::time::Instant::now();
               last_progress = now;
@@ -122,7 +122,7 @@ impl PeerSession {
         },
         _ = &mut idle => {
           retries = retries.saturating_add(1);
-          tracing::debug!(block_index = index, retries, missing_pieces = assembly.present.len() - assembly.received, proof_received = proof.is_some(), "Requesting missing block data");
+          tracing::debug!(block_index = index, retries, missing_pieces = assembly.piece_count() - assembly.received(), proof_received = proof.is_some(), "Requesting missing block data");
           // Retries pace repair traffic; only the no-progress deadline ends the
           // block. Three fixed 500 ms retries prematurely killed slow TURN paths.
           tokio::time::timeout_at(deadline.deadline(), async {
@@ -148,68 +148,12 @@ impl PeerSession {
       {
         tracing::debug!(
           block_index = index,
-          bytes = assembly.bytes.len(),
+          bytes = assembly.bytes().len(),
           "Block received; awaiting verification"
         );
-        return Ok((assembly.bytes, proof));
+        return Ok((assembly.into_bytes(), proof));
       }
     }
-  }
-}
-
-struct Assembly {
-  bytes: Vec<u8>,
-  present: Vec<bool>,
-  received: usize,
-}
-impl Assembly {
-  fn new(length: usize) -> Self {
-    Self {
-      bytes: vec![0; length],
-      present: vec![false; length.div_ceil(PIECE_SIZE)],
-      received: 0,
-    }
-  }
-  fn insert(&mut self, offset: u32, data: &[u8]) -> Result<bool, TransferError> {
-    let offset = offset as usize;
-    if !offset.is_multiple_of(PIECE_SIZE)
-      || offset >= self.bytes.len()
-      || data.len() != (self.bytes.len() - offset).min(PIECE_SIZE)
-    {
-      return Err(protocol("piece length or offset disagrees with seed"));
-    }
-    let slot = offset / PIECE_SIZE;
-    if self.present[slot] {
-      if self.bytes[offset..offset + data.len()] != *data {
-        return Err(protocol("conflicting duplicate piece"));
-      }
-      return Ok(false);
-    }
-    self.bytes[offset..offset + data.len()].copy_from_slice(data);
-    self.present[slot] = true;
-    self.received += 1;
-    Ok(true)
-  }
-  fn complete(&self) -> bool {
-    self.received == self.present.len()
-  }
-  fn missing(&self) -> Vec<(u32, u32)> {
-    let mut ranges: Vec<(u32, u32)> = Vec::new();
-    for (index, present) in self.present.iter().enumerate() {
-      if *present {
-        continue;
-      }
-      let offset = index * PIECE_SIZE;
-      let len = (self.bytes.len() - offset).min(PIECE_SIZE) as u32;
-      if let Some((start, length)) = ranges.last_mut()
-        && *start + *length == offset as u32
-      {
-        *length += len;
-      } else {
-        ranges.push((offset as u32, len));
-      }
-    }
-    ranges
   }
 }
 
@@ -246,21 +190,7 @@ async fn receive_bitfield(
 }
 
 pub(crate) fn decode_bitfield(message: Control, count: usize) -> Result<Vec<u8>, TransferError> {
-  let Control::Bitfield { bits } = message else {
-    return Err(protocol("expected initial bitfield"));
-  };
-  let bits = B64
-    .decode(bits)
-    .map_err(|_| protocol("bitfield is not base64"))?;
-  if bits.len() != count.div_ceil(8)
-    || (!count.is_multiple_of(8)
-      && bits
-        .last()
-        .is_some_and(|byte| *byte & ((1 << (8 - count % 8)) - 1) != 0))
-  {
-    return Err(protocol("bitfield length or padding is invalid"));
-  }
-  Ok(bits)
+  q2q_primitives::peer_wire::decode_bitfield(message, count).map_err(|e| protocol(e.to_string()))
 }
 
 #[cfg(test)]

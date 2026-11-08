@@ -99,3 +99,9 @@ Executor 默认收集上限 8 MiB、总期限 20 秒（包含准入等待、重�
 - Windows/macOS/Linux CI 已配置，但远端尚未执行；不能声称 Windows/macOS 行为已验证。目标发布依赖支持硬链接的文件系统，Unix 有父目录同步，Windows 断电语义未在本机验证。
 
 尚未发布版本或修改 Anvil 实现。Anvil 可以在后续工程阶段直接引用此 crate；正式公共 API 和接入示例以上述指南及源码为准。
+
+## Anvil 整合包来源策略
+
+新增可选 builder `url_policy` 与现有句柄 `with_url_policy`，首次请求和逐跳重定向在网络 I/O 前校验。派生策略取交集并复用原连接池与请求/文件/磁盘预算，不改变未配置策略时的行为。URL 拒绝不泄漏授权参数；不宣称 DNS/IP 固定或完整 SSRF 防护。使用与边界同步到中英文 HTTP 指南及 crate README。
+
+验证使用本地 HTTP fixture，覆盖首次/多跳拒绝时目标不被请求、允许的跨来源重定向和 Range、父子策略交集、共享准入预算、download/resume 及拒绝错误脱敏；不访问真实文件源。本轮 `cargo test --locked -p q2q-http` 通过 16 项下载测试、10 项 Executor 测试和 2 项 doc test；`cargo clippy --locked -p q2q-http --all-targets -- -D warnings`、crate 格式与本次 diff 检查通过。尚未提交、推送或验证远端 CI。

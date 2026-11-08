@@ -4,7 +4,7 @@
 //! `q2q-punch-server` — this crate stays about the protocol and stays testable
 //! without a socket.
 
-use crate::binding::{Generation, UnixSeconds};
+use crate::{Generation, UnixSeconds};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use q2q_primitives::identity::{Audience, TicketBody, TicketError, verify_signature};

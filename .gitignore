@@ -14,3 +14,7 @@ target/
 # local deployment secrets
 deploy/.env
 deploy/punch-identity/
+
+# Local OS metadata and browser SDK Wrangler cache
+.DS_Store
+packages/client-web/.wrangler/

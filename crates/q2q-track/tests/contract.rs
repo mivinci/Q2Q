@@ -369,7 +369,7 @@ async fn state_vectors() -> Value {
                 last_seq: 0,
                 punch: PunchAssignment {
                   punch_id: "fixture-punch".into(),
-                  url: "quic://punch.invalid:443".into(),
+                  endpoints: vec!["quic://punch.invalid:443".into()],
                   public_key: vec![9; 32],
                 },
                 expires_at: n(step, "expiry"),
@@ -446,7 +446,7 @@ async fn selection_vectors() -> Value {
           last_seq: 0,
           punch: PunchAssignment {
             punch_id: punch_id.into(),
-            url: "quic://punch.invalid:443".into(),
+            endpoints: vec!["quic://punch.invalid:443".into()],
             public_key: vec![9; 32],
           },
           expires_at: expiry,

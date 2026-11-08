@@ -1,11 +1,13 @@
 import { z } from 'zod';
 import { nodeIdSchema, pageRequestSchema } from '@q2q/punch-discovery';
 import { policyInputSchema, policyFingerprint, operationSchema, managedPunchSchema, type PolicyOutcome } from '@q2q/punch-management';
-const columns=`n.node_id, n.service_type, n.region, n.version, n.advertise_url, n.public_key,
+const columns=`n.node_id, n.service_type, n.region, n.version, n.public_key, n.endpoints_json,
  n.identity_version, n.last_seen, n.expires_at, n.accepting_new_connections, n.metrics_json,
  COALESCE(p.enabled,1) AS enabled, COALESCE(p.revision,0) AS revision`;
 function node(row:Record<string,unknown>,now:number){
- return managedPunchSchema.parse({...row,online:Number(row.expires_at)>now,
+ return managedPunchSchema.parse({node_id:row.node_id,service_type:row.service_type,region:row.region,version:row.version,
+  endpoints:JSON.parse(String(row.endpoints_json)),public_key:row.public_key,identity_version:row.identity_version,
+  last_seen:row.last_seen,expires_at:row.expires_at,revision:row.revision,online:Number(row.expires_at)>now,
   accepting_new_connections:row.accepting_new_connections===1,enabled:row.enabled===1,
   metrics:row.metrics_json===null?null:JSON.parse(String(row.metrics_json))});
 }

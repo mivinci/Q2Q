@@ -154,3 +154,117 @@ impl PreparedSeed {
     self.info_hash.clone()
   }
 }
+
+/// Seed-pinned block verification for browser download and recovery.
+/// The leaf table is validated against the seed root once, never trusted alone.
+#[wasm_bindgen]
+pub struct BlockVerifier {
+  info: q2q_primitives::seed::Info,
+  leaves: Vec<q2q_primitives::merkle::Hash>,
+  tree: q2q_primitives::merkle::ProofTree,
+}
+
+#[wasm_bindgen]
+impl BlockVerifier {
+  #[wasm_bindgen(constructor)]
+  pub fn new(seed_bytes: &[u8], proof_bytes: &[u8]) -> Result<BlockVerifier, JsError> {
+    if seed_bytes.len() > 17 * 1024 * 1024 || proof_bytes.len() > 16 * 1024 * 1024 {
+      return Err(JsError::new("verification metadata exceeds budget"));
+    }
+    let seed = q2q_primitives::seed::Seed::parse(seed_bytes)?;
+    if seed.info.length > 9_007_199_254_740_991 {
+      return Err(JsError::new("file length exceeds browser integer range"));
+    }
+    seed.validate()?;
+    // Bound both table size and the temporary tree used to verify its root.
+    if seed.info.leaf_count() > 524_288 {
+      return Err(JsError::new("block count exceeds verifier budget"));
+    }
+    let leaves = if proof_bytes.is_empty() {
+      seed.leaf_hashes.unwrap_or_default()
+    } else {
+      if proof_bytes.len() != seed.info.leaf_count() * 32 {
+        return Err(JsError::new("proof length mismatch"));
+      }
+      proof_bytes
+        .chunks_exact(32)
+        .map(|chunk| chunk.try_into().expect("exact hash chunk"))
+        .collect()
+    };
+    if leaves.len() != seed.info.leaf_count()
+      || q2q_primitives::merkle::root(&leaves) != seed.info.root
+    {
+      return Err(JsError::new("proof does not match seed"));
+    }
+    let tree = q2q_primitives::merkle::ProofTree::new(&leaves);
+    Ok(Self {
+      info: seed.info,
+      leaves,
+      tree,
+    })
+  }
+
+  pub fn proof_frame(&self, index: u32) -> Result<String, JsError> {
+    let proof = self
+      .tree
+      .proof(index as usize)
+      .ok_or_else(|| JsError::new("invalid block"))?;
+    q2q_primitives::peer_wire::Control::Proof {
+      block_index: u64::from(index),
+      count: 1,
+      proof,
+    }
+    .encode()
+    .map_err(|_| JsError::new("invalid proof"))
+  }
+  pub fn verify(&self, index: f64, bytes: &[u8]) -> bool {
+    if !index.is_finite() || index < 0.0 || index.fract() != 0.0 {
+      return false;
+    }
+    let index = index as usize;
+    let Some(expected) = self.leaves.get(index) else {
+      return false;
+    };
+    let offset = index as u64 * u64::from(self.info.block_size);
+    let length = (self.info.length - offset).min(u64::from(self.info.block_size));
+    bytes.len() as u64 == length && q2q_primitives::merkle::leaf_hash(bytes) == *expected
+  }
+}
+
+/// Upload proof generation shares the native Merkle tree and exact wire encoding.
+#[wasm_bindgen]
+pub struct UploadProofs {
+  verifier: BlockVerifier,
+}
+#[wasm_bindgen]
+impl UploadProofs {
+  #[wasm_bindgen(constructor)]
+  pub fn new(seed: &[u8]) -> Result<UploadProofs, JsError> {
+    let verifier = BlockVerifier::new(seed, &[])?;
+    if verifier.leaves.len() > 65536 {
+      return Err(JsError::new("upload block budget exceeded"));
+    }
+    Ok(Self { verifier })
+  }
+  pub fn verify(&self, index: u32, bytes: &[u8]) -> bool {
+    self.verifier.verify(f64::from(index), bytes)
+  }
+  pub fn proof(&self, index: u32) -> Result<String, JsError> {
+    let proof = self
+      .verifier
+      .tree
+      .proof(index as usize)
+      .ok_or_else(|| JsError::new("invalid upload block"))?;
+    q2q_primitives::peer_wire::Control::Proof {
+      block_index: u64::from(index),
+      count: 1,
+      proof,
+    }
+    .encode()
+    .map_err(|_| JsError::new("invalid upload proof"))
+  }
+}
+
+mod control;
+
+mod peer;

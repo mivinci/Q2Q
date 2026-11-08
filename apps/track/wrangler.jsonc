@@ -8,19 +8,19 @@
     "bindings": [
       {
         "name": "PEERS",
-        "class_name": "PeerState"
+        "class_name": "PeerStateEndpoints"
       },
       {
         "name": "FILES",
-        "class_name": "FileIndex"
+        "class_name": "FileIndexEndpoints"
       },
       {
         "name": "DISCOVERY",
-        "class_name": "DiscoveryState"
+        "class_name": "DiscoveryStateEndpoints"
       },
       {
         "name": "RATE_LIMIT",
-        "class_name": "RateLimiter"
+        "class_name": "RateLimiterEndpoints"
       }
     ]
   },
@@ -36,6 +36,24 @@
     {
       "tag": "v2",
       "new_sqlite_classes": [
+        "RateLimiter"
+      ]
+    },
+    {
+      "tag": "v3-endpoints",
+      "new_sqlite_classes": [
+        "PeerStateEndpoints",
+        "FileIndexEndpoints",
+        "DiscoveryStateEndpoints",
+        "RateLimiterEndpoints"
+      ]
+    },
+    {
+      "tag": "v4-drop-mvp-legacy",
+      "deleted_classes": [
+        "PeerState",
+        "FileIndex",
+        "DiscoveryState",
         "RateLimiter"
       ]
     }

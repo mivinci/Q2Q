@@ -3,7 +3,8 @@ CREATE TABLE nodes (
   node_id TEXT PRIMARY KEY NOT NULL,
   service_type TEXT NOT NULL CHECK (service_type IN ('punch', 'track')),
   identity_version INTEGER NOT NULL CHECK (identity_version BETWEEN 1 AND 9007199254740991),
-  advertise_url TEXT NOT NULL,
+  advertise_url TEXT,
+  endpoints_json TEXT CHECK (endpoints_json IS NULL OR CASE WHEN json_valid(endpoints_json) THEN json_type(endpoints_json) = 'array' AND json_array_length(endpoints_json) BETWEEN 1 AND 8 ELSE 0 END),
   public_key TEXT,
   version TEXT NOT NULL,
   region TEXT,
@@ -13,8 +14,8 @@ CREATE TABLE nodes (
   last_seen INTEGER NOT NULL CHECK (last_seen >= created_at),
   expires_at INTEGER NOT NULL CHECK (expires_at > last_seen AND expires_at <= last_seen + 90),
   CHECK (
-    (service_type = 'punch' AND public_key IS NOT NULL AND length(public_key) = 44)
-    OR (service_type = 'track' AND public_key IS NULL)
+    (service_type = 'punch' AND advertise_url IS NULL AND endpoints_json IS NOT NULL AND public_key IS NOT NULL AND length(public_key) = 44)
+    OR (service_type = 'track' AND advertise_url IS NOT NULL AND endpoints_json IS NULL AND public_key IS NULL)
   )
 );
 

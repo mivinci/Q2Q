@@ -3,6 +3,7 @@ use crate::publication::PrepareError;
 use crate::source_file::PreparedFile;
 use crate::test_destination::{create_destination, destination_complete, sync_destination};
 use crate::transfer::{Transfer, TransferState};
+use q2q_primitives::block::PIECE_SIZE;
 use q2q_primitives::file::StoreError;
 use std::sync::Mutex;
 use tokio::sync::watch;
@@ -48,7 +49,7 @@ async fn cancelling_wait_does_not_detach_a_background_download() {
 
 #[test]
 fn reordered_and_missing_pieces_remain_bounded_and_conflicting_duplicates_fail() {
-  let mut block = Assembly::new(2051);
+  let mut block = Assembly::new(2051).unwrap();
   block.insert(2048, &[3; 3]).unwrap();
   block.insert(0, &[1; 1024]).unwrap();
   assert_eq!(block.missing(), vec![(1024, 1024)]);

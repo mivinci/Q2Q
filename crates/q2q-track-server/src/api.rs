@@ -245,7 +245,11 @@ async fn announce<S: TrackState>(
   let ttl = req.ttl.min(app.config.max_ttl);
   let expires_at = now + ttl;
 
-  let Some(punch) = app.punch.assign(&ticket.iss).map_err(directory_failure)? else {
+  let Some(punch) = app
+    .punch
+    .assign_for(&ticket.iss, req.punch_schemes.as_slice())
+    .map_err(directory_failure)?
+  else {
     // no Punch Server listed means nobody can be reached; say so rather than
     // handing out an empty address
     return Err(fail("no_available_punch", None));
@@ -292,7 +296,7 @@ async fn announce<S: TrackState>(
     session_key: B64.encode(session_key),
     punch: PunchWire {
       punch_id: punch.punch_id,
-      url: punch.url,
+      endpoints: punch.endpoints.try_into().unwrap(),
       public_key: B64.encode(punch.public_key),
     },
     turn: turn_credential(&app.config, &peer_id, turn_expires_at),
@@ -483,7 +487,7 @@ async fn query<S: TrackState>(
         public_key: B64.encode(c.public_key),
         punch: PunchWire {
           punch_id: punch.punch_id.clone(),
-          url: punch.url.clone(),
+          endpoints: punch.endpoints.clone().try_into().unwrap(),
           public_key: B64.encode(&punch.public_key),
         },
         complete: c.complete,
@@ -539,7 +543,7 @@ mod tests {
       .header("content-type", "application/json")
       .body(Body::from(
         serde_json::to_vec(&serde_json::json!({
-          "token": body, "add": add, "complete": complete, "ttl": 600
+          "punch_schemes":["quic","wss","ws"], "token": body, "add": add, "complete": complete, "ttl": 600
         }))
         .unwrap(),
       ))
@@ -578,13 +582,13 @@ mod tests {
   }
 
   fn punch_list() -> Arc<PunchList> {
-    punch_list_at("https://punch-1.example.com")
+    punch_list_at("quic://punch-1.example.com:4433")
   }
 
   fn punch_list_at(url: &str) -> Arc<PunchList> {
     PunchList::new(vec![PunchAssignment {
       punch_id: "punch-1".into(),
-      url: url.into(),
+      endpoints: vec![url.into()],
       public_key: vec![7u8; 32],
     }])
   }
@@ -646,7 +650,7 @@ mod tests {
       .header("content-type", "application/json")
       .body(Body::from(
         serde_json::to_vec(&serde_json::json!({
-          "token": body, "add": ["sha256:".to_owned() + &"ab".repeat(32)], "ttl": 600
+          "punch_schemes":["quic","wss","ws"], "token": body, "add": ["sha256:".to_owned() + &"ab".repeat(32)], "ttl": 600
         }))
         .unwrap(),
       ))
@@ -670,7 +674,10 @@ mod tests {
       .uri(format!("/peers/{peer}/files"))
       .header("content-type", "application/json")
       .body(Body::from(
-        serde_json::to_vec(&serde_json::json!({"token": body, "ttl": 600})).unwrap(),
+        serde_json::to_vec(
+          &serde_json::json!({"punch_schemes":["quic","wss","ws"], "token": body, "ttl": 600}),
+        )
+        .unwrap(),
       ))
       .unwrap();
     let resp = app.oneshot(req).await.unwrap();
@@ -688,7 +695,10 @@ mod tests {
       .uri(format!("/peers/{peer}/files"))
       .header("content-type", "application/json")
       .body(Body::from(
-        serde_json::to_vec(&serde_json::json!({"token": body, "ttl": 999_999})).unwrap(),
+        serde_json::to_vec(
+          &serde_json::json!({"punch_schemes":["quic","wss","ws"], "token": body, "ttl": 999_999}),
+        )
+        .unwrap(),
       ))
       .unwrap();
     let resp = app.oneshot(req).await.unwrap();
@@ -744,8 +754,8 @@ mod tests {
     // the address and key come from the live list, never from a snapshot
     assert_eq!(json["peers"][0]["punch"]["punch_id"], "punch-1");
     assert_eq!(
-      json["peers"][0]["punch"]["url"],
-      "https://punch-1.example.com"
+      json["peers"][0]["punch"]["endpoints"][0],
+      "quic://punch-1.example.com:4433"
     );
     assert_eq!(
       json["peers"][0]["punch"]["public_key"],
@@ -761,13 +771,13 @@ mod tests {
     let state = Arc::new(MemoryState::new());
     let hash = "ab".repeat(32);
 
-    let announce_app = build(state.clone(), punch_list_at("https://old.example.com"));
+    let announce_app = build(state.clone(), punch_list_at("quic://old.example.com:4433"));
     let (_holder, _) = session_with(&announce_app, 3, &[format!("sha256:{hash}")], &[]).await;
 
     let (peer, key) = session_for(&announce_app, 201).await;
 
     // same peer, but Track's list now points punch-1 somewhere else
-    let app = build(state, punch_list_at("https://new.example.com"));
+    let app = build(state, punch_list_at("quic://new.example.com:4433"));
     let req = Request::builder()
       .method("GET")
       .uri(authed_query(&hash, &peer, &key, 1))
@@ -775,7 +785,10 @@ mod tests {
       .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     let json = body_json(resp).await;
-    assert_eq!(json["peers"][0]["punch"]["url"], "https://new.example.com");
+    assert_eq!(
+      json["peers"][0]["punch"]["endpoints"][0],
+      "quic://new.example.com:4433"
+    );
   }
 
   #[tokio::test]
@@ -791,7 +804,7 @@ mod tests {
     // punch-1 is gone from the list: nobody can reach this peer any more
     let retired = PunchList::new(vec![PunchAssignment {
       punch_id: "punch-2".into(),
-      url: "https://punch-2.example.com".into(),
+      endpoints: vec!["quic://punch-2.example.com:4433".into()],
       public_key: vec![8u8; 32],
     }]);
 
@@ -817,7 +830,7 @@ mod tests {
     let hash = "ef".repeat(32);
     let punch = PunchList::new(vec![PunchAssignment {
       punch_id: "punch-1".into(),
-      url: "https://before.example.com".into(),
+      endpoints: vec!["quic://before.example.com:4433".into()],
       public_key: vec![7u8; 32],
     }]);
     let announce_app = build(state.clone(), punch.clone());
@@ -844,19 +857,19 @@ mod tests {
     };
 
     assert_eq!(
-      query(1).await["peers"][0]["punch"]["url"],
-      "https://before.example.com"
+      query(1).await["peers"][0]["punch"]["endpoints"][0],
+      "quic://before.example.com:4433"
     );
 
     punch.replace(vec![PunchAssignment {
       punch_id: "punch-1".into(),
-      url: "https://after.example.com".into(),
+      endpoints: vec!["quic://after.example.com:4433".into()],
       public_key: vec![7u8; 32],
     }]);
     let json = query(2).await;
     assert_eq!(
-      json["peers"][0]["punch"]["url"],
-      "https://after.example.com"
+      json["peers"][0]["punch"]["endpoints"][0],
+      "quic://after.example.com:4433"
     );
     // the identity outlives the address
     assert_eq!(
@@ -1204,7 +1217,7 @@ mod tests {
             last_seq: 0,
             punch: PunchAssignment {
               punch_id: if index < 80 { "retired" } else { "punch-1" }.into(),
-              url: "quic://unused".into(),
+              endpoints: vec!["quic://unused:4433".into()],
               public_key: vec![7; 32],
             },
             expires_at: now + 600,

@@ -10,7 +10,7 @@ export const DISCOVERY_NAME = 'punch-discovery:v1';
 const snapshotSchema = z.object({
   expires_at: timeSchema,
   nodes: z.array(punchSchema.extend({ accepting_new_connections: z.boolean(), expires_at: timeSchema,
-    identity_version: integer.positive().optional(), metrics: metricsSchema.nullable().optional() })).max(1024)
+    identity_version: integer.positive().optional(), metrics: metricsSchema.nullable().optional() }).strip()).max(1024)
 });
 export type DirectorySnapshot = z.infer<typeof snapshotSchema>;
 
@@ -25,7 +25,7 @@ export class DiscoveryState extends DurableObject<Bindings> {
       if (hasTable(this.ctx.storage, 'discovery_snapshot')) unavailable();
       return false;
     }
-    if (this.ctx.storage.sql.exec<{version:number}>('SELECT version FROM discovery_meta WHERE id=1').one().version !== 1) unavailable();
+    if (this.ctx.storage.sql.exec<{version:number}>('SELECT version FROM discovery_meta WHERE id=1').one().version !== 2) unavailable();
     return true;
   }
   #load(): DirectorySnapshot | null {
@@ -55,17 +55,17 @@ export class DiscoveryState extends DurableObject<Bindings> {
     this.ctx.storage.transactionSync(() => {
       if (!this.#ready()) this.ctx.storage.sql.exec(`
         CREATE TABLE discovery_meta(id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL);
-        INSERT INTO discovery_meta VALUES(1,1);
+        INSERT INTO discovery_meta VALUES(1,2);
         CREATE TABLE discovery_snapshot(id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);
       `);
-      this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS discovery_identities(id TEXT PRIMARY KEY, version INTEGER NOT NULL, url TEXT NOT NULL, public_key TEXT NOT NULL)');
+      this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS discovery_identities(id TEXT PRIMARY KEY, version INTEGER NOT NULL, endpoints_json TEXT NOT NULL, public_key TEXT NOT NULL)');
       for (const node of value.nodes) {
         if (node.identity_version === undefined) continue; // Minimal trusted fixtures from protocol/state tests.
-        const previous = this.ctx.storage.sql.exec<{version:number; url:string; public_key:string}>('SELECT * FROM discovery_identities WHERE id=?', node.punch_id).toArray()[0];
+        const previous = this.ctx.storage.sql.exec<{version:number; endpoints_json:string; public_key:string}>('SELECT * FROM discovery_identities WHERE id=?', node.punch_id).toArray()[0];
         if (previous && (previous.version > node.identity_version || (previous.version === node.identity_version &&
-          (previous.url !== node.url || previous.public_key !== node.public_key)))) throw new ProtocolError('discovery_unavailable');
+          (previous.endpoints_json !== JSON.stringify(node.endpoints) || previous.public_key !== node.public_key)))) throw new ProtocolError('discovery_unavailable');
         if (!previous && this.ctx.storage.sql.exec<{n:number}>('SELECT count(*) AS n FROM discovery_identities').one().n >= 4096) throw new ProtocolError('discovery_unavailable');
-        this.ctx.storage.sql.exec('INSERT OR REPLACE INTO discovery_identities VALUES(?,?,?,?)', node.punch_id, node.identity_version, node.url, node.public_key);
+        this.ctx.storage.sql.exec('INSERT OR REPLACE INTO discovery_identities(id,version,endpoints_json,public_key) VALUES(?,?,?,?)', node.punch_id, node.identity_version, JSON.stringify(node.endpoints), node.public_key);
       }
       this.ctx.storage.sql.exec('INSERT OR REPLACE INTO discovery_snapshot VALUES(1,?)', payload);
     });

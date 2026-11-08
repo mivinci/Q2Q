@@ -8,8 +8,8 @@ function fixture(){
  const sql=new DatabaseSync(':memory:');const directory=new URL('../migrations/',import.meta.url);
  for(const name of readdirSync(directory).sort())if(name.endsWith('.sql'))sql.exec(readFileSync(new URL(name,directory),'utf8'));
  const now=Math.floor(Date.now()/1000);
- sql.prepare("INSERT INTO nodes VALUES('punch','punch',1,'quic://punch.example:4433',?,'test','hk',1,NULL,?,?,?)").run('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',now,now,now+90);
- sql.prepare("INSERT INTO nodes VALUES('legacy-track','track',1,'https://track.example',NULL,'test',NULL,1,NULL,?,?,?)").run(now,now,now+90);
+ sql.prepare("INSERT INTO nodes VALUES('punch','punch',1,NULL,'[\"quic://punch.example:4433\"]',?,'test','hk',1,NULL,?,?,?)").run('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',now,now,now+90);
+ sql.prepare("INSERT INTO nodes VALUES('legacy-track','track',1,'https://track.example',NULL,NULL,'test',NULL,1,NULL,?,?,?)").run(now,now,now+90);
  let tail=Promise.resolve();
  const db={prepare(query:string){let args:(string|number|null)[]=[];return{bind(...values:(string|number|null)[]){args=values;return this;},async first(){return sql.prepare(query).get(...args)??null;},async all(){return{success:true,results:sql.prepare(query).all(...args)};}};},batch(statements:{all:()=>Promise<unknown>}[]){const job=tail.then(async()=>{sql.exec('BEGIN');try{const results=[];for(const statement of statements)results.push(await statement.all());sql.exec('COMMIT');return results;}catch(cause){sql.exec('ROLLBACK');throw cause;}});tail=job.then(()=>{},()=>{});return job;}} as unknown as D1Database;
  return{sql,db,now};

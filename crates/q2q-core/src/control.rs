@@ -101,6 +101,13 @@ impl ControlSession {
     let url = endpoint(track_url, &["peers", peer_id.as_str(), "files"])?;
     let now = q2q_track::state::now();
     let request = AnnounceRequest {
+      punch_schemes: vec![
+        q2q_punch::endpoints::PunchScheme::Quic,
+        q2q_punch::endpoints::PunchScheme::Wss,
+        q2q_punch::endpoints::PunchScheme::Ws,
+      ]
+      .try_into()
+      .unwrap(),
       token: identity.ticket(Audience::Track, now, None),
       add: Vec::new(),
       del: Vec::new(),
@@ -417,6 +424,13 @@ impl ControlSession {
     };
     let add = hashes(add);
     let request = AnnounceRequest {
+      punch_schemes: vec![
+        q2q_punch::endpoints::PunchScheme::Quic,
+        q2q_punch::endpoints::PunchScheme::Wss,
+        q2q_punch::endpoints::PunchScheme::Ws,
+      ]
+      .try_into()
+      .unwrap(),
       token: self
         .identity
         .ticket(Audience::Track, q2q_track::state::now(), None),
@@ -497,7 +511,7 @@ fn renewal_batch(holdings: &BTreeMap<[u8; 32], HoldingLease>, first: [u8; 32]) -
 
 fn punch_assignment_changed(current: &PunchWire, next: &PunchWire) -> bool {
   current.punch_id != next.punch_id
-    || current.url != next.url
+    || current.endpoints != next.endpoints
     || current.public_key != next.public_key
 }
 

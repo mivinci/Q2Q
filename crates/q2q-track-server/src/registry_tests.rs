@@ -4,10 +4,11 @@ fn node(id: &str, assignable: bool, expires_at: Instant) -> LeasedNode {
   LeasedNode {
     assignment: PunchAssignment {
       punch_id: id.into(),
-      url: format!("quic://{id}.example:4433"),
+      endpoints: vec![format!("quic://{id}.example:4433")],
       public_key: vec![7; 32],
     },
     assignable,
+    schemes: vec![q2q_track::endpoints::PunchScheme::Quic],
     expires_at,
   }
 }
@@ -168,8 +169,92 @@ impl MockRegistry {
   }
 }
 
+#[tokio::test]
+async fn registry_assignment_obeys_endpoint_schemes_and_separate_capacity_budgets() {
+  use q2q_track::endpoints::PunchScheme::{Quic, Ws, Wss};
+  let mock = MockRegistry::new().await;
+  let peer = PeerId::unchecked("requester");
+  for (quic, websocket, expected) in [
+    (0, 0, vec![Quic, Ws, Wss]),
+    (10, 0, vec![Ws, Wss]),
+    (0, 10, vec![Quic]),
+    (10, 10, vec![]),
+  ] {
+    let mut value = wire_node("a", 1);
+    value["endpoints"] = json!([
+      "wss://proxy.example:8443/signal?region=hk",
+      "quic://punch.example:4433",
+      "ws://127.0.0.1:8080/ws"
+    ]);
+    value["metrics"] = json!({"quic_connections":quic,"quic_connection_capacity":10,"websocket_connections":websocket,"websocket_connection_capacity":10});
+    mock.respond(vec![(200, page(vec![value], None))]);
+    assert!(mock.directory.refresh().await.is_ok());
+    for scheme in [Quic, Ws, Wss] {
+      assert_eq!(
+        mock
+          .directory
+          .assign_for(&peer, &[scheme])
+          .unwrap()
+          .is_some(),
+        expected.contains(&scheme)
+      );
+    }
+    let node = mock.directory.get("a").unwrap().unwrap();
+    assert_eq!(
+      node.endpoints,
+      vec![
+        "quic://punch.example:4433",
+        "ws://127.0.0.1:8080/ws",
+        "wss://proxy.example:8443/signal?region=hk"
+      ]
+    );
+  }
+}
+
+#[tokio::test]
+async fn registry_identity_reorder_is_stable_and_failed_lists_do_not_change_history() {
+  let mock = MockRegistry::new().await;
+  let mut original = wire_node("a", 2);
+  original["endpoints"] = json!([
+    "quic://punch.example:4433",
+    "wss://proxy.example/ws?region=hk"
+  ]);
+  mock.respond(vec![(200, page(vec![original.clone()], None))]);
+  assert!(mock.directory.refresh().await.is_ok());
+  let before = mock.directory.get("a").unwrap().unwrap();
+  let mut reordered = original.clone();
+  reordered["endpoints"] = json!([
+    "WSS://PROXY.example:443/ws?region=hk",
+    "QUIC://PUNCH.example:04433/"
+  ]);
+  mock.respond(vec![(200, page(vec![reordered], None))]);
+  assert!(mock.directory.refresh().await.is_ok());
+  assert_eq!(mock.directory.get("a").unwrap().unwrap(), before);
+  for endpoints in [
+    json!([]),
+    json!(["ws://public.example/ws"]),
+    json!(["wss://proxy.example", "WSS://PROXY.example:443/"]),
+  ] {
+    let mut invalid = original.clone();
+    invalid["identity_version"] = json!(4);
+    invalid["endpoints"] = endpoints;
+    mock.respond(vec![(200, page(vec![invalid], None))]);
+    assert!(mock.directory.refresh().await.is_err());
+    assert_eq!(mock.directory.get("a").unwrap().unwrap(), before);
+  }
+  let mut removed = original;
+  removed["identity_version"] = json!(3);
+  removed["endpoints"] = json!(["quic://punch.example:4433"]);
+  mock.respond(vec![(200, page(vec![removed], None))]);
+  assert!(mock.directory.refresh().await.is_ok());
+  assert_eq!(
+    mock.directory.get("a").unwrap().unwrap().endpoints,
+    vec!["quic://punch.example:4433"]
+  );
+}
+
 fn wire_node(id: &str, version: u64) -> Value {
-  json!({"punch_id": id, "url": format!("quic://v{version}.example:4433"),
+  json!({"punch_id": id, "endpoints": [format!("quic://v{version}.example:4433")],
     "public_key": STANDARD.encode([7; 32]), "identity_version": version,
     "accepting_new_connections": true, "last_seen": 100, "expires_at": 190, "metrics": null})
 }
@@ -284,7 +369,7 @@ async fn discovery_rejects_identity_rollback_even_after_node_removal() {
   mock.respond(vec![(200, page(vec![wire_node("a", 3)], None))]);
   assert!(mock.directory.refresh().await.is_ok());
   assert_eq!(
-    mock.directory.get("a").unwrap().unwrap().url,
+    mock.directory.get("a").unwrap().unwrap().endpoints[0],
     "quic://v3.example:4433"
   );
 }
@@ -355,7 +440,7 @@ async fn failed_refresh_does_not_advance_identity_history() {
   mock.respond(vec![(200, page(vec![wire_node("a", 3)], None))]);
   assert!(mock.directory.refresh().await.is_ok());
   assert_eq!(
-    mock.directory.get("a").unwrap().unwrap().url,
+    mock.directory.get("a").unwrap().unwrap().endpoints[0],
     "quic://v3.example:4433"
   );
 }

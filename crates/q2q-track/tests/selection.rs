@@ -23,7 +23,7 @@ async fn add(state: &impl TrackState, n: u64, punch: &str, expiry: u64, ttl: u64
         last_seq: 0,
         punch: PunchAssignment {
           punch_id: punch.into(),
-          url: "quic://localhost".into(),
+          endpoints: vec!["quic://localhost".into()],
           public_key: vec![0; 32],
         },
         expires_at: expiry,

@@ -20,13 +20,37 @@ pub struct DirectorySnapshot {
 pub trait PunchDirectory: Send + Sync {
   fn snapshot(&self) -> Result<DirectorySnapshot, DirectoryError>;
 
-  fn assign(&self, _peer: &PeerId) -> Result<Option<PunchAssignment>, DirectoryError> {
+  #[cfg(test)]
+  fn assign(&self, peer: &PeerId) -> Result<Option<PunchAssignment>, DirectoryError> {
+    self.assign_for(
+      peer,
+      &[
+        q2q_track::endpoints::PunchScheme::Quic,
+        q2q_track::endpoints::PunchScheme::Wss,
+        q2q_track::endpoints::PunchScheme::Ws,
+      ],
+    )
+  }
+  fn assign_for(
+    &self,
+    _peer: &PeerId,
+    schemes: &[q2q_track::endpoints::PunchScheme],
+  ) -> Result<Option<PunchAssignment>, DirectoryError> {
     let snapshot = self.snapshot()?;
     Ok(
       snapshot
         .assignable
-        .first()
-        .and_then(|id| snapshot.nodes.get(id))
+        .iter()
+        .filter_map(|id| snapshot.nodes.get(id))
+        .find(|node| {
+          node.endpoints.iter().any(|url| {
+            schemes.iter().any(|scheme| match scheme {
+              q2q_track::endpoints::PunchScheme::Quic => url.starts_with("quic:"),
+              q2q_track::endpoints::PunchScheme::Wss => url.starts_with("wss:"),
+              q2q_track::endpoints::PunchScheme::Ws => url.starts_with("ws:"),
+            })
+          })
+        })
         .cloned(),
     )
   }

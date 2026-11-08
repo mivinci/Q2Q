@@ -91,7 +91,7 @@ def npm_closure(ref, app):
 
 def main():
     app = sys.argv[1]
-    if app not in ('platform', 'seed-processing', 'registry', 'track', 'admin'):
+    if app not in ('platform', 'seed-processing', 'registry', 'track', 'admin', 'www'):
         raise ValueError('unknown app')
     reason = 'manual run or missing base: run conservatively'
     run = True
@@ -108,15 +108,21 @@ def main():
             shared += [f'{path}/**' for path in set(before_workspaces + after_workspaces)]
             uses_wasm = 'crates/q2q-wasm' in before_workspaces + after_workspaces
             if uses_wasm:
-                shared += ['crates/q2q-primitives/**', 'Cargo.toml']
+                wasm_packages = json.loads(closure(base)) + json.loads(closure('HEAD'))
+                shared += [f"crates/{package['name']}/**" for package in wasm_packages if 'source' not in package]
+                shared += ['Cargo.toml']
             native_roots = ('q2q-core', 'q2q-track-server', 'q2q-punch-server')
-            if app == 'track':
+            if app in ('track', 'www'):
                 native_packages = json.loads(closure(base, native_roots)) + json.loads(closure('HEAD', native_roots))
                 shared += [f"crates/{package['name']}/**" for package in native_packages if 'source' not in package]
                 shared += ['Cargo.toml', 'tests/fixtures/track/**', '.github/scripts/test-app-impact.py',
                            '.github/scripts/wait-registry.py', '.github/scripts/test-wait-registry.py']
+            if app in ('registry', 'track', 'www'):
+                shared += ['tests/fixtures/punch/**', '.github/scripts/test-app-impact.py']
             own = [f'apps/{app}/**']
-            if app == 'platform':
+            if app == 'www':
+                own += ['.github/scripts/test-app-impact.py']
+            if app in ('platform', 'www'):
                 own += ['docs/public/favicon.svg']
             elif app == 'admin':
                 own += ['apps/platform/migrations/**', '.github/scripts/wait-registry.py',
@@ -131,7 +137,7 @@ def main():
             if not run and uses_wasm and 'Cargo.lock' in paths:
                 run = closure(base) != closure('HEAD')
                 reason = 'WASM dependency closure changed' if run else 'WASM dependency closure unchanged'
-            if not run and app == 'track' and 'Cargo.lock' in paths:
+            if not run and app in ('track', 'www') and 'Cargo.lock' in paths:
                 run = closure(base, native_roots) != closure('HEAD', native_roots)
                 reason = 'native test dependency closure changed' if run else 'native test dependency closure unchanged'
         except (subprocess.CalledProcessError, ValueError, KeyError, TypeError) as error:

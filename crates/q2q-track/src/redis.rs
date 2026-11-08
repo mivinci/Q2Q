@@ -109,6 +109,20 @@ fn malformed(what: &str) -> StateError {
   StateError::Unavailable(format!("malformed Redis {what}"))
 }
 
+fn stored_punch(value: &str) -> Result<PunchAssignment, StateError> {
+  let mut punch: PunchAssignment =
+    serde_json::from_str(value).map_err(|_| malformed("Punch identity"))?;
+  let endpoints: q2q_punch::endpoints::PunchEndpoints = punch
+    .endpoints
+    .try_into()
+    .map_err(|_| malformed("Punch endpoints"))?;
+  punch.endpoints = endpoints.into();
+  if punch.public_key.len() != 32 {
+    return Err(malformed("Punch public key"));
+  }
+  Ok(punch)
+}
+
 fn hex(hash: &InfoHash) -> String {
   hash.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -154,7 +168,7 @@ impl TrackState for RedisState {
       .arg(record.public_key.as_slice())
       .arg(record.session_key.as_slice())
       .arg(record.last_seq)
-      .arg(&record.punch.punch_id)
+      .arg(serde_json::to_string(&record.punch).map_err(|_| malformed("Punch identity"))?)
       .arg(record.expires_at)
       .arg(del.len())
       .arg(add.len())
@@ -206,11 +220,7 @@ impl TrackState for RedisState {
       public_key,
       session_key,
       last_seq: seq,
-      punch: PunchAssignment {
-        punch_id: punch,
-        url: String::new(),
-        public_key: Vec::new(),
-      },
+      punch: stored_punch(&punch)?,
       expires_at: expiry,
     }))
   }
@@ -305,7 +315,7 @@ impl TrackState for RedisState {
         out.push(Candidate {
           peer_id: PeerId::unchecked(id),
           public_key: pk.try_into().map_err(|_| malformed("public key"))?,
-          punch_id,
+          punch_id: stored_punch(&punch_id)?.punch_id,
           complete,
         });
         if out.len() == limit {

@@ -1,0 +1,20 @@
+{
+  "extends": [
+    "$app/tsconfig",
+    "../../tsconfig.base.json"
+  ],
+  "compilerOptions": {
+    "allowJs": false,
+    "allowArbitraryExtensions": true,
+    "allowImportingTsExtensions": true,
+    "types": [
+      "$app/types",
+      "node"
+    ],
+    "checkJs": false
+  },
+  "include": [
+    "src",
+    "vite.config.ts"
+  ]
+}
