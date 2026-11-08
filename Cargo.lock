@@ -1971,11 +1971,12 @@ dependencies = [
  "q2q-primitives",
  "serde",
  "serde_json",
+ "url",
 ]
 
 [[package]]
 name = "q2q-punch-server"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.23.1",
  "clap",

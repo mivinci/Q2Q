@@ -6,6 +6,7 @@
 //! and it does not parse the SDP it carries.
 
 pub mod binding;
+pub mod endpoints;
 pub mod message;
 pub mod signal;
 pub mod transport;
