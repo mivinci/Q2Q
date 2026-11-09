@@ -31,16 +31,17 @@ async function removeFixtureFile(root: Pick<FileSystemDirectoryHandle, 'removeEn
 }
 
 async function fixture(run: (handle: FileSystemFileHandle) => Promise<void>) {
-  const root = await navigator.storage.getDirectory();
+  const root = await navigator.storage.getDirectory().catch(error => {throw new Error(`fixture root: ${error.name}`);});
   const name = `q2q-test-${crypto.randomUUID()}`;
-  const handle = await root.getFileHandle(name, { create: true });
+  const handle = await root.getFileHandle(name, { create: true }).catch(error => {throw new Error(`fixture create: ${error.name}`);});
   try { await run(handle); }
   catch (error) {
     // A leaked native stream can also make cleanup fail; retain the first failure.
     try { await removeFixtureFile(root, name); } catch { /* preserve the test failure */ }
     throw error;
   }
-  await removeFixtureFile(root, name);
+  try { await removeFixtureFile(root, name); }
+  catch (error) { throw new Error(`fixture cleanup: ${error instanceof Error ? error.name : 'unknown'}`); }
 }
 async function seed(handle: FileSystemFileHandle, value: string) {
   const stream = await handle.createWritable();
@@ -255,12 +256,17 @@ export const cases: Record<string, () => Promise<void>> = {
       stream.close = async () => { throw new DOMException('private text', 'NotAllowedError'); };
       return stream;
     };
-    const writer = await destination.open({ mode: 'create', size: 1n });
-    await writer.write(0n, bytes('x'));
-    await rejects(writer.finish(), 'PERMISSION_REQUIRED');
-    handle.createWritable = original;
-    const next = await destination.open({ mode: 'create', size: 1n });
-    await next.abort();
+    let stage = 'open';
+    try {
+      const writer = await destination.open({ mode: 'create', size: 1n });
+      stage = 'write'; await writer.write(0n, bytes('x'));
+      stage = 'finish'; await rejects(writer.finish(), 'PERMISSION_REQUIRED');
+      handle.createWritable = original;
+      stage = 'reopen'; const next = await destination.open({ mode: 'create', size: 1n });
+      stage = 'abort'; await next.abort();
+    } catch (error) {
+      throw new Error(`failed-close ${stage}: ${error instanceof Error ? error.message : 'unknown'}`);
+    } finally { handle.createWritable = original; }
   })
 };
 

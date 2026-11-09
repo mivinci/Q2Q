@@ -461,3 +461,14 @@ URL/原生异常正文/凭据，诊断不写任务历史。中英文文档同步
 未设置 CI 所需 VITE_RESOLVE_FROM 误用根 Vite5 而构建失败；按 CI 指定 apps/www/package.json
 后 bundle 通过，完整 WebKit SDK 重跑最终 138 通过、23 既有跳过。Chromium 运行被当前权限阻止，未将未执行
 计为通过。没有复现或修复真实 Mac Safari/iPhone 失败，未提交、推送、创建 PR 或部署。
+
+
+PR #101 首轮 CI 排查（2026-11-10）：2148b36 的 WWW 运行 42648420709，WebKit
+failed-close 存储用例报原生 UnknownError；Chromium SDK 阶段通过，WWW 离线来源恢复后的
+下载未完成。下载独立 CI 工件检查：收尾导航到空白页后截图无法说明真实失败；trace 仅保留
+存储通用文案，没有打开原始任务诊断。WebKit trace 同样没有 native 异常的用例内阶段。
+
+先增强失败证据而不放宽断言：完成失败时在导航前读取页面脱敏连接诊断并附到错误；文件
+fixture 标明 root/create/cleanup，failed-close 标明 open/write/finish/reopen/abort。
+本地 WebKit failed-close 重复 20 次通过、离线恢复重复 16 次通过；SDK 类型、脚本语法、
+diff 检查通过。未根治这两项 CI 间歇失败，不以重试或 skip 掩盖；更新 PR 后继续核实 CI。

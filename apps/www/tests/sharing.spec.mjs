@@ -121,7 +121,18 @@ async function startDownload(page,seed,name='published.bin'){
  await page.getByRole('button',{name:'开始下载',exact:true}).click();return page.getByRole('article',{name,exact:true}).first();
 }
 async function exportAndVerify(page,row){
- await expect(row.getByText('待保存',{exact:true})).toBeVisible({timeout:30000});const result=page.waitForEvent('download');
+ try{await expect(row.getByText('待保存',{exact:true})).toBeVisible({timeout:30000});}
+ catch(error){
+  // Capture the SDK failure before finally navigates away and erases the page.
+  let diagnostic='unavailable';
+  try{
+   await row.getByRole('button',{name:/详情/}).click({timeout:2000});
+   await page.getByRole('menuitem',{name:'传输详情',exact:true}).click({timeout:2000});
+   diagnostic=await page.getByRole('region',{name:'连接诊断'}).innerText({timeout:2000});
+  }catch{/* Keep the original completion failure if diagnostics are unavailable. */}
+  throw new Error(`${error.message}\nConnection diagnostic: ${diagnostic}`,{cause:error});
+ }
+ const result=page.waitForEvent('download');
  await row.getByRole('button',{name:'保存文件',exact:true}).click();const download=await result;
  expect(createHash('sha256').update(await readFile(await download.path())).digest('hex')).toBe(hash);
 }
