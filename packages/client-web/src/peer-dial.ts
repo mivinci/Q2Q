@@ -1,4 +1,4 @@
-import { Q2QError } from './error.ts';
+import { Q2QError, type ConnectionDiagnostic } from './error.ts';
 import { decodeKey } from './control-identity.ts';
 import type { ControlIdentity } from './control-identity.ts';
 import { PunchSocket } from './punch-socket.ts';
@@ -10,6 +10,7 @@ export interface PeerConnection {rtc:RtcPeer;close():Promise<void>}
 /** One isolated ephemeral Punch connection per dial, matching the native SDK. */
 export async function dialPeer(options:{identity:ControlIdentity;target:PeerCandidate;hash:Uint8Array;iceServers:RTCIceServer[];signal:AbortSignal;timeoutMs:number}):Promise<PeerConnection>{
   const controller=new AbortController();const abort=()=>controller.abort();options.signal.addEventListener('abort',abort,{once:true});if(options.signal.aborted)abort();
+  let stage:ConnectionDiagnostic['stage']='punch-connect';
   let problem:Q2QError|undefined;let rtc:RtcPeer|undefined;let socket:PunchSocket|undefined;let pump:Promise<void>|undefined;let closing:Promise<void>|undefined;
   const inbox=new Inbox<SignalMessage>();const id=crypto.randomUUID();
   let releaseOffer!:()=>void;const offered=new Promise<void>(resolve=>{releaseOffer=resolve;});
@@ -29,24 +30,32 @@ export async function dialPeer(options:{identity:ControlIdentity;target:PeerCand
       onFailure:error=>{problem=error;inbox.close(error);controller.abort();}});
     const token=options.identity.connectionTicket(options.target.punchId,options.target.peerId,options.hash,id);
     await send({type:'connect',connection_id:id,connect_token:token});
+    stage='punch-accept';
     const accept=await inbox.read(controller.signal);
     if(accept.type!=='accept'||typeof accept.accept_token!=='string')throw new Q2QError('PUNCH_UNAVAILABLE',accept.type==='reject');
     options.identity.verifyAccept(accept.accept_token,options.target.publicKey,id,options.target.punchId,options.hash);
     rtc=await RtcPeer.create({identity:options.identity,remoteKey:options.target.publicKey,infoHash:options.hash,connectionId:id,initiator:true,iceServers:options.iceServers,
       signal:controller.signal,timeoutMs:options.timeoutMs,onCandidate:async candidate=>{await offered;if(!controller.signal.aborted)await send({type:'candidate',connection_id:id,candidate:JSON.stringify(candidate)});}});
-    const offer=await rtc.offer();
-    await send({type:'offer',connection_id:id,connect_token:token,sdp:JSON.stringify(offer)});releaseOffer();
-    pump=(async()=>{
+    stage='rtc-offer';const offer=await rtc.offer();
+    stage='punch-offer';await send({type:'offer',connection_id:id,connect_token:token,sdp:JSON.stringify(offer)});releaseOffer();
+    stage='punch-answer';pump=(async()=>{
       let answered=false;
       for(;;){
         const message=await inbox.read(controller.signal);
         if(message.type==='answer'&&!answered&&typeof message.sdp==='string'){
-          answered=true;await rtc!.applyAnswer(JSON.parse(message.sdp) as RTCSessionDescriptionInit);
+          answered=true;stage='rtc-connect';await rtc!.applyAnswer(JSON.parse(message.sdp) as RTCSessionDescriptionInit);
         }else if(message.type==='candidate'&&typeof message.candidate==='string')await rtc!.addCandidate(JSON.parse(message.candidate) as RTCIceCandidateInit);
         else throw new Q2QError('PEER_PROTOCOL_ERROR');
       }
     })();void pump.catch(error=>{if(!controller.signal.aborted){problem=error instanceof Q2QError?error:new Q2QError('PEER_PROTOCOL_ERROR');controller.abort();}});
     await rtc.ready();clearTimeout(deadline);
     return {rtc,close};
-  }catch(error){await close();throw problem??(error instanceof Q2QError?error:new Q2QError('PEER_PROTOCOL_ERROR'));}
+  }catch(error){
+    // Preserve the RTC failure captured before teardown, even when the outer
+    // deadline or signal pump also fires. Never serialize native exception text.
+    const cause=problem??(error instanceof Q2QError?error:new Q2QError('PEER_PROTOCOL_ERROR'));
+    const rtcDiagnostic=error instanceof Q2QError?error.diagnostic:undefined;
+    const failure=cause.diagnostic?cause:new Q2QError(cause.code,cause.retryable,{...rtcDiagnostic,stage:rtcDiagnostic&&!problem?rtcDiagnostic.stage:stage});
+    await close();throw failure;
+  }
 }

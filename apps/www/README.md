@@ -1,6 +1,6 @@
 # Q2Q Web
 
-`q2q.app` 的浏览器客户端，采用与 platform 相同的 SvelteKit 3、TypeScript、Tailwind 4、shadcn-svelte/Lucide 与 Cloudflare adapter。已接 `@q2q/client-web` 的本机完整文件分享、P2P/HTTP 下载、种子导出及显式完成缓存再分享，不包含平台账号 Auth 或云端上传。当前分享/P2P 页面尚未部署。
+`q2q.app` 的浏览器客户端，采用与 platform 相同的 SvelteKit 3、TypeScript、Tailwind 4、shadcn-svelte/Lucide 与 Cloudflare adapter。已接 `@q2q/client-web` 的本机完整文件分享、P2P/HTTP 下载、种子导出及显式完成缓存再分享，不包含平台账号 Auth 或云端上传。分享/P2P 页面已部署；跨设备矩阵尚未完成，Safari 双端互通正在排查。后文标注日期的本地验收与未部署状态属于当时记录。
 
 ## 本地运行
 
@@ -131,3 +131,10 @@ CDP真实1MiB配额测试验证空间提示与失败缓存清理。8项跳过含
 SDK整合289通过/23跳过，Rust511通过/22ignored；类型/构建/文档与CI gate通过。
 这不是全部浏览器、物理磁盘故障、WCAG/屏幕阅读器或真实系统保存窗口验收。跨设备/跨NAT/强制TURN
 暂跳过，主站仍未部署。不要将本机viewport当成真实手机后台或公网UI证据。
+
+
+## 失败诊断（开发版本）
+
+失败任务的详情展示 SDK 原始错误码及可选脱敏连接阶段/状态/候选计数。无 SDP、IP、URL、
+票据、Peer 身份或 TURN 凭据；不自动上传、不持久化到任务历史。此改动尚待部署，
+不表示 Safari 跨设备问题已经修复。线上排障说明见中英文 Web 客户端文档。

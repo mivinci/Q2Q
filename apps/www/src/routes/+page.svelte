@@ -199,5 +199,12 @@
   {#if shareDetail}<p class="dialog-description">{text.shareNote}</p><dl class="detail-metadata"><div><dt>{text.shareSent}</dt><dd>{bytes(shareDetail.snapshot.sentBytes)}</dd></div><div><dt>{text.shareConnections}</dt><dd>{shareDetail.snapshot.activeConnections}</dd></div></dl>{/if}
   {#if detail?.networkState}<p class="dialog-description">{text.sourcePolicy}</p><dl class="detail-metadata"><div><dt>{text.networkStatus}</dt><dd>{detail.networkState==='online'?text.networkOnline:detail.networkState==='connecting'?text.networkConnecting:detail.networkState==='closed'?text.networkClosed:text.networkOffline}</dd></div></dl>{/if}
   {#if detail}<p class="dialog-description break-words">{detail.name}</p><dl class="detail-metadata"><div><dt>{text.complete}</dt><dd>{detail.snapshot ? bytes(detail.snapshot.verifiedBytes) : text.pendingValidation}</dd></div><div><dt>{text.committed}</dt><dd>{bytes(BigInt(detail.committed))}</dd></div><div><dt>{text.received}</dt><dd>{bytes(detail.snapshot?.receivedBytes ?? 0n)}</dd></div></dl>{/if}
+  {@const failure = shareDetail?.snapshot.error ?? detail?.snapshot?.error}
+  {#if failure}
+    <section aria-label={text.connectionDiagnostics}>
+      <h3>{text.connectionDiagnostics}</h3><p class="dialog-description">{text.diagnosticPrivacy}</p>
+      <pre class="mt-3 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-xs select-text">{JSON.stringify({code:failure.code,retryable:failure.retryable,...(failure.diagnostic??{})},null,2)}</pre>
+    </section>
+  {/if}
 </AppDialog>
 <ConfirmDialog open={!!deleting} title={text.remove} description={text.confirmRemove} confirmLabel={text.remove} cancelLabel={text.dismiss} onOpenChange={(open) => { if (!open) deleting = null; }} onConfirm={() => { const row = deleting; if (row) void session.remove(row); }} />

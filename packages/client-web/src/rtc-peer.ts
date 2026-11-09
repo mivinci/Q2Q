@@ -1,4 +1,4 @@
-import { Q2QError } from './error.ts';
+import { Q2QError, type ConnectionDiagnostic } from './error.ts';
 import { initializeWasm } from './block-verifier.ts';
 import type { ControlIdentity } from './control-identity.ts';
 
@@ -41,6 +41,8 @@ export class Inbox<T> {
  * maxRetransmits=0. Q2Q's block/proof/retransmission logic remains above this layer.
  */
 export class RtcPeer {
+  private stage:ConnectionDiagnostic['stage']='rtc-connect';
+  private localCandidateCount=0;private remoteCandidateCount=0;
   private pc:RTCPeerConnection;private control?:RTCDataChannel;private data:RTCDataChannel;
   private wasm:Wasm;private options:RtcPeerOptions;private auth?:Auth;private early?:string;
   private authenticated=false;private stopped?:Q2QError;private localAbort=new AbortController();
@@ -64,6 +66,7 @@ export class RtcPeer {
     });
     this.pc.addEventListener('icecandidate',event=>{
       if(!event.candidate||this.stopped)return;
+      this.localCandidateCount++;
       if(this.notifications.size>=64){this.stop(new Q2QError('RESOURCE_LIMIT'));return;}
       const work=Promise.resolve().then(()=>{if(!this.stopped)return options.onCandidate(event.candidate!.toJSON());});
       this.notifications.add(work);void work.catch(()=>this.stop(new Q2QError('NETWORK_UNAVAILABLE',true))).finally(()=>this.notifications.delete(work));
@@ -108,6 +111,7 @@ export class RtcPeer {
   }
   private startAuth(){
     if(this.stopped||this.authenticated||this.auth||this.control?.readyState!=='open'||this.data.readyState!=='open'||!this.pc.localDescription||!this.pc.remoteDescription)return;
+    this.stage='peer-auth';
     try{
       if(!this.control.ordered||this.control.maxRetransmits!==null||this.control.maxPacketLifeTime!==null)throw new Q2QError('PEER_PROTOCOL_ERROR');
       const max=this.pc.sctp?.maxMessageSize;
@@ -121,7 +125,7 @@ export class RtcPeer {
     try{
       const reply=this.auth!.receive(raw);if(reply)this.control!.send(reply);
       if(this.auth!.authenticated()){
-        this.authenticated=true;this.auth!.free();this.auth=undefined;clearTimeout(this.timer);this.resolveReady();
+        this.authenticated=true;this.stage='transfer';this.auth!.free();this.auth=undefined;clearTimeout(this.timer);this.resolveReady();
       }
     }catch{throw new Q2QError('PEER_AUTH_FAILED');}
   }
@@ -130,33 +134,35 @@ export class RtcPeer {
     this.check();if(!this.options.initiator||this.control)throw new Q2QError('INVALID_STATE');
     try{this.control=this.pc.createDataChannel('q2q-control',{ordered:true});this.bind(this.control,true);
       await this.pc.setLocalDescription(await this.pc.createOffer());this.check();return this.pc.localDescription!.toJSON();
-    }catch(error){this.stop(error instanceof Q2QError?error:new Q2QError('PEER_PROTOCOL_ERROR'));throw this.stopped;}
+    }catch(error){this.stop(this.diagnosed(error,'rtc-offer'));throw this.stopped;}
   }
   async answer(offer:RTCSessionDescriptionInit):Promise<RTCSessionDescriptionInit>{
     this.check();if(this.options.initiator||this.pc.remoteDescription)throw new Q2QError('INVALID_STATE');
     try{await this.remote(offer,'offer');await this.pc.setLocalDescription(await this.pc.createAnswer());this.check();this.startAuth();return this.pc.localDescription!.toJSON();}
-    catch(error){this.stop(error instanceof Q2QError?error:new Q2QError('PEER_PROTOCOL_ERROR'));throw this.stopped;}
+    catch(error){this.stop(this.diagnosed(error,'rtc-answer'));throw this.stopped;}
   }
   async applyAnswer(answer:RTCSessionDescriptionInit):Promise<void>{
     this.check();if(!this.options.initiator||!this.pc.localDescription||this.pc.remoteDescription)throw new Q2QError('INVALID_STATE');
-    try{await this.remote(answer,'answer');this.startAuth();}catch(error){this.stop(error instanceof Q2QError?error:new Q2QError('PEER_PROTOCOL_ERROR'));throw this.stopped;}
+    try{await this.remote(answer,'answer');this.startAuth();}catch(error){this.stop(this.diagnosed(error,'rtc-answer'));throw this.stopped;}
   }
   private async remote(description:RTCSessionDescriptionInit,type:'offer'|'answer'){
     if(description.type!==type||typeof description.sdp!=='string'||new TextEncoder().encode(description.sdp).length>65536)throw new Q2QError('PEER_PROTOCOL_ERROR');
     this.settingRemote=true;
     try{await this.pc.setRemoteDescription(description);for(const candidate of this.candidates)await this.applyCandidate(candidate);this.candidates=[];}
+    catch(error){throw this.diagnosed(error,'rtc-remote-description');}
     finally{this.settingRemote=false;}
   }
-  private applyCandidate(candidate:RTCIceCandidateInit):Promise<void>{
+  private async applyCandidate(candidate:RTCIceCandidateInit):Promise<void>{
     if((candidate.sdpMid===null||candidate.sdpMid==='')&&candidate.sdpMLineIndex!=null){
       const section=this.pc.remoteDescription?.sdp.split(/^m=/m)[candidate.sdpMLineIndex+1];
       const mid=section?.match(/^a=mid:([^\r\n]+)/m)?.[1];
       if(mid)candidate={...candidate,sdpMid:mid};
     }
-    return this.pc.addIceCandidate(candidate);
+    try{await this.pc.addIceCandidate(candidate);}
+    catch(error){throw this.diagnosed(error,'rtc-candidate');}
   }
   addCandidate(candidate:RTCIceCandidateInit):Promise<void>{
-    this.check();
+    this.check();this.remoteCandidateCount++;
     // Native webrtc-rs reports an empty MID with a valid m-line index. Treat it
     // as absent and use the m-line index for browser interoperability.
     if(candidate.sdpMid===''&&candidate.sdpMLineIndex!=null)candidate={...candidate,sdpMid:null};
@@ -205,8 +211,19 @@ export class RtcPeer {
     })();
     this.sends.add(work);void work.finally(()=>{this.sends.delete(work);this.queuedBytes-=size;}).catch(()=>{});return work;
   }
+  /** Internal: capture host state before an owner starts connection cleanup. */
+  diagnosed(value:unknown,stage:ConnectionDiagnostic['stage']=this.stage):Q2QError {
+    const error=value instanceof Q2QError?value:new Q2QError('PEER_PROTOCOL_ERROR');
+    if(error.diagnostic)return error;
+    return new Q2QError(error.code,error.retryable,{
+      stage,connectionState:this.pc.connectionState,iceConnectionState:this.pc.iceConnectionState,
+      iceGatheringState:this.pc.iceGatheringState,signalingState:this.pc.signalingState,
+      controlState:this.control?.readyState,dataState:this.data.readyState,
+      localCandidates:this.localCandidateCount,remoteCandidates:this.remoteCandidateCount
+    });
+  }
   private stop(error:Q2QError){
-    if(this.stopped)return;this.stopped=error;clearTimeout(this.timer);this.options.signal.removeEventListener('abort',this.abort);
+    if(this.stopped)return;error=this.diagnosed(error);this.stopped=error;clearTimeout(this.timer);this.options.signal.removeEventListener('abort',this.abort);
     this.localAbort.abort();this.rejectReady(error);this.controls.close(error);this.pieces.close(error);this.candidates=[];this.early=undefined;
     this.auth?.free();this.auth=undefined;this.control?.close();this.data.close();this.pc.close();
   }

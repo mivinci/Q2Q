@@ -1,6 +1,6 @@
 # @q2q/client-web
 
-浏览器客户端 SDK，开发中、尚未发布。当前实现已选择 `File` 的范围读取，以及文件句柄的乱序写入、提交与独占访问；已提供 OPFS 暂存、流式导出与清理；已实现版本化下载检查点及逐块恢复校验；已接入 `createClient`、HTTP 下载任务、暂停/恢复与受限来源刷新；WebRTC 内部传输层已接线并完成部分互通验证，已接入 Client 的 P2P 下载、暂停/恢复和 HTTP 回退；完整文件 Web 发布已接线并完成本地互通；下载中已提交块的显式共享已实现；主站分享接线仍未完成。设计与执行项见 [SDK 方案](../../todos/web-sdk.md)。
+浏览器客户端 SDK，开发中、尚未发布。当前实现已选择 `File` 的范围读取，以及文件句柄的乱序写入、提交与独占访问；已提供 OPFS 暂存、流式导出与清理；已实现版本化下载检查点及逐块恢复校验；已接入 `createClient`、HTTP 下载任务、暂停/恢复与受限来源刷新；WebRTC 内部传输层已接线并完成部分互通验证，已接入 Client 的 P2P 下载、暂停/恢复和 HTTP 回退；完整文件 Web 发布已接线并完成本地互通；下载中已提交块的显式共享已实现；主站分享接线已完成并上线；真实 Safari 双端跨设备互通仍在排查。设计与执行项见 [SDK 方案](../../todos/web-sdk.md)。
 
 ```ts
 import { fileSource } from '@q2q/client-web';
@@ -397,3 +397,17 @@ Bitfield/Have、缺块拒绝、关闭分享不取消下载、暂停/完成先撤
 Peer-only proof 转发。后者传的是块与证明，不把低层分块验收冒充三端完整文件级调度。
 `npm run test:partial --workspace @q2q/client-web` 只用临时本地服务，CI 已接线；
 WebKit/native 与私有上下文 OPFS 两项明确跳过，不宣称已兼容。
+
+
+## 连接失败诊断
+
+`Q2QError.diagnostic` 与任务 `snapshot().error.diagnostic` 是可选的只读连接上下文。
+原有 `code`、`retryable` 不变；没有上下文时该字段缺省。诊断在清理 RTC 前截取，包含
+失败阶段、RTC/ICE/信令/两个 DataChannel 状态和本地/远端候选计数。阶段区分 Punch
+连接/接受/offer/answer、RTC 描述/候选处理、建连、身份握手和传输；它是失败时的本地
+状态，不等于已证明的根因。候选计数不表示候选已可用，也不证明使用了 TURN。
+
+字段经过白名单与长度固定的枚举/有界整数检查，不包含 SDP、候选地址、来源 URL、
+Peer 身份、原生异常正文、票据或 TURN 凭据。SDK 不自动打印或上传诊断。应用可在
+失败任务详情展示；该信息不写入检查点，刷新后不承诺保留。仍需真实设备重现才能
+判断 Safari 的具体互通问题，不能以 Playwright WebKit 测试通过替代 Safari 验收。

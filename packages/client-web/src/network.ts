@@ -68,7 +68,7 @@ export async function connectNetwork(options:{identity:ControlIdentity;trackUrl:
   let snapshot:Readonly<NetworkSnapshot>=Object.freeze({state:'connecting',peerId:identity.info.peer_id,punchId:null,error:null});
   const listeners=new Set<(s:Readonly<NetworkSnapshot>)=>void>();
   function emit(state:NetworkSnapshot['state'],error?:Q2QError) {
-    snapshot=Object.freeze({...snapshot,state,error:error?Object.freeze({code:error.code,retryable:error.retryable}):null});
+    snapshot=Object.freeze({...snapshot,state,error:error?Object.freeze({code:error.code,retryable:error.retryable,...(error.diagnostic?{diagnostic:error.diagnostic}:{})}):null});
     for(const listener of listeners){try{void Promise.resolve(listener(snapshot)).catch(()=>{});}catch{/* isolated observer */}}
   }
   function fail(error:Q2QError) {

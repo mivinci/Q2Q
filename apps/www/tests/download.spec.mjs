@@ -107,6 +107,14 @@ test('invalid seed, corrupt content and expired authorization have distinct erro
   await expect(page.getByRole('alert')).toContainText('无法读取这个种子');
   await upload(page,source.seed('corrupt','Corrupt.bin').file);
   await expect(page.getByRole('article',{name:'Corrupt.bin'}).getByRole('alert')).toContainText('来源内容与种子不一致');
+  await page.getByRole('article',{name:'Corrupt.bin'}).getByRole('button',{name:/详情/}).click();
+  await page.getByRole('menuitem',{name:'传输详情',exact:true}).click();
+  const details=page.getByRole('dialog').filter({has:page.getByRole('heading',{name:'传输详情',exact:true})});
+  const diagnostics=details.getByRole('region',{name:'连接诊断'});
+  await expect(diagnostics).toContainText('CONTENT_MISMATCH');
+  expect(await diagnostics.innerText()).not.toContain('private-fixture');
+  expect(await diagnostics.innerText()).not.toContain('127.0.0.1');
+  await details.getByRole('button',{name:'取消',exact:true}).click();
   await page.locator('input[type=file][accept]').setInputFiles(source.seed('denied','Denied.bin').file);
   await page.getByRole('button',{name:'开始下载',exact:true}).click();
   await expect(page.getByRole('article',{name:'Denied.bin'}).getByRole('alert')).toContainText('下载授权已过期');

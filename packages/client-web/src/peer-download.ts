@@ -34,12 +34,15 @@ class DownloadConnection {
       await connection.rtc.sendControl(wasm.encode_peer_bitfield(bits,count),combined);
       const raw=await connection.rtc.readControl(combined);const available=wasm.peer_bitfield(raw,count);
       return new DownloadConnection(connection,wasm,bits,available,count,signal,received);
-    }catch(value){await connection.close();if(timeout.aborted&&!signal.aborted)throw new Q2QError('CONTROL_TIMEOUT',true);throw error(value);}
+    }catch(value){
+      const failure=connection.rtc.diagnosed(timeout.aborted&&!signal.aborted?new Q2QError('CONTROL_TIMEOUT',true):error(value));
+      await connection.close();throw failure;
+    }
   }
   has(index:number){return hasBlock(this.available,index);}
   private send(message:unknown){return this.connection.rtc.sendControl(encode(message),this.controller.signal);}
   private fail(problem:Q2QError){
-    if(this.failure)return;this.failure=problem;this.controller.abort();
+    if(this.failure)return;problem=this.connection.rtc.diagnosed(problem);this.failure=problem;this.controller.abort();
     if(this.active){clearTimeout(this.active.retry);clearTimeout(this.active.deadline);this.active.reject(problem);}
     void this.connection.close();
   }
