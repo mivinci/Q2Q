@@ -16,7 +16,7 @@
   {label:text.health,value:data.node.online?text.online:text.offline},
   {label:text.region,value:data.node.region??'—'},
   {label:text.version,value:data.node.version},
-  {label:text.advertiseUrl,value:data.node.advertise_url,valueClass:'min-w-0 break-all'},
+  ...data.node.endpoints.map(value=>({label:text.advertiseUrl,value,valueClass:'min-w-0 break-all'})),
   {label:text.publicKey,value:data.node.public_key,valueClass:'min-w-0 break-all'},
   {label:text.identityVersion,value:String(data.node.identity_version)},
   {label:text.revision,value:String(data.node.revision)},
@@ -26,7 +26,7 @@
 </script>
 <svelte:head><title>{data.nodeId} · Q2Q Admin</title></svelte:head>
 <div class="mx-auto w-full max-w-5xl px-4 pt-5 pb-7 sm:px-7">
- <h1 class="break-words text-2xl font-medium tracking-tight">{data.nodeId}</h1><p class="mt-1 text-sm text-muted-foreground">Punch</p>
+ <h1 class="wrap-break-word text-2xl font-medium tracking-tight">{data.nodeId}</h1><p class="mt-1 text-sm text-muted-foreground">Punch</p>
  <MutationNotice {form} />
  {#if data.node}
  <section class="mt-6 rounded-xl border bg-card p-4"><ResponsiveMetadata {items} dense wrapperClass="md:grid-cols-2 md:gap-x-6" /></section>

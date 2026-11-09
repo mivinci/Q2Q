@@ -15,7 +15,7 @@ export class PeerStore {
   constructor(readonly storage: DurableObjectStorage, readonly config: Limits) {}
   private ready(): boolean {
     if (!hasTable(this.storage, 'peer_meta')) return false;
-    if (this.storage.sql.exec<{ version: number }>('SELECT version FROM peer_meta WHERE id=1').one().version !== 1) unavailable();
+    if (this.storage.sql.exec<{ version: number }>('SELECT version FROM peer_meta WHERE id=1').one().version !== 2) unavailable();
     return true;
   }
   private init(): void {
@@ -28,13 +28,13 @@ export class PeerStore {
       CREATE INDEX holdings_expiry ON holdings(expires_at);
       CREATE TABLE outbox(info_hash TEXT PRIMARY KEY, revision BLOB NOT NULL, payload TEXT NOT NULL, bytes INTEGER NOT NULL);
     `);
-    this.storage.sql.exec('INSERT INTO peer_meta VALUES(1,1,?,0)', blob(0n));
+    this.storage.sql.exec('INSERT INTO peer_meta VALUES(1,2,?,0)', blob(0n));
   }
   session(): Session | null {
     if (!this.ready()) return null;
     const row = this.storage.sql.exec<SessionRow>('SELECT * FROM session WHERE id=1').toArray()[0];
     return row ? { peer_id: row.peer_id, public_key: row.public_key, session_key: row.session_key,
-      last_seq: integer(row.seq).toString(), punch: JSON.parse(row.punch) as Punch,
+      last_seq: integer(row.seq).toString(), punch: checked(punchSchema, JSON.parse(row.punch)),
       expires_at: row.expires_at, generation: integer(row.generation).toString() } : null;
   }
   announce(record: NewSession, add: string[], del: string[], complete: string[]): { generation: string; targets: string[] } {
@@ -190,7 +190,7 @@ export class PeerState extends DurableObject<Bindings> {
       // then compare the original key again when atomically advancing the session.
       const snapshot = await within(this.env.DISCOVERY.getByName(DISCOVERY_NAME).snapshot(), this.#config.REQUEST_TIMEOUT_MS);
       const current = snapshot.nodes.find(node => node.punch_id === session.punch.punch_id);
-      if (!current || current.url !== session.punch.url || current.public_key !== session.punch.public_key) throw new ProtocolError('unknown_session');
+      if (!current || JSON.stringify(current.endpoints) !== JSON.stringify(session.punch.endpoints) || current.public_key !== session.punch.public_key) throw new ProtocolError('unknown_session');
     }
     const expiry = renew ? now + 3600 : null;
     // Renewing needs a durable expiry wake-up, not an immediate cleanup pass.

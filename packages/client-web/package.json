@@ -1,0 +1,33 @@
+{
+  "name": "@q2q/client-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "check": "npm run wasm:build --prefix ../.. && tsc --project tsconfig.json",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test:browser": "npm run wasm:build --prefix ../.. && playwright test --config playwright.config.mjs --grep @storage",
+    "test:large": "npm run wasm:build --prefix ../.. && playwright test --config playwright.config.mjs --grep @large --project chromium",
+    "test:bundle": "npm run wasm:build --prefix ../.. && playwright test --config playwright.config.mjs --grep @bundle",
+    "test:save": "npm run wasm:build --prefix ../.. && node tests/manual-save.mjs",
+    "test:http": "npm run wasm:build --prefix ../.. && playwright test --config playwright.config.mjs --grep @http",
+    "test:network": "npm run wasm:build --prefix ../.. && cargo build --manifest-path ../../Cargo.toml -p q2q-punch-server && playwright test --config playwright.config.mjs --grep @network",
+    "test:rtc": "npm run wasm:build --prefix ../.. && cargo test --manifest-path ../../Cargo.toml --locked -p q2q-core --lib --no-run && playwright test --config playwright.config.mjs --grep @rtc",
+    "test:partial": "npm run wasm:build --prefix ../.. && cargo build --manifest-path ../../Cargo.toml -p q2q-punch-server && playwright test --config playwright.config.mjs --grep @partial",
+    "test:publish": "npm run wasm:build --prefix ../.. && cargo build --manifest-path ../../Cargo.toml -p q2q-punch-server && playwright test --config playwright.config.mjs --grep @publish",
+    "test:p2p": "npm run wasm:build --prefix ../.. && cargo build --manifest-path ../../Cargo.toml -p q2q-punch-server && playwright test --config playwright.config.mjs --grep @p2p"
+  },
+  "dependencies": {
+    "@q2q/wasm": "*",
+    "@q2q/punch-discovery": "*"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.57.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^6.0.3",
+    "@q2q/track": "*"
+  }
+}

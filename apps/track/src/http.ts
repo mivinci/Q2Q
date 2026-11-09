@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { acceptsNewPeer } from '@q2q/punch-discovery';
+import { acceptsNewPeer, punchSchemesSchema, type PunchScheme } from '@q2q/punch-discovery';
 import { parse } from 'lossless-json';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
@@ -11,7 +11,7 @@ import type { DirectorySnapshot } from './directory.ts';
 import { select } from './selection.ts';
 import { rateObjectName } from './rate-key.ts';
 
-const announceSchema = z.object({ token: ticketSchema, ttl: uint64,
+const announceSchema = z.strictObject({ token: ticketSchema, ttl: uint64, punch_schemes: punchSchemesSchema,
   add: z.array(z.string()).default([]), del: z.array(z.string()).default([]), complete: z.array(z.string()).default([]) });
 const heartbeatSchema = z.object({seq: uint64, timestamp: uint64, mac: z.string()});
 const fail = (code: string): never => {throw new ProtocolError(code);};
@@ -26,16 +26,16 @@ function json<T>(schema: z.ZodType<T>, body: string): T {
   if (!result.success) return fail('unprocessable_entity');
   return result.data;
 }
-async function assignment(snapshot: DirectorySnapshot, peer: string) {
+async function assignment(snapshot: DirectorySnapshot, peer: string, schemes: readonly PunchScheme[]) {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode('q2q-punch-assignment-v1'), {name: 'HMAC', hash: 'SHA-256'}, false, ['sign']);
-  const eligible = snapshot.nodes.filter(node => acceptsNewPeer(node) && node.expires_at > seconds());
+  const eligible = snapshot.nodes.filter(node => acceptsNewPeer(node, schemes) && node.expires_at > seconds());
   let chosen: typeof eligible[number] | undefined, highest = '';
   for (const node of eligible) {
     const score = Array.from(new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${peer}\0${node.punch_id}`))), byte => byte.toString(16).padStart(2, '0')).join('');
     if (score > highest || (score === highest && node.punch_id > (chosen?.punch_id ?? ''))) {highest = score; chosen = node;}
   }
   if (!chosen) return fail('no_available_punch');
-  return {punch_id: chosen.punch_id, url: chosen.url, public_key: chosen.public_key};
+  return {punch_id: chosen.punch_id, endpoints: chosen.endpoints, public_key: chosen.public_key};
 }
 
 export const api = new Hono<{Bindings: Bindings; Variables: {deadline: number}}>();
@@ -44,6 +44,17 @@ api.use('*', async (context, next) => {
   context.header('Cache-Control', 'no-store');
   context.header('Access-Control-Allow-Origin', '*');
   await next();
+});
+// Preflight is public and carries no peer credentials. Do not consume a peer
+// rate-limit bucket or invoke durable state merely to authorize JSON headers.
+api.options('*', context => {
+  const method = context.req.header('Access-Control-Request-Method');
+  const headers = (context.req.header('Access-Control-Request-Headers') ?? '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+  if (method && !['GET','PUT','POST'].includes(method) || headers.some(value => value !== 'content-type')) return context.body(null,403);
+  context.header('Access-Control-Allow-Methods','GET, PUT, POST');
+  context.header('Access-Control-Allow-Headers','Content-Type');
+  context.header('Access-Control-Max-Age','600');
+  return context.body(null,204);
 });
 api.use('*', bodyLimit({maxSize: 2 * 1024 * 1024, onError: context => context.json({code: 'payload_too_large'}, 413)}));
 api.use('*', async (context, next) => {
@@ -70,7 +81,7 @@ api.put('/peers/:peer/files', async context => {
   // Validate deployment secrets before changing durable session state.
   if (!context.env.TURN_URL || !context.env.TURN_SECRET) return fail('configuration_error');
   const snapshot = await rpc(context.env.DISCOVERY.getByName(DISCOVERY_NAME).snapshot());
-  const punch = await assignment(snapshot, peer);
+  const punch = await assignment(snapshot, peer, input.punch_schemes);
   const session = await rpc(context.env.PEERS.getByName(`peer:${peer}`).announce({peer_id: peer, token: stringifyWire(input.token),
     ttl: input.ttl.toString(), add, del, complete, punch}));
   const expires_at = seconds() + 3600, username = `${expires_at}:${peer}`;

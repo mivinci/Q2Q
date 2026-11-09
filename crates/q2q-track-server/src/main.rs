@@ -143,9 +143,10 @@ impl TrackState for StateBackend {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PunchServer {
   punch_id: String,
-  url: String,
+  endpoints: q2q_track::endpoints::PunchEndpoints,
   /// base64 of the Punch Server's public key; clients use it to authenticate
   /// the server they are told to talk to.
   public_key: String,
@@ -200,7 +201,7 @@ impl Config {
       }
       out.push(PunchAssignment {
         punch_id: p.punch_id.clone(),
-        url: p.url.clone(),
+        endpoints: p.endpoints.as_slice().to_vec(),
         public_key: key,
       });
     }
@@ -401,7 +402,7 @@ mod tests {
       "turn_secret = \"s\"\n\
        [[punch]]\n\
        punch_id = \"punch-1\"\n\
-       url = \"https://punch-1.example.com\"\n\
+       endpoints = [\"quic://punch-1.example.com:4433\"]\n\
        public_key = \"{key}\"\n"
     );
     toml::from_str(&text).expect("the fixture parses")
@@ -413,6 +414,41 @@ mod tests {
     let list = config_with_key(&key).punch_servers().unwrap();
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].public_key, vec![7u8; 32]);
+  }
+
+  #[test]
+  fn static_endpoint_lists_are_canonical_and_reject_the_old_single_address() {
+    let key = B64.encode([7; 32]);
+    let parse = |fields: &str| {
+      toml::from_str::<Config>(&format!(
+        "turn_secret=\"s\"\n[[punch]]\npunch_id=\"punch-1\"\npublic_key=\"{key}\"\n{fields}\n"
+      ))
+    };
+    let config = parse(
+      "endpoints=[\"wss://proxy.example:8443/signal?region=hk\",\"QUIC://PUNCH.example:04433/\"]",
+    )
+    .unwrap();
+    assert_eq!(
+      config.punch_servers().unwrap()[0].endpoints,
+      vec![
+        "quic://punch.example:4433",
+        "wss://proxy.example:8443/signal?region=hk"
+      ]
+    );
+    for fields in [
+      "url=\"quic://punch.example:4433\"",
+      "endpoints=[]",
+      "endpoints=[\"ws://public.example/ws\"]",
+      "endpoints=[\"quic://punch.example\"]",
+      "endpoints=[\"wss://proxy.example/#fragment\"]",
+      "endpoints=[\"wss://proxy.example\",\"WSS://PROXY.example:443/\"]",
+      "endpoints=[\"wss://proxy.example/ws\"]\nurl=\"quic://punch.example:4433\"",
+    ] {
+      assert!(
+        parse(fields).is_err(),
+        "invalid endpoint configuration accepted"
+      );
+    }
   }
 
   #[test]

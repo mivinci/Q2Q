@@ -1,0 +1,53 @@
+export type Locale = 'zh-CN' | 'en';
+const zh = {
+  title: '你的内容，随处可达。', intro: '打开种子，开始一次安心的传输。', open: '打开种子', drop: '拖入文件以分享，或拖入 .q2q 种子下载',
+  local: '本地解析', verified: '内容校验', account: '无需登录', docs: '文档', console: '控制台', tasks: '传输任务',
+  start: '开始下载', dismiss: '取消', preview: '准备下载', cached: '下载内容暂存在此设备，完成后可保存到文件。',
+  pause: '暂停', resume: '继续', cancel: '取消下载', save: '保存文件', saving: '正在保存', saved: '已保存到文件',
+  reselect: '选择原种子以继续', retry: '重试', remove: '删除暂存', choose: '重新选择种子', details: '详情',
+  complete: '已校验', committed: '已提交', received: '已接收', preparing: '准备中', waiting: '正在重试', downloading: '下载中',
+  pausing: '正在暂停', paused: '已暂停', finalizing: '正在完成', completed: '待保存', cancelling: '正在取消', cancelled: '已取消', failed: '下载失败',
+  restored: '等待恢复', ready: '就绪', empty: '当前设备的任务会显示在这里', footer: '请保持页面打开以继续传输。',
+  privacy: '文件保留在当前设备；网页不会把下载内容上传到平台。', language: '语言', languageDescription: '选择界面语言。',
+  appearanceSettings: '外观', light: '浅色', dark: '深色', system: '跟随系统', loading: '正在准备本地存储…',
+  sourceChanged:'来源内容已变化，请重新选择文件或获取新种子。',
+  noSources: '此种子没有可用来源，请确认分享方在线后重试。', restoreHelp: '重新选择原种子后，将校验暂存内容并继续下载。',
+  unsupportedSave: '此浏览器无法流式保存超过 32 MiB 的文件。暂存会保留；可换用支持文件保存的浏览器重新下载。',
+  mismatch: '种子与此任务不匹配，请选择原种子。', tooMany: '任务已满，请先完成或移除部分任务。',
+  invalid: '无法读取这个种子，请检查文件后重试。', storage: '无法访问本地存储，请检查浏览器权限和可用空间。',
+  network: '无法连接下载来源，请检查网络和来源的跨域设置后重试。', unauthorized: '下载授权已过期，请获取新的有效种子。',
+  corrupt: '来源内容与种子不一致，下载已停止。', range: '来源不支持所需的范围下载，请使用其他来源。',
+  space: '本地空间不足，请释放空间后重试。', busy: '此任务正在其他页面使用，请先关闭另一页面。',
+  confirmRemove: '删除此任务和本机暂存内容？已保存到其他位置的文件不会删除。', cancelSave: '停止保存',
+  countOne:'个任务', count: '个任务', resumeNote: '刷新后需重新选择原种子。', dataCleared: '找不到暂存内容，可能已被浏览器清理。',
+  proofUnavailable: '种子缺少可用的校验数据来源，请获取完整种子后重试。', lastCommitted: '上次已提交', pendingValidation: '待重新校验', submitted: '已提交浏览器保存', settings: '设置', preferences: '选择适合你的外观和语言。', cachedTitle: '待保存', readDetails: '传输详情', downloadingOnly: '分享本地文件，或打开种子下载。',
+  networkStatus:'P2P 控制连接',networkConnecting:'连接中',networkOnline:'在线',networkOffline:'离线',networkClosed:'已关闭',sourcePolicy:'P2P 可用时尝试连接；HTTP 回退与内容校验由 SDK 处理。连接在线不代表字节一定来自 P2P。',continueShare:'继续分享',stopSharingFirst:'请先停止使用此暂存文件的分享，再删除暂存。',share:'分享文件',sharePreview:'准备分享',startShare:'开始分享',saveSeed:'保存种子',stopShare:'停止分享',removeShare:'移除任务',shareNote:'请保持页面打开，对方才能从本机下载。选择文件不会上传到平台。',sharePublishing:'等待接收',shareSending:'分享中',shareClosed:'已停止分享',shareFailed:'分享失败',shareConnections:'个连接',shareSent:'已发送',shareUnsupported:'此环境无法分享文件，请使用支持 WebRTC 的浏览器并检查网络配置。',downloadType:'下载',shareType:'分享',all:'全部',
+  historyFailure: '任务历史无法保存；请不要刷新页面，完成后及时保存文件。'
+};
+const en: typeof zh = {
+  title: 'Your content. Within reach.', intro: 'Open a seed. Let the transfer begin.', open: 'Open seed', drop: 'Drop a file to share, or a .q2q seed to download',
+  local: 'Parsed locally', verified: 'Content verified', account: 'No account needed', docs: 'Docs', console: 'Console', tasks: 'Transfers',
+  start: 'Start download', dismiss: 'Cancel', preview: 'Ready to download', cached: 'Content is stored on this device until you save it to a file.',
+  pause: 'Pause', resume: 'Resume', cancel: 'Cancel download', save: 'Save file', saving: 'Saving', saved: 'Saved to file',
+  reselect: 'Select original seed to resume', retry: 'Retry', remove: 'Delete cached data', choose: 'Select seed again', details: 'Details',
+  complete: 'Verified', committed: 'Committed', received: 'Received', preparing: 'Preparing', waiting: 'Retrying', downloading: 'Downloading',
+  pausing: 'Pausing', paused: 'Paused', finalizing: 'Finishing', completed: 'Ready to save', cancelling: 'Cancelling', cancelled: 'Cancelled', failed: 'Download failed',
+  restored: 'Awaiting resume', ready: 'Ready', empty: 'Transfers on this device appear here', footer: 'Keep this page open to continue transfers.',
+  privacy: 'Files stay on this device. This page does not upload downloads to the platform.', language: 'Language', languageDescription: 'Choose your interface language.',
+  appearanceSettings: 'Appearance', light: 'Light', dark: 'Dark', system: 'System', loading: 'Preparing local storage…',
+  sourceChanged:'The source changed. Select the file again or obtain a fresh seed.',
+  noSources: 'No source is available. Check that the publisher is online and retry.', restoreHelp: 'Select the original seed to verify cached content and resume.',
+  unsupportedSave: 'This browser cannot stream files over 32 MiB to disk. Cached content is kept; download again in a browser with file saving support.',
+  mismatch: 'This seed does not match the transfer. Select the original seed.', tooMany: 'Too many transfers. Finish or remove existing transfers first.',
+  invalid: 'Cannot read this seed. Check the file and try again.', storage: 'Cannot access local storage. Check browser permissions and available space.',
+  network: 'Cannot reach the source. Check your network and the source’s cross-origin settings.', unauthorized: 'Download authorization expired. Obtain a fresh, valid seed.',
+  corrupt: 'Source content does not match the seed. The download was stopped.', range: 'The source does not support the required range requests. Use another source.',
+  space: 'Local storage is full. Free some space and retry.', busy: 'Another page is using this transfer. Close it first.',
+  confirmRemove: 'Delete this transfer and its cached data? Files saved elsewhere will remain.', cancelSave: 'Stop saving',
+  countOne:'transfer', count: 'transfers', resumeNote: 'Select the original seed after refreshing.', dataCleared: 'Cached content was not found. Your browser may have cleared it.',
+  proofUnavailable: 'Verification data is unavailable. Obtain a complete seed and retry.', lastCommitted: 'Previously committed', pendingValidation: 'Awaiting verification', submitted: 'Sent to browser downloads', settings: 'Settings', preferences: 'Choose your appearance and language.', cachedTitle: 'Ready to save', readDetails: 'Transfer details', downloadingOnly: 'Share a local file, or open a seed to download.',
+  networkStatus:'P2P control connection',networkConnecting:'Connecting',networkOnline:'Online',networkOffline:'Offline',networkClosed:'Closed',sourcePolicy:'The SDK tries available peers and handles HTTP fallback and verification. An online control connection does not prove bytes came from P2P.',continueShare:'Share this file',stopSharingFirst:'Stop sharing this cached file before deleting it.',share:'Share file',sharePreview:'Ready to share',startShare:'Start sharing',saveSeed:'Save seed',stopShare:'Stop sharing',removeShare:'Remove task',shareNote:'Keep this page open so others can download from this device. Selecting a file does not upload it to the platform.',sharePublishing:'Waiting for receiver',shareSending:'Sharing',shareClosed:'Sharing stopped',shareFailed:'Sharing failed',shareConnections:'connections',shareSent:'Sent',shareUnsupported:'Sharing is unavailable. Use a WebRTC-capable browser and check the network configuration.',downloadType:'Download',shareType:'Share',all:'All',
+  historyFailure: 'Transfer history could not be saved. Keep this page open and save completed files promptly.'
+};
+export const messages = { 'zh-CN': zh, en };
+export type TextKey = keyof typeof zh;

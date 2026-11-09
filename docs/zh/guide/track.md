@@ -64,3 +64,15 @@ SDK 在发请求前拒绝非法数量。Builder 新增 `BuildError::InvalidPeerQ
 原生 Track 的版本以 `crates/q2q-track-server/Cargo.toml` 为准。准备发版 PR 时更新该包版本和 `Cargo.lock`，版本必须高于已有 `track/v*` tag 与镜像。合入 `main` 后，原生服务镜像发布工作流等待同提交的 Rust CI，检查镜像版本未被使用、验证构建产物的 `--version`，再创建对应 `track/vX.Y.Z` tag 并发布版本镜像和 `latest`。服务的健康接口和 Registry 心跳均读取该 Cargo 版本。
 
 Track 与 Punch 分别检测和发布，仅修改其中一个包的版本不会发布另一个镜像。Workers Track 按[自己的部署流程](./deploy-workers-track)更新。服务器需拉取原生 Track 新镜像并重启；若版本镜像已存在，发布流程会拒绝覆盖。tag 已创建但版本镜像尚未推送时可重跑同一工作流。
+
+## Punch 端点与客户端能力
+
+announce 必须提供 `punch_schemes`，例如原生 `["quic","wss","ws"]`、Web 公网 `["wss"]`。
+返回的 `punch` 使用 `punch_id`、`endpoints`、`public_key`；列表为规范排序的完整身份，
+不代表连接优先级。分配按能力交集及对应容量，WS/WSS 共用 WebSocket 容量；无交集返回
+`no_available_punch`。候选可跨绑定传输返回，由连接方筛选可访问端点；不能按对方当时
+使用 QUIC 还是 WebSocket 错误过滤。列表变更使旧会话失效，重排不改变身份。
+
+这是破坏性 wire/state 变更，不兼容旧单地址请求、凭据和持久记录。Workers Peer/Discovery
+元版本为 2；Redis 保存完整 Punch 身份，不再仅保存节点 ID。旧状态不自动迁移，需在明确
+授权范围内换 namespace 或重置，不能仅清节点行后混读旧会话/索引。

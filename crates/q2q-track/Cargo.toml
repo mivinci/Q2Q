@@ -4,14 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = []
+default = ["q2q-primitives/default"]
 redis = ["dep:redis"]
 
 [dependencies]
 base64 = "0.23.1"
 hmac = "0.13.0"
 parking_lot = "0.12.5"
-q2q-primitives = { version = "0.1.0", path = "../q2q-primitives" }
+q2q-punch = { version = "0.1.0", path = "../q2q-punch", default-features = false }
+q2q-primitives = { version = "0.1.0", path = "../q2q-primitives", default-features = false }
 redis = { version = "1.7.1", features = ["tokio-comp", "connection-manager"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

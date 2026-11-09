@@ -25,9 +25,9 @@ reload_interval = 5
 
 [[punch]]
 punch_id = "punch-1"
-# Client address for this Punch. The SDK uses QUIC over UDP first and derives
-# WSS over TCP from this same host and port when it needs the fallback.
-url = "quic://punch.example.com:4433"
+# Explicit client endpoints. Native SDK prefers QUIC; WebSocket fallback uses
+# the listed WSS URL, including its independent host, port and path.
+endpoints = ["quic://punch.example.com:4433", "wss://signal.example.com/punch"]
 # Filled in during bootstrap: start Punch first, read its public key from the
 # log, paste it here. Leaving it wrong means clients reject the server.
 public_key = "PASTE_PUNCH_PUBLIC_KEY_HERE"

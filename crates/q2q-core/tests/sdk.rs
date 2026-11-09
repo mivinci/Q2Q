@@ -576,3 +576,49 @@ async fn invalid_https_certificates_require_explicit_debug_option() {
   );
   server.abort();
 }
+
+/// Explicitly driven by the browser publication suite; no network by default.
+#[tokio::test]
+#[ignore = "requires local browser publication; run Web SDK @publish tests"]
+async fn native_downloads_browser_publication() {
+  let track = std::env::var("Q2Q_BROWSER_UPLOAD_TRACK").unwrap();
+  assert!(track.starts_with("http://127.0.0.1:"));
+  let seed_path = std::env::var("Q2Q_BROWSER_UPLOAD_SEED").unwrap();
+  let seed = q2q_primitives::seed::Seed::parse(&std::fs::read(seed_path).unwrap()).unwrap();
+  assert!(seed.cdn_list.is_empty() && seed.proof_list.is_empty());
+  let root = tempfile::tempdir().unwrap();
+  let client = client::builder()
+    .track_url(track)
+    .identity_file(root.path().join("identity"))
+    .storage_dir(root.path().join("state"))
+    .build()
+    .await
+    .unwrap();
+  let transfer = client
+    .download_with_track_discovery(&seed, root.path().join("downloaded"))
+    .await
+    .unwrap();
+  let path = tokio::time::timeout(Duration::from_secs(40), transfer.wait())
+    .await
+    .unwrap()
+    .unwrap();
+  let bytes = std::fs::read(path).unwrap();
+  assert_eq!(bytes.len(), 3 * 262144 + 17);
+  for (index, byte) in bytes.iter().enumerate() {
+    assert_eq!(*byte, ((index * 31 + index / 262144) % 251) as u8);
+  }
+  use sha2::{Digest, Sha256};
+  let hash = Sha256::digest(&bytes)
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect::<String>();
+  assert_eq!(
+    hash,
+    "3ba31e034e8297dab9200e0e697a3440048b3d9d113d5460ad0b5cff9c324cd1"
+  );
+  println!(
+    "Browser publication verified by native SDK: {} bytes sha256={hash}",
+    bytes.len()
+  );
+  client.connect().await.unwrap().close().await.unwrap();
+}

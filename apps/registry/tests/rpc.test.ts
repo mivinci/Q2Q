@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { build } from 'esbuild';
 import { exportJWK, generateKeyPair } from 'jose';
 import { Miniflare, Log, LogLevel } from 'miniflare';
+import { schemaQuery, validateSchema } from '../scripts/check-schema.ts';
 
 test('named readonly RPC works without JWT; HTTP and writes remain protected', {timeout: 30000}, async () => {
   const bundle = await build({entryPoints: [fileURLToPath(new URL('../src/worker.ts', import.meta.url))], bundle: true,
@@ -20,7 +21,8 @@ test('named readonly RPC works without JWT; HTTP and writes remain protected', {
       try {await env.REGISTRY.getPunches({limit: 1000});} catch {invalidRejected = true;}
       const changed=await env.MANAGEMENT.setPolicy({requestId:'97b39381-ae68-4552-b30d-461955971648',nodeId:'punch',enabled:false,revision:0,reason:'Test stop discovery',actorId:'operator',actorEmail:'operator@example.test'});
       const filtered=await env.REGISTRY.getPunches({limit:1});
-      return Response.json({page, writeRejected, invalidRejected,changed,filtered});
+      const managed = await env.MANAGEMENT.getPunch({nodeId:'punch'});
+      return Response.json({page, managed, writeRejected, invalidRejected,changed,filtered});
     }};`}}},
     env: {REGISTRY: {type: 'worker', worker: 'rpc-registry', exportName: 'PunchDiscovery'},MANAGEMENT:{type:'worker',worker:'rpc-registry',exportName:'PunchManagement'}}
   }}, {config: {
@@ -35,16 +37,26 @@ test('named readonly RPC works without JWT; HTTP and writes remain protected', {
       const source = (await readFile(new URL(`../migrations/${migration}`, import.meta.url), 'utf8')).replace(/^\s*--.*$/gm, '');
       for (const sql of source.split(';').map(value => value.trim()).filter(Boolean)) await db.prepare(sql).run();
     }
+    const schema = await db.prepare(schemaQuery).all();
+    assert.equal(schema.success, true);
+    assert.doesNotThrow(() => validateSchema(schema.results));
     const now = Math.floor(Date.now() / 1000);
-    await db.prepare(`INSERT INTO nodes VALUES('punch', 'punch', 1, 'quic://punch.invalid:443', ?, 'test', NULL, 1, NULL, ?, ?, ?)`)
-      .bind(btoa(String.fromCharCode(...new Uint8Array(32))), now, now, now + 90).run();
+    const endpoints = Array.from({length:8},(_,i)=>{
+      const prefix=`wss://proxy.invalid/${i}?region=`;
+      return prefix+'x'.repeat(2048-prefix.length);
+    });
+    await db.prepare(`INSERT INTO nodes VALUES('punch', 'punch', 1, NULL, ?, ?, 'test', NULL, 1, NULL, ?, ?, ?)`)
+      .bind(JSON.stringify([...endpoints].reverse()), btoa(String.fromCharCode(...new Uint8Array(32))), now, now, now + 90).run();
     const response = await mf.dispatchFetch('https://caller.invalid/');
     assert.equal(response.status, 200);
-    const result = await response.json() as {page:{version:number; environment:string; nodes:Record<string,unknown>[]}; writeRejected:boolean; invalidRejected:boolean;changed:{ok:boolean};filtered:{nodes:{accepting_new_connections:boolean}[]}};
+    const result = await response.json() as {managed:{endpoints:string[]};page:{version:number; environment:string; nodes:Record<string,unknown>[]}; writeRejected:boolean; invalidRejected:boolean;changed:{ok:boolean};filtered:{nodes:{accepting_new_connections:boolean}[]}};
+    assert.deepEqual(result.page.nodes[0]!.endpoints,endpoints);
+    assert.deepEqual(result.managed.endpoints,endpoints);
+    for(const field of ['url','advertise_url','websocket_url','endpoints_json'])assert.equal(Object.hasOwn(result.managed,field),false);
     assert.equal(result.writeRejected, true); assert.equal(result.invalidRejected, true);
     assert.equal(result.page.version, 1); assert.equal(result.page.environment, 'test');
     assert.equal(result.page.nodes.length, 1);assert.equal(result.changed.ok,true);assert.equal(result.filtered.nodes[0].accepting_new_connections,false);
-    assert.deepEqual(Object.keys(result.page.nodes[0]!).sort(), ['accepting_new_connections', 'expires_at', 'identity_version', 'last_seen', 'metrics', 'public_key', 'punch_id', 'region', 'url']);
+    assert.deepEqual(Object.keys(result.page.nodes[0]!).sort(), ['accepting_new_connections', 'endpoints', 'expires_at', 'identity_version', 'last_seen', 'metrics', 'public_key', 'punch_id', 'region']);
     const registry = await mf.getWorker('rpc-registry');
     assert.equal((await registry.fetch('https://registry.invalid/v1/discovery/punches', {headers: {'X-Internal': 'true'}})).status, 401);
     assert.equal((await registry.fetch('https://registry.invalid/getPunches')).status, 404);

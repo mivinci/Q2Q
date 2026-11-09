@@ -81,7 +81,7 @@ test('HTTP bounds and IP rate limits are shared across Worker entries', {timeout
 });
 
 test('HTTP query preserves budget continuations and handles authoritative DO failures', {timeout: 30000}, async () => {
-  const mf = await runtime('500');
+  const mf = await runtime();
   try {
     const response = await mf.dispatchFetch('https://track.invalid/query-checks');
     const result = await response.json();
@@ -101,4 +101,20 @@ test('hot file pages bound SQL reads and heartbeat avoids redundant cleanup alar
     assert.equal(result.heartbeat_preserves_earlier_expiry_alarm, true);
     assert.equal(result.announce_schedules_expiry_after_ack, true);
   } finally {await mf.dispose();}
+});
+
+test('browser JSON preflight is public, bounded and does not spend peer rate limits',async()=>{
+  const mf=await runtime();
+  try {
+    for(let i=0;i<40;i++) {
+      const response=await mf.dispatchFetch('https://track.invalid/peers/example/files',{method:'OPTIONS',headers:{Origin:'https://q2q.app','Access-Control-Request-Method':'PUT','Access-Control-Request-Headers':'content-type'}});
+      assert.equal(response.status,204);assert.equal(response.headers.get('access-control-allow-origin'),'*');
+      assert.equal(response.headers.get('access-control-allow-headers'),'Content-Type');
+      assert.equal(response.headers.get('access-control-allow-credentials'),null);
+    }
+    for(const headers of [{'Access-Control-Request-Method':'DELETE'},{'Access-Control-Request-Method':'PUT','Access-Control-Request-Headers':'content-type, authorization'}]) {
+      const response=await mf.dispatchFetch('https://track.invalid/peers/example/files',{method:'OPTIONS',headers});assert.equal(response.status,403);
+    }
+    const unknown=await mf.dispatchFetch('https://track.invalid/files/not-a-hash/peers');assert.equal(unknown.status,400);
+  }finally{await mf.dispose();}
 });

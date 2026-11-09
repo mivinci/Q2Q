@@ -38,8 +38,8 @@ async function setup(binding: 'correct' | 'wrong' | 'missing' = 'correct', envir
   async function seed(count: number) {
     const now = Math.floor(Date.now() / 1000);
     for (let start = 0; start < count; start += 50) await db.batch(Array.from({length: Math.min(50, count - start)}, (_, index) => db.prepare(`INSERT OR REPLACE INTO nodes
-      (node_id, service_type, identity_version, advertise_url, public_key, version, region, accepting_new_connections, metrics_json, created_at, last_seen, expires_at)
-      VALUES(?, 'punch', 1, 'quic://punch.invalid:443', ?, 'test', NULL, 1, NULL, ?, ?, ?)`)
+      (node_id, service_type, identity_version, endpoints_json, public_key, version, region, accepting_new_connections, metrics_json, created_at, last_seen, expires_at)
+      VALUES(?, 'punch', 1, '["quic://punch.invalid:443"]', ?, 'test', NULL, 1, NULL, ?, ?, ?)`)
       .bind(`p${String(start + index).padStart(4, '0')}`, keyText, now, now, now + 90)));
   }
   const snapshot = () => mf.dispatchFetch('https://track.invalid/discovery-test');
@@ -47,7 +47,7 @@ async function setup(binding: 'correct' | 'wrong' | 'missing' = 'correct', envir
   const mode = (name: string) => registry.fetch(`https://registry.invalid/test-mode?mode=${name}`);
   return {mf, db, registry, seed, snapshot, operation, mode};
 }
-type Snapshot = {nodes:{punch_id:string; url:string; public_key:string; identity_version:number; accepting_new_connections:boolean}[]; expires_at:number};
+type Snapshot = {nodes:{punch_id:string; endpoints:string[]; public_key:string; identity_version:number; accepting_new_connections:boolean}[]; expires_at:number};
 
 test('real readonly Registry RPC needs no JWT, merges cold refreshes and bounds pagination', {timeout: 30000}, async () => {
   const fixture = await setup();
@@ -103,12 +103,12 @@ test('identity watermarks survive retirement and eviction; managed pauses remain
   const {mf, db, seed, snapshot, operation} = await setup();
   try {
     await seed(1); await snapshot();
-    await db.prepare("UPDATE nodes SET identity_version=2, advertise_url='quic://moved.invalid:443' WHERE node_id='p0000'").run();
+    await db.prepare("UPDATE nodes SET identity_version=2, endpoints_json='[\"quic://moved.invalid:443\"]' WHERE node_id='p0000'").run();
     await db.prepare("INSERT INTO punch_policy VALUES('p0000',0,1,0)").run();
     await operation('refresh');
     const moved = await (await snapshot()).json() as Snapshot;
-    assert.equal(moved.nodes[0]!.url, 'quic://moved.invalid:443');
-    assert.equal(acceptsNewPeer(moved.nodes[0]!), false);
+    assert.equal(moved.nodes[0]!.endpoints[0], 'quic://moved.invalid:443');
+    assert.equal(acceptsNewPeer(moved.nodes[0]!,['quic']), false);
     const retiredAt = Math.floor(Date.now() / 1000);
     await db.prepare('UPDATE nodes SET created_at=?, last_seen=?, expires_at=?').bind(retiredAt - 200, retiredAt - 100, retiredAt - 10).run(); await operation('refresh');
     assert.equal((await (await snapshot()).json() as Snapshot).nodes.length, 0);
@@ -126,9 +126,50 @@ test('identity watermarks survive retirement and eviction; managed pauses remain
   } finally {await mf.dispose();}
 });
 
+test('Registry RPC canonicalization preserves same-version identities and rejects endpoint deletion rollback', {timeout:30000}, async () => {
+  const {mf,db,seed,snapshot,operation}=await setup();
+  try {
+    await seed(1);
+    const canonical=['quic://punch.invalid:443','wss://proxy.invalid/signal?region=hk'];
+    await db.prepare('UPDATE nodes SET identity_version=2,endpoints_json=?').bind(JSON.stringify(canonical)).run();
+    const first=await (await snapshot()).json() as Snapshot;
+    await db.prepare('UPDATE nodes SET endpoints_json=?').bind(JSON.stringify(['WSS://PROXY.invalid:443/signal?region=hk','QUIC://PUNCH.invalid:0443/'])).run();
+    await operation('refresh');
+    assert.deepEqual((await (await snapshot()).json() as Snapshot).nodes,first.nodes);
+    await db.prepare('UPDATE nodes SET endpoints_json=?').bind(JSON.stringify(canonical.slice(0,1))).run();
+    await operation('refresh');
+    assert.deepEqual((await (await snapshot()).json() as Snapshot).nodes,first.nodes);
+    await db.prepare('UPDATE nodes SET identity_version=3').run();await operation('refresh');
+    const removed=await (await snapshot()).json() as Snapshot;
+    assert.deepEqual(removed.nodes[0]!.endpoints,canonical.slice(0,1));
+    await mf.unsafeEvictDurableObject('discovery-track','TestDirectory',{name:'punch-discovery:v1'});
+    await db.prepare('UPDATE nodes SET identity_version=2,endpoints_json=?').bind(JSON.stringify(canonical)).run();await operation('refresh');
+    assert.deepEqual(await (await snapshot()).json(),removed);
+  } finally {await mf.dispose();}
+});
+
 test('missing/wrong bindings and environment mismatches fail closed', {timeout: 30000}, async () => {
   for (const [binding, environment] of [['missing', 'test'], ['wrong', 'test'], ['correct', 'staging']] as const) {
     const {mf, seed, snapshot} = await setup(binding, environment);
     try {await seed(1); assert.equal((await snapshot()).status, 503);} finally {await mf.dispose();}
   }
+});
+
+
+test('endpoint identity ledger rejects same-version changes and rollback after eviction', {timeout:30000}, async () => {
+  const {mf,db,seed,snapshot,operation}=await setup();
+  try {
+    await seed(1);await snapshot();
+    const change=async(version:number,endpoints:string[])=>{await db.prepare('UPDATE nodes SET identity_version=?,endpoints_json=?').bind(version,JSON.stringify(endpoints)).run();await operation('refresh');};
+    await change(2,['quic://punch.invalid:443','wss://proxy.invalid/punch']);
+    const first=await (await snapshot()).json() as Snapshot;
+    assert.equal(first.nodes[0]!.endpoints.at(-1),'wss://proxy.invalid/punch');
+    await change(2,['quic://punch.invalid:443','wss://changed.invalid/punch']);
+    assert.deepEqual(await (await snapshot()).json(),first);
+    await change(3,['quic://punch.invalid:443','wss://changed.invalid/punch']);
+    const moved=await (await snapshot()).json() as Snapshot;
+    assert.equal(moved.nodes[0]!.endpoints.at(-1),'wss://changed.invalid/punch');
+    await mf.unsafeEvictDurableObject('discovery-track','TestDirectory',{name:'punch-discovery:v1'});
+    await change(2,['quic://punch.invalid:443']);assert.deepEqual(await (await snapshot()).json(),moved);
+  } finally {await mf.dispose();}
 });

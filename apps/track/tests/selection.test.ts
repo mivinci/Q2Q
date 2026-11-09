@@ -7,7 +7,7 @@ import fixture from '../../../tests/fixtures/track/v1.json' with {type: 'json'};
 
 const hash = 'sha256:' + '01'.repeat(32);
 const ids = (await Promise.all(Array.from({length: 100}, (_, i) => peerId(new Uint8Array(32).fill(i))))).sort();
-const punch = {punch_id: 'punch', url: 'quic://punch.invalid:443', public_key: 'key'};
+const punch = {punch_id: 'punch', endpoints: ['quic://punch.invalid:443'], public_key: 'key'};
 const records: Candidate[] = ids.slice(1).map(peer_id => ({peer_id, info_hash: hash, revision: '1', complete: true, expires_at: 9999999999, public_key: 'peer-key', punch}));
 const query = {hash, requester: ids[0]!, start: ids[45]!, limit: 10, deadline: Infinity, punches: new Map([['punch', punch]])};
 function source(rows = records) {
@@ -57,7 +57,7 @@ test('stale revisions and changed Punch identities are excluded', async () => {
     return row && {...row, revision: '2'};
   }});
   assert.deepEqual(result, {peers: [], next_cursor: null});
-  const moved = await select({...query, punches: new Map([['punch', {...punch, url: 'quic://new.invalid:443'}]])}, backing);
+  const moved = await select({...query, punches: new Map([['punch', {...punch, endpoints: ['quic://new.invalid:443']}]])}, backing);
   assert.equal(moved.peers.length, 0);
 });
 test('expired deadline issues no RPC; a failed RPC propagates', async () => {
@@ -95,4 +95,27 @@ test('RPC budget stops before another authoritative read and preserves progress'
   assert.deepEqual(first.peers.map(peer => peer.peer_id), [ids[1]]);
   const next = await select({...query, cursor: first.next_cursor!}, backing);
   assert.equal(next.peers[0]!.peer_id, ids[2]);
+});
+
+
+test('a rotated or removed WSS address hides stale candidates', async () => {
+  const row = {...records[0]!, punch:{...punch, endpoints:[...punch.endpoints,'wss://old.invalid/punch']}};
+  const backing = source([row]);
+  for (const current of [punch, {...punch,endpoints:[...punch.endpoints,'wss://new.invalid/punch']}]) {
+    const result = await select({...query,start:ids[0]!,punches:new Map([['punch',current]])},backing);
+    assert.equal(result.peers.length,0);
+  }
+  const valid = await select({...query,start:ids[0]!,punches:new Map([['punch',row.punch]])},backing);
+  assert.equal(valid.peers[0]?.punch.endpoints.at(-1),'wss://old.invalid/punch');
+});
+
+test('requested transport uses its own capacity and keeps legacy assignment semantics',async()=>{
+  const {acceptsNewPeer}=await import('@q2q/punch-discovery');
+  const node={endpoints:['quic://punch.invalid:4433','wss://proxy.invalid/ws'],accepting_new_connections:true,metrics:{quic_connections:0,quic_connection_capacity:10,
+    websocket_connections:10,websocket_connection_capacity:10,live_bindings:null,signalling_sessions:null,signalling_session_capacity:null}};
+  assert.equal(acceptsNewPeer(node,['wss']),false);
+  assert.equal(acceptsNewPeer(node,['quic']),true);
+  assert.equal(acceptsNewPeer(node,['quic','wss']),true);
+  assert.equal(acceptsNewPeer({...node,accepting_new_connections:false},['quic']),false);
+  assert.equal(acceptsNewPeer({...node,metrics:null},['wss']),true);
 });

@@ -65,8 +65,8 @@ test('public SDK control-plane and verified P2P through Workers Track, Registry 
     const public_key = initialized.stdout.trim();
     assert.equal(Buffer.from(public_key, 'base64').length, 32);
     punch = await start('q2q-punch-server', punchConfig, 'listeners ready');
-    const node = {punch_id: 'sdk-punch', url: `quic://127.0.0.1:${punchPort}`, public_key};
-    await writeFile(trackConfig, `bind = "127.0.0.1:${trackPort}"\nturn_secret = "test-secret"\n[[punch]]\npunch_id = "sdk-punch"\nurl = "${node.url}"\npublic_key = "${public_key}"\n`);
+    const node = {punch_id: 'sdk-punch', endpoints: [`quic://127.0.0.1:${punchPort}`], public_key};
+    await writeFile(trackConfig, `bind = "127.0.0.1:${trackPort}"\nturn_secret = "test-secret"\n[[punch]]\npunch_id = "sdk-punch"\nendpoints = ${JSON.stringify(node.endpoints)}\npublic_key = "${public_key}"\n`);
     track = await start('q2q-track-server', trackConfig, 'listening');
     await sdk(`http://127.0.0.1:${trackPort}`);
     await stop(track); track = undefined;

@@ -29,31 +29,38 @@ fn punch_server(idle: Option<Duration>) -> (quinn::Endpoint, PunchWire) {
   let server = quinn::Endpoint::server(config, "127.0.0.1:0".parse().unwrap()).unwrap();
   let assignment = PunchWire {
     punch_id: "test-punch".into(),
-    url: format!("quic://{}", server.local_addr().unwrap()),
+    endpoints: vec![format!("quic://{}", server.local_addr().unwrap())]
+      .try_into()
+      .unwrap(),
     public_key: B64.encode(key.public_key_raw()),
   };
   (server, assignment)
 }
 
 #[test]
-fn websocket_endpoint_uses_the_quic_authority_and_root_path() {
+fn websocket_endpoint_preserves_independent_authority_path_and_query() {
   let assignment = PunchWire {
     punch_id: "test-punch".into(),
-    url: "quic://user:secret@[2001:db8::1]:4433/old-path?ignored=yes#fragment".into(),
+    endpoints: vec![
+      "quic://punch.invalid:4433".into(),
+      "wss://proxy.invalid:8443/signal/ws?region=hk".into(),
+    ]
+    .try_into()
+    .unwrap(),
     public_key: B64.encode([0; 32]),
   };
 
   assert_eq!(
     websocket_url(&assignment).unwrap(),
-    "wss://[2001:db8::1]:4433/"
+    "wss://proxy.invalid:8443/signal/ws?region=hk"
   );
 }
 
 #[test]
-fn websocket_endpoint_rejects_non_quic_punch_addresses() {
+fn websocket_endpoint_never_guesses_from_quic() {
   let assignment = PunchWire {
     punch_id: "test-punch".into(),
-    url: "https://punch.example:4433".into(),
+    endpoints: vec!["quic://punch.example:4433".into()].try_into().unwrap(),
     public_key: B64.encode([0; 32]),
   };
 
@@ -196,79 +203,389 @@ fn fake_transport(kind: PunchTransportKind) -> Arc<dyn PunchTransport> {
   Arc::new(FakePunchTransport(kind))
 }
 
+fn factory_assignment() -> PunchWire {
+  PunchWire {
+    punch_id: "test".into(),
+    public_key: B64.encode([0; 32]),
+    endpoints: vec![
+      "wss://proxy.invalid:8443/signal?region=hk".into(),
+      "quic://punch.invalid:4433".into(),
+    ]
+    .try_into()
+    .unwrap(),
+  }
+}
 #[tokio::test]
 async fn transport_factory_prefers_quic_and_does_not_start_websocket() {
-  let websocket_attempts = Arc::new(AtomicUsize::new(0));
-  let attempts = websocket_attempts.clone();
+  let calls = AtomicUsize::new(0);
   let transport = connect_transport_with(
-    || async { Ok(fake_transport(PunchTransportKind::Quic)) },
-    || async move {
-      attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-      Ok(fake_transport(PunchTransportKind::WebSocket))
+    &factory_assignment(),
+    |_| async { Ok(fake_transport(PunchTransportKind::Quic)) },
+    |_| {
+      calls.fetch_add(1, Ordering::Relaxed);
+      async { Ok(fake_transport(PunchTransportKind::WebSocket)) }
     },
   )
   .await
   .unwrap();
-
   assert_eq!(transport.kind(), PunchTransportKind::Quic);
-  assert_eq!(
-    websocket_attempts.load(std::sync::atomic::Ordering::Relaxed),
-    0
-  );
+  assert_eq!(calls.load(Ordering::Relaxed), 0);
 }
-
 #[tokio::test]
-async fn transport_factory_falls_back_after_a_quic_transport_error() {
-  let websocket_attempts = Arc::new(AtomicUsize::new(0));
-  let attempts = websocket_attempts.clone();
+async fn transport_factory_falls_back_only_to_the_explicit_endpoint() {
+  let calls = AtomicUsize::new(0);
   let transport = connect_transport_with(
-    || async { Err(ControlError::Transport("UDP unavailable".into())) },
-    || async move {
-      attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-      Ok(fake_transport(PunchTransportKind::WebSocket))
+    &factory_assignment(),
+    |_| async { Err(ControlError::Transport("UDP unavailable".into())) },
+    |one| {
+      calls.fetch_add(1, Ordering::Relaxed);
+      assert_eq!(
+        one.endpoints.as_slice(),
+        ["wss://proxy.invalid:8443/signal?region=hk"]
+      );
+      async { Ok(fake_transport(PunchTransportKind::WebSocket)) }
     },
   )
   .await
   .unwrap();
-
   assert_eq!(transport.kind(), PunchTransportKind::WebSocket);
-  assert_eq!(
-    websocket_attempts.load(std::sync::atomic::Ordering::Relaxed),
-    1
-  );
+  assert_eq!(calls.load(Ordering::Relaxed), 1);
 }
-
 #[tokio::test]
 async fn transport_factory_does_not_hide_auth_or_protocol_errors_with_fallback() {
-  let errors = [
+  for error in [
     ControlError::Authentication("wrong pinned key".into()),
-    ControlError::Protocol("malformed Punch response".into()),
+    ControlError::Protocol("malformed response".into()),
     ControlError::Remote {
       service: "Punch",
       status: 0,
       code: Some("unauthorized".into()),
       detail: None,
     },
-  ];
+  ] {
+    let calls = AtomicUsize::new(0);
+    let mut error = Some(error);
+    assert!(
+      connect_transport_with(
+        &factory_assignment(),
+        |_| {
+          let error = error.take().unwrap();
+          async move { Err(error) }
+        },
+        |_| {
+          calls.fetch_add(1, Ordering::Relaxed);
+          async { Ok(fake_transport(PunchTransportKind::WebSocket)) }
+        },
+      )
+      .await
+      .is_err()
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+  }
+}
+#[tokio::test]
+async fn endpoint_factory_orders_all_quic_then_wss_then_loopback_ws() {
+  let assignment = PunchWire {
+    punch_id: "test".into(),
+    public_key: B64.encode([0; 32]),
+    endpoints: vec![
+      "ws://127.0.0.1:8080/ws".into(),
+      "wss://proxy.invalid/ws".into(),
+      "quic://b.invalid:4433".into(),
+      "quic://a.invalid:4433".into(),
+    ]
+    .try_into()
+    .unwrap(),
+  };
+  let seen = std::sync::Mutex::new(Vec::new());
+  let transport = connect_transport_with(
+    &assignment,
+    |one| {
+      seen
+        .lock()
+        .unwrap()
+        .push(one.endpoints.as_slice()[0].clone());
+      async { Err(ControlError::Transport("UDP unavailable".into())) }
+    },
+    |one| {
+      let url = one.endpoints.as_slice()[0].clone();
+      seen.lock().unwrap().push(url.clone());
+      async move {
+        if url.starts_with("ws:") {
+          Ok(fake_transport(PunchTransportKind::WebSocket))
+        } else {
+          Err(ControlError::Transport("WSS unavailable".into()))
+        }
+      }
+    },
+  )
+  .await
+  .unwrap();
+  assert_eq!(transport.kind(), PunchTransportKind::WebSocket);
+  assert_eq!(
+    *seen.lock().unwrap(),
+    vec![
+      "quic://a.invalid:4433",
+      "quic://b.invalid:4433",
+      "wss://proxy.invalid/ws",
+      "ws://127.0.0.1:8080/ws"
+    ]
+  );
+}
 
-  for error in errors {
-    let websocket_attempts = Arc::new(AtomicUsize::new(0));
-    let attempts = websocket_attempts.clone();
-    let result = connect_transport_with(
-      || async move { Err(error) },
-      || async move {
-        attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+#[tokio::test(start_paused = true)]
+async fn endpoint_fallback_has_one_total_budget() {
+  let calls = AtomicUsize::new(0);
+  let result = connect_transport_with(
+    &factory_assignment(),
+    |_| async {
+      tokio::time::sleep(Duration::from_secs(15)).await;
+      Err(ControlError::Transport("UDP unavailable".into()))
+    },
+    |_| {
+      calls.fetch_add(1, Ordering::Relaxed);
+      async {
+        tokio::time::sleep(Duration::from_secs(15)).await;
         Ok(fake_transport(PunchTransportKind::WebSocket))
+      }
+    },
+  )
+  .await;
+  assert!(result.is_err());
+  assert_eq!(calls.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+#[allow(clippy::result_large_err)] // tungstenite's handshake callback fixes this error type.
+async fn websocket_only_endpoint_uses_its_explicit_path_and_query() {
+  let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let address = listener.local_addr().unwrap();
+  let server = tokio::spawn(async move {
+    let (socket, _) = listener.accept().await.unwrap();
+    let mut socket = tokio_tungstenite::accept_hdr_async(
+      socket,
+      |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+        assert_eq!(request.uri().to_string(), "/signal/punch?region=hk");
+        Ok(response)
       },
     )
-    .await;
+    .await
+    .unwrap();
+    while let Some(Ok(message)) = socket.next().await {
+      if matches!(message, Message::Close(_)) {
+        break;
+      }
+    }
+  });
+  let assignment = PunchWire {
+    punch_id: "test".into(),
+    public_key: B64.encode([0; 32]),
+    endpoints: vec![format!("ws://{address}/signal/punch?region=hk")]
+      .try_into()
+      .unwrap(),
+  };
+  let transport = connect_transport(&assignment).await.unwrap();
+  assert_eq!(transport.kind(), PunchTransportKind::WebSocket);
+  transport.close().await;
+  server.await.unwrap();
+}
 
-    assert!(result.is_err());
-    assert_eq!(
-      websocket_attempts.load(std::sync::atomic::Ordering::Relaxed),
-      0
-    );
+#[tokio::test]
+async fn wss_rejects_self_signed_certificate_even_if_its_key_matches_track() {
+  let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+  let cert = rcgen::CertificateParams::new(vec!["localhost".into()])
+    .unwrap()
+    .self_signed(&key)
+    .unwrap();
+  let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+    rustls::crypto::aws_lc_rs::default_provider(),
+  ))
+  .with_safe_default_protocol_versions()
+  .unwrap()
+  .with_no_client_auth()
+  .with_single_cert(
+    vec![cert.der().clone()],
+    rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+  )
+  .unwrap();
+  let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let address = listener.local_addr().unwrap();
+  let server = tokio::spawn(async move {
+    let (socket, _) = listener.accept().await.unwrap();
+    let _ = tokio_rustls::TlsAcceptor::from(Arc::new(config))
+      .accept(socket)
+      .await;
+  });
+  let assignment = PunchWire {
+    punch_id: "test".into(),
+    public_key: B64.encode(key.public_key_raw()),
+    endpoints: vec![format!("wss://localhost:{}/signal", address.port())]
+      .try_into()
+      .unwrap(),
+  };
+  assert!(matches!(
+    connect_transport(&assignment).await,
+    Err(ControlError::Authentication(_))
+  ));
+  server.await.unwrap();
+}
+
+#[tokio::test]
+async fn proxy_authorization_rejection_does_not_try_another_endpoint() {
+  use tokio::io::{AsyncReadExt, AsyncWriteExt};
+  for status in [401, 403] {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+      let (mut socket, _) = listener.accept().await.unwrap();
+      let mut input = Vec::new();
+      let mut bytes = [0; 1024];
+      while !input.ends_with(b"\r\n\r\n") {
+        let n = socket.read(&mut bytes).await.unwrap();
+        assert!(n > 0);
+        input.extend_from_slice(&bytes[..n]);
+        assert!(input.len() < 8192);
+      }
+      socket
+        .write_all(
+          format!("HTTP/1.1 {status} Rejected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+      drop(socket);
+      assert!(
+        tokio::time::timeout(Duration::from_millis(150), listener.accept())
+          .await
+          .is_err(),
+        "authorization rejection must not fall back"
+      );
+    });
+    let assignment = PunchWire {
+      punch_id: "test".into(),
+      public_key: B64.encode([0; 32]),
+      endpoints: vec![format!("ws://{address}/a"), format!("ws://{address}/b")]
+        .try_into()
+        .unwrap(),
+    };
+    assert!(matches!(
+      connect_transport(&assignment).await,
+      Err(ControlError::Authentication(_))
+    ));
+    server.await.unwrap();
   }
+}
+
+#[tokio::test]
+async fn cancelling_websocket_handshake_closes_the_socket() {
+  use tokio::io::AsyncReadExt;
+  let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let address = listener.local_addr().unwrap();
+  let assignment = PunchWire {
+    punch_id: "test".into(),
+    public_key: B64.encode([0; 32]),
+    endpoints: vec![format!("ws://{address}/hanging")].try_into().unwrap(),
+  };
+  let task = tokio::spawn(async move { connect_transport(&assignment).await });
+  let (mut socket, _) = listener.accept().await.unwrap();
+  let mut input = [0; 4096];
+  assert!(socket.read(&mut input).await.unwrap() > 0);
+  task.abort();
+  assert!(task.await.err().unwrap().is_cancelled());
+  assert_eq!(
+    tokio::time::timeout(Duration::from_secs(1), socket.read(&mut input))
+      .await
+      .unwrap()
+      .unwrap(),
+    0
+  );
+}
+
+#[tokio::test]
+async fn wrong_quic_identity_does_not_attempt_the_websocket_endpoint() {
+  let (server, mut assignment) = punch_server(None);
+  let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let mut endpoints = assignment.endpoints.as_slice().to_vec();
+  endpoints.push(format!("ws://{}/fallback", listener.local_addr().unwrap()));
+  assignment.endpoints = endpoints.try_into().unwrap();
+  assignment.public_key = B64.encode([42; 32]);
+  let quic = tokio::spawn(async move {
+    let _ = server.accept().await.unwrap().await;
+  });
+  assert!(matches!(
+    connect_transport(&assignment).await,
+    Err(ControlError::Authentication(_))
+  ));
+  assert!(
+    tokio::time::timeout(Duration::from_millis(100), listener.accept())
+      .await
+      .is_err()
+  );
+  quic.await.unwrap();
+}
+
+#[tokio::test]
+async fn quic_join_loss_falls_back_with_a_fresh_verified_ticket() {
+  let (server, mut assignment) = punch_server(None);
+  let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+  let mut endpoints = assignment.endpoints.as_slice().to_vec();
+  endpoints.push(format!(
+    "ws://{}/signal?region=local",
+    listener.local_addr().unwrap()
+  ));
+  assignment.endpoints = endpoints.try_into().unwrap();
+  let quic = tokio::spawn(async move {
+    let connection = server.accept().await.unwrap().await.unwrap();
+    let (_send, mut recv) = connection.accept_bi().await.unwrap();
+    let request: Request =
+      serde_json::from_slice(&recv.read_to_end(MAX_RESPONSE_BYTES).await.unwrap()).unwrap();
+    let join: JoinRequest = serde_json::from_value(request.params).unwrap();
+    q2q_punch::message::verify_join(&join, "test-punch", q2q_punch::binding::now()).unwrap();
+    connection.close(0u32.into(), b"lost response");
+    join.join_token
+  });
+  let websocket = tokio::spawn(async move {
+    let (socket, _) = listener.accept().await.unwrap();
+    let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+    let Message::Binary(bytes) = socket.next().await.unwrap().unwrap() else {
+      panic!("binary request required")
+    };
+    let PunchFrame::Request(request) = serde_json::from_slice(&bytes).unwrap() else {
+      panic!("join required")
+    };
+    let join: JoinRequest = serde_json::from_value(request.params).unwrap();
+    q2q_punch::message::verify_join(&join, "test-punch", q2q_punch::binding::now()).unwrap();
+    let response = PunchFrame::Response(Response::ok(
+      &request.id,
+      &JoinResponse {
+        binding_id: "new-binding".into(),
+        binding_key: B64.encode([8; 32]),
+        expires_at: q2q_punch::binding::now() + 300,
+      },
+    ));
+    socket
+      .send(Message::Binary(
+        serde_json::to_vec(&response).unwrap().into(),
+      ))
+      .await
+      .unwrap();
+    while let Some(Ok(message)) = socket.next().await {
+      if matches!(message, Message::Close(_)) {
+        break;
+      }
+    }
+    join.join_token
+  });
+  let directory = tempfile::tempdir().unwrap();
+  let identity = Identity::load_or_create(&directory.path().join("identity")).unwrap();
+  let (transport, joined) = connect_and_join(&identity, &assignment).await.unwrap();
+  assert_eq!(transport.kind(), PunchTransportKind::WebSocket);
+  assert_eq!(joined.binding_id, "new-binding");
+  transport.close().await;
+  let first: serde_json::Value = serde_json::from_str(&quic.await.unwrap()).unwrap();
+  let second: serde_json::Value = serde_json::from_str(&websocket.await.unwrap()).unwrap();
+  assert_ne!(first["cid"], second["cid"]);
+  assert_eq!(first["iss"], second["iss"]);
 }
 
 #[tokio::test]

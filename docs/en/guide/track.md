@@ -176,3 +176,18 @@ unverified; automatic deployment has not been enabled.
 The native Track version comes from `crates/q2q-track-server/Cargo.toml`. A release PR updates that package version and `Cargo.lock`; the version must be newer than existing `track/v*` tags and images. After it is merged into `main`, the native service image workflow waits for Rust CI on the same commit, checks that the image tag is unused, verifies the built binary's `--version`, creates the corresponding `track/vX.Y.Z` Git tag and publishes the versioned image and `latest`. The service health endpoint and Registry heartbeat both report the Cargo version.
 
 Track and Punch versions are detected and published independently. Workers Track follows its [own deployment process](./deploy-workers-track). Servers must pull the new native Track image and restart; the workflow refuses to overwrite an existing version image. If the Git tag was created but the versioned image was not pushed, the same workflow run can be retried.
+
+## Punch endpoints and client capabilities
+
+Announce requires `punch_schemes`, such as `["quic","wss","ws"]` for native clients
+or `["wss"]` for public Web clients. Its `punch` object contains `punch_id`,
+`endpoints` and `public_key`. Canonical list order is identity, not preference.
+Assignments require a supported endpoint with capacity; WS/WSS share one capacity
+budget. No intersection returns `no_available_punch`. Candidates are not filtered
+by the transport used for their standing binding: callers select a reachable
+endpoint. Endpoint changes invalidate old sessions; reordering does not.
+
+This breaks old single-address wire/state formats. Workers Peer/Discovery metadata
+is version 2; Redis stores the complete Punch identity instead of just a node ID.
+Old data is not migrated automatically. Coordinate an explicitly authorized
+namespace/reset boundary covering sessions and indexes, not only Registry rows.

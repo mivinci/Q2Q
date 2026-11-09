@@ -16,7 +16,9 @@ pub struct ErrorBody {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AnnounceRequest {
+  pub punch_schemes: q2q_punch::endpoints::PunchSchemes,
   pub token: TicketBody,
   #[serde(default)]
   pub add: Vec<String>,
@@ -36,12 +38,7 @@ pub struct AnnounceResponse {
   pub expires_at: UnixSeconds,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PunchWire {
-  pub punch_id: String,
-  pub url: String,
-  pub public_key: String,
-}
+pub use q2q_punch::endpoints::PunchAssignment as PunchWire;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnWire {

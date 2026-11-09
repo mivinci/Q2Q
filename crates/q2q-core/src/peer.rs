@@ -675,3 +675,7 @@ pub(crate) fn log_candidate(direction: &str, candidate: &RTCIceCandidateInit) {
     "ICE candidate"
   );
 }
+
+#[cfg(test)]
+#[path = "../tests/browser_rtc.rs"]
+mod browser_rtc;

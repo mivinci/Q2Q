@@ -2,10 +2,16 @@ import { Hono } from 'hono';
 import { api } from './http.ts';
 import type { Bindings } from './state.ts';
 
-export { RateLimiter } from './rate-limit.ts';
-export { PeerState } from './peer-state.ts';
-export { FileIndex } from './file-index.ts';
-export { DiscoveryState } from './directory.ts';
+import { RateLimiter as ActiveRateLimiter } from './rate-limit.ts';
+import { PeerState as ActivePeerState } from './peer-state.ts';
+import { FileIndex as ActiveFileIndex } from './file-index.ts';
+import { DiscoveryState as ActiveDiscoveryState } from './directory.ts';
+
+// A coordinated generation boundary for the breaking endpoint-list protocol.
+export class PeerStateEndpoints extends ActivePeerState {}
+export class FileIndexEndpoints extends ActiveFileIndex {}
+export class DiscoveryStateEndpoints extends ActiveDiscoveryState {}
+export class RateLimiterEndpoints extends ActiveRateLimiter {}
 
 const app = new Hono<{ Bindings: Bindings }>();
 app.get('/health', context => {

@@ -6,6 +6,12 @@ and no-CDN full-file P2P smoke tests passed using two local peers and live nativ
 Cloud CPU, DO GB-s, cross-NAT behavior and sustained admission still need validation.
 Local throughput is not a production capacity promise.
 
+> These are historical deployment results, not evidence that the new `endpoints`
+> protocol is live. The list protocol breaks old credentials, Registry schemas and
+> Track sessions. The [endpoint-list checklist](#endpoint-list-cutover-checklist)
+> below takes precedence over the older native/Workers route-switch instructions.
+> Reverting Worker code alone cannot restore old persistent state.
+
 ## Deployment choices
 
 Native Rust Track retains its state backend and Registry HTTP/JWT integration; see
@@ -52,7 +58,9 @@ npx wrangler deploy --config apps/track/wrangler.staging.jsonc
 npx wrangler secret put TURN_SECRET --config apps/track/wrangler.staging.jsonc
 ```
 
-Enter secret values interactively. `node apps/track/scripts/check-config.mjs` checks the
+Enter secret values interactively. Apply these steps only to an approved fresh staging
+database; they are not an upgrade procedure for an existing database.
+`node apps/track/scripts/check-config.mjs` checks the
 default pair; verify the same service/entrypoint/environment fields in staging copies.
 Runtime validation also rejects environment mismatches.
 
@@ -109,9 +117,10 @@ before publishing the RPC consumer. For manual main deployments, confirm Registr
 compatibility first. The custom domain was explicitly authorized;
 public DNS had been NXDOMAIN, so no existing native Track DNS record was replaced.
 
-For rollback, disable the Track workflow in GitHub Actions and restore the original native Track route.
-Verify Registry JWT/Punch discovery, restart affected clients, reannounce holdings and
-check a complete download hash. Rollback does not preserve sessions seamlessly either.
+The earlier native/Workers switch required restoring the native route, validating
+Registry JWT/Punch discovery, restarting clients, reannouncing holdings and checking
+a complete-file hash. That procedure alone is not sufficient for the breaking
+endpoint-list protocol change below; neither direction preserves sessions seamlessly.
 
 Keep DO namespaces and watermarks for investigation. Do not delete watermarks or import
 native sessions. Reverting code does not undo data-format migrations; future schema
@@ -121,3 +130,93 @@ Manage `TURN_URL` as a Cloudflare variable and `TURN_SECRET` as a Cloudflare sec
 CI deploys with `--keep-vars` to preserve dashboard variables; Worker secrets are retained
 automatically. GitHub TURN copies are not consumed, and PR checks receive no deployment
 credentials.
+
+## Endpoint-list cutover checklist
+
+### Inventory and authorization
+
+These are repository identifiers, not freshly inspected production state. Before any
+execution, read-only verify the account, actual bindings, Worker versions, namespace IDs,
+routes and backups, then obtain approval for the exact resource set.
+
+| Component | Repository target | Required boundary |
+| --- | --- | --- |
+| Registry Worker/D1 | `q2q-registry`; `DB` → `q2q-registry`, exact database ID requires operator verification; `registry.q2q.app` | Preserve the old Worker/database. Explicitly identify any new database or scoped rebuild. |
+| Registry state | nodes, report_limits, punch_policy, punch_operation, migration bookkeeping | Policy/audits are not disposable discovery data. Back up and retain/reapply approved policy before registration; new nodes default to discoverable. |
+| Track | `q2q-track`; `track.q2q.app` | Cover all four DO bindings: PEERS/PeerState, FILES/FileIndex, DISCOVERY/DiscoveryState, RATE_LIMIT/RateLimiter. |
+| Track state | Sessions/holdings/outbox, file members/watermarks, discovery cache/identity ledger/retries, rate buckets | Clearing Registry or Discovery alone is not a reset. One renamed object does not isolate the graph. Storage version 2 is not Wrangler migration tag v2. |
+| Bindings | Track REGISTRY → q2q-registry#PunchDiscovery, environment production | Admin PunchManagement and Platform Registry HTTP/token configuration must target the same stack. |
+| Native Track, if used | Operator's actual instances/static config/Redis prefix | New records are incompatible with old ID-only records. Use a new prefix or approved scoped cleanup, never FLUSHDB/FLUSHALL. |
+| Punch/proxy/clients | Actual node IDs, identities, tokens, proxy domains and SDK versions need inventory | Preserve Punch keys; reissue list credentials and update both SDKs. Stop old reporters; proxies do not receive identity keys. |
+
+Do not delete Platform/Admin business D1, uploads, R2/S3 content, plans/billing, OAuth
+sessions or rotate TURN secrets as part of this reset. Never publish secret values.
+
+**Prefer new Registry D1 + independent new Track Worker/DO namespaces (blue-green)**,
+retaining old state for rollback. Actual new names, IDs, routes and bindings require an
+approved execution sheet; no such resources were created by local tests. This is not an
+existing automatic switch. In-place deletion sacrifices readable rollback state and may
+lose policy/audits and file/identity watermarks.
+
+### Sequence and stop conditions
+
+1. Pin the source commit, checks, old/new Worker versions, SDK/CLI and image versions.
+   Back up schema/data/migration records, native configuration and restricted credentials.
+   Verify the entire old stack is recoverable, not just its code. Coordinate automatic
+   deployments during the window; main merges/manual jobs must not overwrite targets
+   prematurely. Workflow suspension/resumption needs approval too; add no hidden permanent toggle.
+2. Apply current initial migrations 0001–0003 **only to new empty D1**. Re-running migrations
+   on an old database already recording 0001 does not update its changed initial schema.
+   Run the read-only schema gate and stop on mismatch, without automatic repair. All four
+   new Track namespaces must be empty and paired. Retain class migration history; do not
+   confuse data versions with namespace upgrade commands.
+3. Deploy new Registry/JWKS first. Restore approved paused-node policies before discovery
+   opens, preserving old audits. Configure new Track's binding/environment and matching
+   TURN variable/secret; --keep-vars does not provision a brand-new Worker's variables.
+4. Stop old reporters/client writes. Reissue canonical sorted endpoints credentials,
+   increasing identity_version for endpoint/key changes and preserving watermarks.
+   Update Punch, native static config and both SDKs. Check WSS public CA/hostname/validity
+   and QUIC persistent keys. Start isolated matching-version nodes first, not writers to
+   both incompatible Registries.
+5. Probe JWT registration, RPC/management, signed announce/heartbeat/query, full identity
+   and expiry. Verify Chromium/native no-CDN hashes and reload recovery. Public WSS,
+   cross-NAT and forced TURN need separate actual-path evidence. Stop on authentication,
+   schema/version or integrity errors; never disable validation or guess URLs.
+6. Coordinate Registry/Track routes, Admin bindings, Platform settings and client versions
+   in one window. Keep one public Track URL and one authoritative state system; never
+   randomly mix independent indexes. Restart/reannounce all holdings. Expect temporary
+   unavailability, not seamless sessions. Resume CI only after default configs target
+   approved resources.
+7. Observe several renewal cycles: unknown_session, 401/403, 429, 503, outbox convergence,
+   integrity and paused-node exclusion. Retain old resources/backups for the agreed period;
+   deletion requires separate authorization.
+
+### Rollback is not just revert
+
+Stop increasing traffic on schema/auth/integrity failures, sustained session loss or
+non-converging backlog. Put durations, thresholds, owners and decision windows in the
+execution sheet; the repo has no actual traffic SLO from which to invent universal limits.
+
+Stop new writers and deployments, preserve evidence, and never import new records into
+old stores. Restore the matching old Registry Worker + D1, Track Worker + all four
+namespaces/native Redis prefix, management bindings/routes, Punch config/tokens and clients.
+Reannounce and verify discovery, heartbeat, policy and full-file hashes. Do not reuse new
+session keys. Old credentials must never keep writing to new Registry; use them only on
+the isolated restored old stack within original validity/authorization.
+
+If old state was deleted in place, reverting code cannot restore it: a verified backup
+restore or full old-stack reconstruction is required. D1 recovery is not DO recovery;
+D1 backups do not contain DO sessions/watermarks.
+
+### Local evidence and remaining gates
+
+`apps/track/tests/bootstrap.test.ts` creates temporary D1 from current SQL, checks
+sqlite_master and empty Peer/Discovery state, cold-loads identities through real RPC,
+exercises signed sessions/candidates and verifies persistence after DO eviction and
+namespace isolation. `test:sdk` separately checks native Punch/SDK full-file hashes.
+Neither accesses production or provisions cloud blue-green resources.
+
+Public CA proxy success, cross-NAT/forced TURN, WebKit/native ICE, cloud capacity/SLO,
+exact old/new namespace/version/backup mappings and actual cutover/rollback rehearsal
+remain release gates. Main automatic deployment does not authorize online resets,
+and schema-gate success alone does not satisfy these gates.

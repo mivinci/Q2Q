@@ -15,7 +15,7 @@ export interface SelectionSource {
 }
 export type SelectionQuery = {
   hash: string; requester: string; limit: number; cursor?: string;
-  start: string; deadline: number; rpcBudget?: number; punches: ReadonlyMap<string, {url: string; public_key: string}>;
+  start: string; deadline: number; rpcBudget?: number; punches: ReadonlyMap<string, {endpoints: string[]; public_key: string}>;
 };
 
 function encode(cursor: Cursor): string {
@@ -77,7 +77,7 @@ export async function select(query: SelectionQuery, source: SelectionSource): Pr
       const candidate = await source.candidate(reference);
       const punch = candidate && query.punches.get(candidate.punch.punch_id);
       const valid = candidate !== null && candidate.peer_id === reference.peer_id && candidate.info_hash === query.hash &&
-        candidate.revision === reference.revision && punch?.url === candidate.punch.url && punch.public_key === candidate.punch.public_key;
+        candidate.revision === reference.revision && punch != null && JSON.stringify(punch.endpoints) === JSON.stringify(candidate.punch.endpoints) && punch.public_key === candidate.punch.public_key;
       // Look ahead before consuming the next valid record, matching native pagination.
       if (valid && peers.length === query.limit) return continuation();
       scanned++; cursor.after = reference.peer_id;

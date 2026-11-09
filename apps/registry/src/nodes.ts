@@ -1,6 +1,6 @@
 import type { Context } from 'hono';
 import { z } from 'zod';
-import { metricsSchema, discoveryNodeSchema, pageRequestSchema } from '@q2q/punch-discovery';
+import { metricsSchema, discoveryNodeSchema, pageRequestSchema, punchEndpointsSchema } from '@q2q/punch-discovery';
 export { metricsSchema } from '@q2q/punch-discovery';
 import { AuthError, ForbiddenError, nodeIdSchema } from './auth.ts';
 import type { RegistryEnv } from './auth.ts';
@@ -20,7 +20,8 @@ const querySchema = z.strictObject({
 const rowSchema = z.object({
   node_id: nodeIdSchema,
   service_type: z.enum(['punch', 'track']),
-  identity_version: integer.positive(), advertise_url: z.string(), public_key: z.string().nullable(),
+  endpoints_json: z.string().nullable(),
+  identity_version: integer.positive(), advertise_url: z.string().nullable(), public_key: z.string().nullable(),
   discovery_enabled: z.union([z.literal(0),z.literal(1)]).optional().default(1),
   version: z.string(), region: label.nullable(), accepting_new_connections: z.union([z.literal(0), z.literal(1)]),
   metrics_json: z.string().nullable(), created_at: integer, last_seen: integer, expires_at: integer,
@@ -120,20 +121,20 @@ async function limitReport(c: Context<RegistryEnv>, nodeId: string, tokenExpiry:
 // The conflict predicate and write run in one SQLite statement. A pre-read would
 // allow a concurrent old credential to overwrite a newer identity revision.
 const upsert = `INSERT INTO nodes (
-  node_id, service_type, identity_version, advertise_url, public_key,
+  node_id, service_type, identity_version, advertise_url, public_key, endpoints_json,
   version, region, accepting_new_connections, metrics_json, created_at, last_seen, expires_at
-) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch(), MIN(unixepoch() + 90, ?)
+) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch(), unixepoch(), MIN(unixepoch() + 90, ?)
 WHERE ? > unixepoch()
 ON CONFLICT(node_id) DO UPDATE SET
   identity_version = excluded.identity_version,
-  advertise_url = excluded.advertise_url, public_key = excluded.public_key,
+  advertise_url = excluded.advertise_url, public_key = excluded.public_key, endpoints_json = excluded.endpoints_json,
   version = excluded.version, region = excluded.region,
   accepting_new_connections = excluded.accepting_new_connections,
   metrics_json = excluded.metrics_json, last_seen = excluded.last_seen, expires_at = excluded.expires_at
 WHERE nodes.service_type = excluded.service_type AND (
   excluded.identity_version > nodes.identity_version OR (
     excluded.identity_version = nodes.identity_version AND
-    excluded.advertise_url = nodes.advertise_url AND excluded.public_key IS nodes.public_key
+    excluded.advertise_url IS nodes.advertise_url AND excluded.public_key IS nodes.public_key AND excluded.endpoints_json IS nodes.endpoints_json
   )
 )
 RETURNING node_id, last_seen, expires_at`;
@@ -149,8 +150,9 @@ export async function report(c: Context<RegistryEnv>) {
   let statement: D1PreparedStatement;
   try {
     statement = c.env.DB.prepare(upsert).bind(
-      principal.sub, principal.service_type, principal.identity_version, principal.advertise_url,
+      principal.sub, principal.service_type, principal.identity_version, principal.service_type === 'track' ? principal.advertise_url : null,
       principal.service_type === 'punch' ? principal.public_key : null,
+      principal.service_type === 'punch' ? JSON.stringify(principal.endpoints) : null,
       body.version, body.region, Number(body.accepting_new_connections),
       body.metrics === null ? null : JSON.stringify(body.metrics), principal.exp, principal.exp,
     );
@@ -185,6 +187,10 @@ function pagination(c: Context<RegistryEnv>) {
   if (!parsed.success) invalid('Invalid pagination parameters');
   return parsed.data;
 }
+function storedEndpoints(row: z.infer<typeof rowSchema>) {
+  try { return punchEndpointsSchema.parse(JSON.parse(row.endpoints_json!)); }
+  catch { unavailable(); }
+}
 function storedMetrics(row: z.infer<typeof rowSchema>) {
   try {
     const metrics = row.metrics_json === null ? null : metricsSchema.parse(JSON.parse(row.metrics_json));
@@ -214,7 +220,7 @@ export async function discoverPage(db: D1Database, input: unknown) {
   const serverTime = Math.floor(Date.now() / 1000);
   const { page, next_cursor } = await rows(db, request.data, true, serverTime);
   const parsed = z.array(discoveryNodeSchema).safeParse(page.map(row => ({
-    punch_id: row.node_id, url: row.advertise_url, public_key: row.public_key,
+    punch_id: row.node_id, endpoints: storedEndpoints(row), public_key: row.public_key,
     identity_version: row.identity_version, region: row.region,
     accepting_new_connections: Boolean(row.accepting_new_connections) && row.discovery_enabled === 1, metrics: storedMetrics(row),
     last_seen: row.last_seen, expires_at: row.expires_at,

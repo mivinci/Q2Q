@@ -1,13 +1,13 @@
 name: Rust
 
-# 只覆盖 crates 下的 Rust 代码。改文档不会触发这里，改 Rust 也不会触发 Docs——
-# 两边各管各的路径。
+# 覆盖 Rust 代码及其共享 Punch 协议样例。文档仍由 Docs 工作流检查。
 
 on:
   push:
     branches: [main]
     paths:
       - 'crates/**'
+      - 'tests/fixtures/punch/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rustfmt.toml'
@@ -19,6 +19,7 @@ on:
     branches: [main]
     paths:
       - 'crates/**'
+      - 'tests/fixtures/punch/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rustfmt.toml'

@@ -46,8 +46,11 @@ async fn separate_connections_share_sessions_and_holdings() {
     last_seq: 0,
     punch: PunchAssignment {
       punch_id: "probe-punch".into(),
-      url: String::new(),
-      public_key: Vec::new(),
+      endpoints: vec![
+        "quic://probe.invalid:4433".into(),
+        "wss://proxy.invalid/signal?region=hk".into(),
+      ],
+      public_key: vec![9; 32],
     },
     expires_at,
   };
@@ -61,6 +64,11 @@ async fn separate_connections_share_sessions_and_holdings() {
   );
   let candidates = b.query(&hash, 10, None, now).await.unwrap();
   assert_eq!(candidates.len(), 1);
+  assert_eq!(
+    b.online(&peer, now).await.unwrap().unwrap().punch,
+    record([8; 32], now + 120).punch
+  );
+  assert_eq!(candidates[0].punch_id, "probe-punch");
   assert!(candidates[0].complete);
 
   b.advance_session(&peer, &[8; 32], 1, Some(now + 180), now)

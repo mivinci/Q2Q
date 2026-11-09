@@ -11,3 +11,10 @@ assert.ok(track.vars.REGISTRY_ENVIRONMENT, 'Track must declare its expected Regi
 assert.equal(track.vars.REGISTRY_ENVIRONMENT, registry.vars.DISCOVERY_ENVIRONMENT, 'Track/Registry environments must match');
 assert.equal(registry.main, 'src/worker.ts', 'Registry must export the named RPC entrypoint');
 console.log('Track/Registry readonly binding and environment configuration match');
+
+const expectedClasses = {PEERS:'PeerStateEndpoints',FILES:'FileIndexEndpoints',DISCOVERY:'DiscoveryStateEndpoints',RATE_LIMIT:'RateLimiterEndpoints'};
+for (const [name,className] of Object.entries(expectedClasses)) {
+  assert.equal(track.durable_objects.bindings.find(binding=>binding.name===name)?.class_name,className,'All state bindings must use the endpoint-list generation');
+}
+assert.deepEqual(track.migrations.find(migration=>migration.tag==='v3-endpoints')?.new_sqlite_classes,Object.values(expectedClasses));
+console.log('Track endpoint-list state generation and migration are coordinated');

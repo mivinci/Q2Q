@@ -36,11 +36,20 @@ pub struct OnlineRecord {
 }
 
 /// The Punch Server a peer was assigned to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PunchAssignment {
   pub punch_id: String,
-  pub url: String,
+  #[serde(deserialize_with = "deserialize_punch_endpoints")]
+  pub endpoints: Vec<String>,
   pub public_key: Vec<u8>,
+}
+
+fn deserialize_punch_endpoints<'de, D: serde::Deserializer<'de>>(
+  deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+  use serde::Deserialize;
+  q2q_punch::endpoints::PunchEndpoints::deserialize(deserializer).map(Into::into)
 }
 
 /// One candidate returned from a query.
@@ -303,7 +312,7 @@ mod tests {
   fn punch(n: u8) -> PunchAssignment {
     PunchAssignment {
       punch_id: format!("punch-{n}"),
-      url: format!("https://punch-{n}.example.com"),
+      endpoints: vec![format!("https://punch-{n}.example.com")],
       public_key: vec![n; 32],
     }
   }

@@ -221,7 +221,12 @@ pub fn verify_range(
   proof: &Proof,
   root_hash: &Hash,
 ) -> bool {
-  if blocks.is_empty() || leaf_count == 0 {
+  if blocks.is_empty()
+    || leaf_count == 0
+    || start
+      .checked_add(blocks.len())
+      .is_none_or(|end| end > leaf_count)
+  {
     return false;
   }
   let sizes = layer_sizes(leaf_count);
@@ -244,7 +249,15 @@ pub fn verify_range(
     known.insert((0, (start + i) as u64), leaf);
   }
   for n in &proof.nodes {
-    if n.level as usize >= sizes.len() {
+    // Proof nodes may fill missing siblings, never replace bytes we just hashed
+    // or an ancestor on their path. Otherwise a root-only proof ignores data.
+    if n.level >= usize::BITS
+      || n.level as usize >= sizes.len()
+      || n.index >= sizes[n.level as usize] as u64
+      || (n.index >= (start >> n.level) as u64
+        && n.index <= ((start + blocks.len() - 1) >> n.level) as u64)
+      || known.contains_key(&(n.level as usize, n.index))
+    {
       return false;
     }
     known.insert((n.level as usize, n.index), n.hash);
@@ -516,4 +529,111 @@ mod proof_tree_tests {
       }
     }
   }
+}
+
+#[cfg(test)]
+mod adversarial_proofs {
+  use super::*;
+  #[test]
+  fn proof_cannot_shadow_covered_bytes_or_their_ancestors() {
+    let leaves = vec![
+      leaf_hash(b"a"),
+      leaf_hash(b"b"),
+      leaf_hash(b"c"),
+      leaf_hash(b"d"),
+    ];
+    let root_hash = root(&leaves);
+    let valid = prove(&leaves, 0);
+    assert!(verify(b"a", 0, 4, &valid, &root_hash));
+    let root_only = Proof {
+      leaf_hashes: vec![],
+      nodes: vec![Node {
+        level: 2,
+        index: 0,
+        hash: root_hash,
+      }],
+    };
+    assert!(!verify(b"wrong", 0, 4, &root_only, &root_hash));
+    let mut leaf = valid.clone();
+    leaf.leaf_hashes.clear();
+    leaf.nodes.push(Node {
+      level: 0,
+      index: 0,
+      hash: leaves[0],
+    });
+    assert!(!verify(b"wrong", 0, 4, &leaf, &root_hash));
+    let mut ancestor = valid.clone();
+    ancestor.leaf_hashes.clear();
+    ancestor.nodes.push(Node {
+      level: 1,
+      index: 0,
+      hash: node_hash(&leaves[0], &leaves[1]),
+    });
+    assert!(!verify(b"wrong", 0, 4, &ancestor, &root_hash));
+    let mut duplicate = valid.clone();
+    duplicate.nodes.push(duplicate.nodes[0]);
+    assert!(!verify(b"a", 0, 4, &duplicate, &root_hash));
+    let mut outside = valid;
+    outside.nodes.push(Node {
+      level: 0,
+      index: 4,
+      hash: leaves[0],
+    });
+    assert!(!verify(b"a", 0, 4, &outside, &root_hash));
+    assert!(!verify(b"a", 4, 4, &Proof::default(), &root_hash));
+    assert!(!verify(
+      b"a",
+      0,
+      usize::MAX,
+      &Proof {
+        leaf_hashes: vec![],
+        nodes: vec![Node {
+          level: usize::BITS,
+          index: 0,
+          hash: root_hash
+        }]
+      },
+      &root_hash
+    ));
+  }
+}
+
+/// Verify a single block and reduce any valid sibling representation to the
+/// canonical path. Receipts need not retain redundant/unrelated proof nodes.
+pub fn canonical_proof(
+  block: &[u8],
+  index: usize,
+  leaf_count: usize,
+  proof: &Proof,
+  root_hash: &Hash,
+) -> Option<Proof> {
+  if !verify(block, index, leaf_count, proof, root_hash) {
+    return None;
+  }
+  let sizes = layer_sizes(leaf_count);
+  let leaf = leaf_hash(block);
+  let mut known: HashMap<(usize, u64), Hash> = proof
+    .nodes
+    .iter()
+    .map(|node| ((node.level as usize, node.index), node.hash))
+    .collect();
+  known.insert((0, index as u64), leaf);
+  let mut memo = HashMap::new();
+  let mut position = index as u64;
+  let mut nodes = Vec::new();
+  for (level, count) in sizes.iter().enumerate().take(sizes.len() - 1) {
+    let sibling = position ^ 1;
+    if sibling < *count as u64 {
+      nodes.push(Node {
+        level: level as u32,
+        index: sibling,
+        hash: resolve(&known, &sizes, &mut memo, level, sibling)?,
+      });
+    }
+    position /= 2;
+  }
+  Some(Proof {
+    leaf_hashes: vec![leaf],
+    nodes,
+  })
 }

@@ -10,6 +10,8 @@ The Seed info dictionary includes the file length, block size and Merkle root. S
 
 Peers supply blocks and Merkle proofs. The receiver checks length and proof before committing data; CDN fallback data must also pass content verification. A source returned by Track, a signal forwarded by Punch or a successful HTTPS response is not evidence that file bytes are correct.
 
+Proof nodes may supply missing sibling subtrees; they must never override the received bytes or their ancestor path. Resume flags and cached proofs are not trust anchors either: the browser SDK rechecks actual bytes and compact witnesses against the supplied seed root, withdrawing blocks with missing or damaged evidence. The target commits first, then witnesses and bitmap updates commit together; there is no cross-store atomic transaction with the filesystem.
+
 This establishes consistency with the selected content. **The current Seed format has no publisher signature, and an `info_hash` does not establish a publisher's real-world identity.** Obtain the Seed or magnet link through a trusted channel. If an attacker replaces both the entry-point hash and the file, Merkle verification cannot determine which file the user originally intended.
 
 ## 2. Registry authorizes service identities
@@ -56,12 +58,12 @@ Registry JWTs are bearer credentials: their holder can use their permissions unt
 | --- | --- | --- |
 | Peer → Track | HTTPS with normal hostname certificate verification | Track HTTPS frontend forwarding to a loopback/private backend |
 | Services → Registry | HTTPS plus Registry JWT | Registry custom domain, trusted public keys and dedicated service tokens |
-| Peer → Punch | TLS over QUIC/WSS; the client matches the certificate public key against Track's expected key | Persistent Punch certificate/private key and the same public key registered in Registry |
+| Peer → Punch | QUIC pins Track's node key; WSS validates public CA trust, hostname and validity | Persistent Punch identity; public WSS proxy certificate and controlled upstream |
 | Peer ↔ Peer | WebRTC DTLS plus signed identity confirmation over DataChannel | SDK handshake; deploy reachable discovery, signaling and TURN services |
 
 After Track HTTPS terminates at the reverse proxy, the examples reach the backend over loopback or a trusted private network. Use TLS for that leg if it crosses an untrusted network; public HTTPS does not automatically encrypt the proxy-to-backend connection.
 
-Punch identity is not established by DNS alone. Clients verify the expected public key supplied by Track, so restarts must load the persistent identity. An ordinary HTTP proxy terminating Punch TLS with a different certificate breaks this match; the deployment guide exposes Punch QUIC/WSS ports directly to the instance.
+QUIC retains node-key pinning. WSS authenticates the proxy hostname through public CA trust, not the backend Punch key. The proxy is a trusted deployment boundary and does not hold the Punch identity key. Restrict its plain WS upstream to loopback or a controlled private network.
 
 Registry and Track remain trusted control-plane components. A compromised directory or Track can misdirect discovery, hide sources or harm availability. Content verification does not prevent these behaviors, and TLS does not hide control information from the service processing it.
 
@@ -106,3 +108,12 @@ The relay carries DTLS-encrypted Peer traffic, but its operator can still observ
 | Redis credentials | Track configuration when using shared state | Protects session/index storage; restrict Redis to private access |
 
 Signatures, encryption and content proofs do not guarantee availability or traffic anonymity. Connection limits, request bounds, timeouts and rate limits provide additional resource protection, not a complete defense against denial-of-service attacks. Include credential renewal, identity backups, restricted network access and real transfer verification in deployment operations.
+
+
+### Browser Punch WSS endpoint
+
+Native and browser WSS validate public CA trust, hostname and validity. Neither disables certificate validation or adds a Punch application-level node proof. Peer signatures and DTLS fingerprint binding remain mandatory; a WSS handshake is not peer authentication.
+
+Punch registration claims, Registry discovery, Track assignments and candidates use `endpoints: string[]`, without old single-address fields. Lists contain 1–8 canonical sorted URLs (up to 2048 characters each), reject duplicates, credentials and fragments, and preserve valid WebSocket paths/queries. QUIC and WSS are allowed; WS is loopback-only. List changes require a higher `identity_version`. Clients declare `punch_schemes` instead of guessing URLs. This is a breaking change to credentials and persistent state: rollout requires a coordinated, explicitly scoped reset and credential reissue. Normal tests never reset production resources.
+
+Chromium and the native SDK pass authentication, heartbeats, binary signalling and complete-file downloads through real local Track/Punch services, including reload recovery using peer-only proofs. Web publication is not wired yet. WebKit/native ICE, public WSS, TURN and cross-NAT paths remain unverified; local results do not establish support for those paths.

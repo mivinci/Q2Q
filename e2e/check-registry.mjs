@@ -200,7 +200,7 @@ try {
   const punchConfig = await save('punch.toml', punchBase);
   const publicKey = (await run(binary('q2q-punch-server'), [punchConfig, '--init-identity'], 'Punch identity initialization')).split('\n').at(-1);
   assert.match(publicKey, /^[A-Za-z0-9+/]{43}=$/, 'unexpected initialized public key');
-  const punchIdentity = { advertise_url: `quic://127.0.0.1:${punchPort}`, public_key: publicKey, identity_version: 1 };
+  const punchIdentity = { endpoints: [`quic://127.0.0.1:${punchPort}`], public_key: publicKey, identity_version: 1 };
   const punchToken = await issue('punch', claims('punch', 'punch-acceptance', punchIdentity));
   const registryConfig = token => `\n[registry]\nurl = "${serviceRegistry}"\ntoken_file = "${token.path}"\n`;
   await writeFile(punchConfig, punchBase + registryConfig(punchToken));
@@ -244,7 +244,7 @@ try {
     const secondKey = (await run(binary('q2q-punch-server'), [secondConfig, '--init-identity'], 'second Punch identity')).split('\n').at(-1);
     assert.notEqual(secondKey, publicKey, 'Punch identities must differ');
     const secondToken = await issue('second-punch', claims('punch', 'punch-transfer', {
-      advertise_url: `quic://127.0.0.1:${secondPort}`, public_key: secondKey, identity_version: 1,
+      endpoints: [`quic://127.0.0.1:${secondPort}`], public_key: secondKey, identity_version: 1,
     }));
     await writeFile(secondConfig, secondBase + registryConfig(secondToken));
     const second = start(binary('q2q-punch-server'), [secondConfig], 'second Punch');
@@ -342,12 +342,12 @@ try {
 
   const body = { version: 'acceptance', region: null, accepting_new_connections: true, metrics: (await nodes()).find(node => node.node_id === 'punch-acceptance').metrics };
   const versions = await Promise.all([2,4,3].map(version => issue(`concurrent-${version}`,
-    claims('punch', 'concurrent', { advertise_url: `quic://v${version}.example:4433`, public_key: publicKey, identity_version: version }))));
+    claims('punch', 'concurrent', { endpoints: [`quic://v${version}.example:4433`], public_key: publicKey, identity_version: version }))));
   const concurrent = await Promise.all(versions.map(token => api('/v1/nodes/self', token.token, body)));
   assert(concurrent.every(result => [200,409].includes(result.status)), 'unexpected concurrent response');
   const latest = (await api('/v1/discovery/punches', reader.token)).body.nodes.find(node => node.punch_id === 'concurrent');
   assert.equal(latest.identity_version, 4);
-  assert.equal(latest.url, 'quic://v4.example:4433');
+  assert.equal(latest.endpoints[0], 'quic://v4.example:4433');
   // All three attempts consume the shared budget, including conflicts.
   const stale = await api('/v1/nodes/self', versions[0].token, body);
   assert.equal(stale.status, 429, 'concurrent requests did not share node budget');

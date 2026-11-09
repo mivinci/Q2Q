@@ -6,7 +6,7 @@
 
 use crate::message::Request;
 use crate::message::Response;
-use crate::signal::SignalRequest;
+use crate::message::SignalRequest;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

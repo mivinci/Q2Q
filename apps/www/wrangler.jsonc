@@ -1,0 +1,11 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "q2q-www",
+  "compatibility_date": "2026-10-28",
+  "workers_dev": true,
+  "preview_urls": true,
+  "routes": [{ "pattern": "q2q.app", "custom_domain": true }],
+  "main": ".svelte-kit/cloudflare/_worker.js",
+  "assets": { "binding": "ASSETS", "directory": ".svelte-kit/cloudflare" },
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false } }
+}

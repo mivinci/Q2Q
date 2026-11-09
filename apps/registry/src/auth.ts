@@ -1,6 +1,7 @@
 import { createMiddleware } from 'hono/factory';
 import { createLocalJWKSet, errors, jwtVerify } from 'jose';
 import { z } from 'zod';
+import { punchIdentitySchema, MAX_SERVICE_TOKEN_LENGTH } from '@q2q/punch-discovery';
 
 const id = z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/);
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -26,11 +27,9 @@ const common = z.object({
 });
 const identity = { advertise_url: endpoint('https'), identity_version: integer.positive() };
 const claimsSchema = z.discriminatedUnion('service_type', [
-  common.extend({ service_type: z.literal('punch'), ...identity,
-    advertise_url: endpoint('quic'), public_key: punchKey }),
-  common.extend({ service_type: z.literal('track'), ...identity, public_key: z.never().optional() }),
-  common.extend({ service_type: z.literal('platform'), advertise_url: z.never().optional(),
-    public_key: z.never().optional(), identity_version: z.never().optional() }),
+  common.extend({ service_type: z.literal('punch'), ...punchIdentitySchema.shape }).strict(),
+  common.extend({ service_type: z.literal('track'), ...identity }).strict(),
+  common.extend({ service_type: z.literal('platform') }).strict(),
 ]).refine(v => v.exp > v.iat, 'Invalid validity interval').refine(v => {
   const allowed: Record<string, readonly Permission[]> = {
     punch: ['nodes:write:self'], track: ['nodes:write:self', 'discovery:punch:read'],
@@ -67,16 +66,21 @@ const publicKeySchema = z.object({
 });
 
 /** Only deployment-provided public keys are trusted; token URLs are never fetched. */
-export function createVerifier(jwksJson: string) {
+export function createVerifier(jwksJson: string, additionalJwksJson?: string) {
   let keys: ReturnType<typeof createLocalJWKSet>;
   try {
-    const jwks = z.object({ keys: z.array(publicKeySchema).min(1).max(16) }).parse(JSON.parse(jwksJson));
-    if (new Set(jwks.keys.map(k => k.kid)).size !== jwks.keys.length) throw new Error();
-    keys = createLocalJWKSet(jwks);
+    const schema = z.object({ keys: z.array(publicKeySchema).min(1).max(16) });
+    const primary = schema.parse(JSON.parse(jwksJson));
+    const additional = additionalJwksJson === undefined ? [] : schema.parse(JSON.parse(additionalJwksJson)).keys;
+    const combined = [...primary.keys, ...additional];
+    // Rotation adds trust without needing to read back the existing Worker secret.
+    // Reject collisions and invalid additions rather than silently shadowing a key.
+    if (combined.length > 16 || new Set(combined.map(k => k.kid)).size !== combined.length) throw new Error();
+    keys = createLocalJWKSet({ keys: combined });
   } catch { throw new RegistryConfigError(); }
   return async (authorization: string | undefined, now = new Date()): Promise<Principal> => {
     const match = authorization?.match(/^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/i);
-    if (!match || match[1].length > 8192) throw new AuthError();
+    if (!match || match[1].length > MAX_SERVICE_TOKEN_LENGTH) throw new AuthError();
     try {
       const { payload, protectedHeader } = await jwtVerify(match[1], keys, {
         algorithms: ['EdDSA'], typ: 'JWT', issuer: 'q2q-registry', audience: 'q2q-registry',
@@ -105,17 +109,18 @@ export function authorize(principal: Principal, scope: Permission, nodeId?: stri
 }
 
 export type RegistryEnv = {
-  Bindings: { REGISTRY_JWKS: string; DB: D1Database; DISCOVERY_ENVIRONMENT?: string };
+  Bindings: { REGISTRY_JWKS: string; REGISTRY_ADDITIONAL_JWKS?: string; DB: D1Database; DISCOVERY_ENVIRONMENT?: string };
   Variables: { principal: Principal };
 };
 
 /** Each middleware instance retains at most one deployment key set. */
 export function authentication() {
-  let cached: { json: string; verify: ReturnType<typeof createVerifier> } | undefined;
+  let cached: { json: string; additional?: string; verify: ReturnType<typeof createVerifier> } | undefined;
   return createMiddleware<RegistryEnv>(async (c, next) => {
     c.header('Cache-Control', 'no-store');
-    if (!cached || cached.json !== c.env.REGISTRY_JWKS) {
-      cached = { json: c.env.REGISTRY_JWKS, verify: createVerifier(c.env.REGISTRY_JWKS) };
+    if (!cached || cached.json !== c.env.REGISTRY_JWKS || cached.additional !== c.env.REGISTRY_ADDITIONAL_JWKS) {
+      cached = { json: c.env.REGISTRY_JWKS, additional: c.env.REGISTRY_ADDITIONAL_JWKS,
+        verify: createVerifier(c.env.REGISTRY_JWKS, c.env.REGISTRY_ADDITIONAL_JWKS) };
     }
     c.set('principal', await cached.verify(c.req.header('Authorization')));
     await next();
@@ -130,4 +135,3 @@ export function permissionRequired(scope: Permission) {
 }
 
 export { id as nodeIdSchema, punchKey as punchPublicKeySchema };
-export const punchUrlSchema = endpoint('quic');

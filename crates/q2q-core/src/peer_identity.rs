@@ -6,42 +6,13 @@ use crate::webrtc_transport::RtcConnection;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use q2q_primitives::identity::verify_signature;
-use q2q_primitives::peer_auth::{Role, Transcript};
-use serde::{Deserialize, Serialize};
+use q2q_primitives::peer_auth::IdentityFrame as Frame;
+use q2q_primitives::peer_auth::{MAX_IDENTITY_FRAME as MAX_FRAME, Role, Transcript};
 use std::time::Duration;
 use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelMessage};
 
 const VERSION: u32 = 1;
-const MAX_FRAME: usize = 512;
 const TIMEOUT: Duration = Duration::from_secs(10);
-
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type", deny_unknown_fields)]
-enum Frame {
-  #[serde(rename = "identity_hello")]
-  Hello { v: u32, nonce: String },
-  #[serde(rename = "identity_proof")]
-  Proof { v: u32, signature: String },
-}
-
-impl Frame {
-  fn hello_nonce(self) -> Result<[u8; 32], ControlError> {
-    match self {
-      Self::Hello { v: VERSION, nonce } => decode(&nonce),
-      _ => Err(auth_error("expected identity_hello version 1")),
-    }
-  }
-
-  fn proof_signature(self) -> Result<[u8; 64], ControlError> {
-    match self {
-      Self::Proof {
-        v: VERSION,
-        signature,
-      } => decode(&signature),
-      _ => Err(auth_error("expected identity_proof version 1")),
-    }
-  }
-}
 
 pub(crate) struct PeerIdentity<'a> {
   pub local: &'a Identity,
@@ -114,7 +85,7 @@ impl PeerIdentity<'_> {
     .await?;
     let remote_nonce = match early_hello {
       Some(nonce) => nonce,
-      None => receive(channel).await?.hello_nonce()?,
+      None => receive(channel).await?.hello_nonce().map_err(auth_error)?,
     };
     let (
       initiator_key,
@@ -160,7 +131,10 @@ impl PeerIdentity<'_> {
       },
     )
     .await?;
-    let signature = receive(channel).await?.proof_signature()?;
+    let signature = receive(channel)
+      .await?
+      .proof_signature()
+      .map_err(auth_error)?;
     let remote_role = match self.role {
       Role::Initiator => Role::Responder,
       Role::Responder => Role::Initiator,
@@ -184,7 +158,7 @@ pub(crate) fn early_hello(message: &RTCDataChannelMessage) -> Result<[u8; 32], C
   if !message.is_string {
     return Err(auth_error("identity frames must be text messages"));
   }
-  parse(&message.data)?.hello_nonce()
+  parse(&message.data)?.hello_nonce().map_err(auth_error)
 }
 
 async fn send(channel: &dyn DataChannel, frame: &Frame) -> Result<(), ControlError> {
@@ -215,15 +189,7 @@ fn parse(bytes: &[u8]) -> Result<Frame, ControlError> {
   if bytes.len() > MAX_FRAME {
     return Err(auth_error("identity frame is too large"));
   }
-  serde_json::from_slice(bytes).map_err(|e| auth_error(format!("invalid identity frame: {e}")))
-}
-
-fn decode<const N: usize>(raw: &str) -> Result<[u8; N], ControlError> {
-  B64
-    .decode(raw)
-    .map_err(|_| auth_error("identity field is not base64"))?
-    .try_into()
-    .map_err(|_| auth_error("identity field has invalid length"))
+  Frame::decode(bytes).map_err(auth_error)
 }
 
 fn auth_error(detail: impl Into<String>) -> ControlError {

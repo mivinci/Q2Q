@@ -92,3 +92,90 @@ mod tests {
     }
   }
 }
+
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use serde::{Deserialize, Serialize};
+const VERSION: u32 = 1;
+pub const MAX_IDENTITY_FRAME: usize = 512;
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", deny_unknown_fields)]
+pub enum IdentityFrame {
+  #[serde(rename = "identity_hello")]
+  Hello { v: u32, nonce: String },
+  #[serde(rename = "identity_proof")]
+  Proof { v: u32, signature: String },
+}
+
+impl IdentityFrame {
+  pub fn hello_nonce(self) -> Result<[u8; 32], &'static str> {
+    match self {
+      Self::Hello { v: VERSION, nonce } => decode_field(&nonce),
+      _ => Err("expected identity_hello version 1"),
+    }
+  }
+
+  pub fn proof_signature(self) -> Result<[u8; 64], &'static str> {
+    match self {
+      Self::Proof {
+        v: VERSION,
+        signature,
+      } => decode_field(&signature),
+      _ => Err("expected identity_proof version 1"),
+    }
+  }
+}
+
+impl IdentityFrame {
+  pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
+    if bytes.len() > MAX_IDENTITY_FRAME {
+      return Err("identity frame is too large");
+    }
+    serde_json::from_slice(bytes).map_err(|_| "invalid identity frame")
+  }
+  pub fn encode(&self) -> Result<String, &'static str> {
+    let raw = serde_json::to_string(self).map_err(|_| "invalid identity frame")?;
+    if raw.len() > MAX_IDENTITY_FRAME {
+      return Err("identity frame is too large");
+    }
+    Ok(raw)
+  }
+}
+fn decode_field<const N: usize>(raw: &str) -> Result<[u8; N], &'static str> {
+  B64
+    .decode(raw)
+    .map_err(|_| "identity field is not base64")?
+    .try_into()
+    .map_err(|_| "invalid identity field length")
+}
+
+pub fn fingerprint(sdp: &str) -> Result<[u8; 32], &'static str> {
+  let mut found = None;
+  for line in sdp.lines() {
+    let Some(value) = line.strip_prefix("a=fingerprint:") else {
+      continue;
+    };
+    let mut fields = value.split_whitespace();
+    let algorithm = fields.next().ok_or("missing fingerprint algorithm")?;
+    let value = fields.next().ok_or("missing fingerprint value")?;
+    if !algorithm.eq_ignore_ascii_case("sha-256") || fields.next().is_some() {
+      return Err("identity confirmation requires a SHA-256 DTLS fingerprint");
+    }
+    let mut hash = [0u8; 32];
+    let mut octets = value.split(':');
+    for byte in &mut hash {
+      let octet = octets.next().ok_or("short DTLS fingerprint")?;
+      if octet.len() != 2 {
+        return Err("invalid DTLS fingerprint octet");
+      }
+      *byte = u8::from_str_radix(octet, 16).map_err(|_| "invalid DTLS fingerprint hex")?;
+    }
+    if octets.next().is_some() {
+      return Err("long DTLS fingerprint");
+    }
+    if found.is_some_and(|previous| previous != hash) {
+      return Err("conflicting DTLS fingerprints");
+    }
+    found = Some(hash);
+  }
+  found.ok_or("missing DTLS fingerprint")
+}

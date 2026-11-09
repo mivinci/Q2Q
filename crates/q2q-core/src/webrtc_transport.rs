@@ -270,35 +270,7 @@ impl Drop for RtcConnection {
 }
 
 fn fingerprint(sdp: &str) -> Result<[u8; 32], String> {
-  let mut found = None;
-  for line in sdp.lines() {
-    let Some(value) = line.strip_prefix("a=fingerprint:") else {
-      continue;
-    };
-    let mut fields = value.split_whitespace();
-    let algorithm = fields.next().ok_or("missing fingerprint algorithm")?;
-    let value = fields.next().ok_or("missing fingerprint value")?;
-    if !algorithm.eq_ignore_ascii_case("sha-256") || fields.next().is_some() {
-      return Err("identity confirmation requires a SHA-256 DTLS fingerprint".into());
-    }
-    let mut hash = [0u8; 32];
-    let mut octets = value.split(':');
-    for byte in &mut hash {
-      let octet = octets.next().ok_or("short DTLS fingerprint")?;
-      if octet.len() != 2 {
-        return Err("invalid DTLS fingerprint octet".into());
-      }
-      *byte = u8::from_str_radix(octet, 16).map_err(|_| "invalid DTLS fingerprint hex")?;
-    }
-    if octets.next().is_some() {
-      return Err("long DTLS fingerprint".into());
-    }
-    if found.is_some_and(|previous| previous != hash) {
-      return Err("conflicting DTLS fingerprints".into());
-    }
-    found = Some(hash);
-  }
-  found.ok_or_else(|| "missing DTLS fingerprint".into())
+  q2q_primitives::peer_auth::fingerprint(sdp).map_err(str::to_owned)
 }
 
 #[cfg(test)]

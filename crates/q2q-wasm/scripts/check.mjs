@@ -102,3 +102,45 @@ for (const mib of process.argv.slice(2).length ? process.argv.slice(2).map(Numbe
   console.log(JSON.stringify({ mib, elapsedMs, wasmMemoryMiB: wasm.memory.buffer.byteLength / 1024 ** 2, proofBytes }));
   result.free();
 }
+
+const { BlockVerifier } = await import('../pkg/q2q_wasm.js');
+for (const size of [0, 1, blockSize, 2 * blockSize + 17]) {
+  const content = Buffer.alloc(size, 29);
+  const builder = new SeedBuilder(size);
+  builder.update(content);
+  const prepared = builder.finish('recovery.bin');
+  const verifier = new BlockVerifier(prepared.seed_bytes(), prepared.proof_bytes());
+  for (let offset = 0, index = 0; offset < size; offset += blockSize, index++) {
+    const block = content.subarray(offset, offset + blockSize);
+    assert.equal(verifier.verify(index, block), true);
+    const corrupt = Buffer.from(block);
+    corrupt[0] ^= 1;
+    assert.equal(verifier.verify(index, corrupt), false);
+    assert.equal(verifier.verify(index, block.subarray(1)), false);
+  }
+  for (const index of [-1, 0.5, NaN, Infinity, 2 ** 40]) assert.equal(verifier.verify(index, content), false);
+  if (size > 0) {
+    const proof = prepared.proof_bytes();
+    proof[0] ^= 1;
+    assert.throws(() => new BlockVerifier(prepared.seed_bytes(), proof));
+    assert.throws(() => new BlockVerifier(prepared.seed_bytes(), new Uint8Array()));
+  }
+  verifier.free();
+  prepared.free();
+}
+const inline = new SeedBuilder(3);
+inline.update(Buffer.from('abc'));
+const preparedInline = inline.finish_inline('inline');
+const inlineVerifier = new BlockVerifier(preparedInline.seed_bytes(), new Uint8Array());
+assert.equal(inlineVerifier.verify(0, Buffer.from('abc')), true);
+inlineVerifier.free();
+preparedInline.free();
+console.log('PASS seed-pinned recovery block verification, corruption, lengths and external/inline proofs');
+
+await import('./check-control.mjs');
+
+await import("./check-peer.mjs");
+
+await import("./check-witness.mjs");
+
+await import('./check-upload.mjs');

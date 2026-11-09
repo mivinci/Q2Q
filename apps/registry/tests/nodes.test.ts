@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { app } from '../src/index.ts';
+import { getPunch, listPunches } from '../src/management.ts';
 
 const pair = await generateKeyPair('EdDSA', { crv: 'Ed25519' });
 const jwks = JSON.stringify({ keys: [{ ...await exportJWK(pair.publicKey), kid: 'test' }] });
@@ -47,7 +48,7 @@ function fixture(t: { after: (fn: () => void) => void }) {
 async function token(kind: 'punch' | 'track' | 'platform', id: string, changes: Record<string, unknown> = {}) {
   const now = Math.floor(Date.now() / 1000);
   const identity = kind === 'platform' ? {} : {
-    advertise_url: kind === 'punch' ? 'quic://punch.example:4433' : 'https://track.example', identity_version: 1,
+    ...(kind === 'punch' ? {endpoints:['quic://punch.example:4433']} : {advertise_url:'https://track.example'}), identity_version: 1,
     ...(kind === 'punch' ? { public_key: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' } : {}),
   };
   const scope = kind === 'punch' ? ['nodes:write:self'] : kind === 'track'
@@ -100,14 +101,14 @@ test('identity changes are atomic, reject stale tokens and preserve rows on conf
   const f = fixture(t), old = await token('punch', 'a');
   await f.request('/v1/nodes/self', old, 'PUT', reportBody);
   const before = f.sqlite.prepare('SELECT * FROM nodes').get();
-  for (const jwt of [await token('punch', 'a', { advertise_url: 'quic://other.example:4433' }), await token('track', 'a', { identity_version: 2 })]) {
+  for (const jwt of [await token('punch', 'a', { endpoints: ['quic://other.example:4433'] }), await token('track', 'a', { identity_version: 2 })]) {
     const response = await f.request('/v1/nodes/self', jwt, 'PUT', { ...reportBody, metrics: jwt === old ? metrics : null });
     assert.equal(response.status, 409);
     assert.equal((await response.json()).code, 'identity_conflict');
     assert.deepEqual(f.sqlite.prepare('SELECT * FROM nodes').get(), before);
   }
   f.time += 18;
-  const tokens = await Promise.all([2,4,3].map(version => token('punch', 'a', { identity_version: version, advertise_url: `quic://v${version}.example:4433` })));
+  const tokens = await Promise.all([2,4,3].map(version => token('punch', 'a', { identity_version: version, endpoints: [`quic://v${version}.example:4433`] })));
   const responses = await Promise.all(tokens.map(jwt => f.request('/v1/nodes/self', jwt, 'PUT', reportBody)));
   assert(responses.every(r => [200,409].includes(r.status)));
   assert.equal(f.sqlite.prepare('SELECT identity_version FROM nodes').get()?.identity_version, 4);
@@ -222,4 +223,125 @@ test('HTTP discovery respects management policy across heartbeat reports',async 
  assert.equal((await (await f.request('/v1/discovery/punches',track)).json()).nodes[0].accepting_new_connections,false);
  f.sqlite.prepare("UPDATE punch_policy SET enabled=1,revision=2 WHERE node_id='managed'").run();
  assert.equal((await (await f.request('/v1/discovery/punches',track)).json()).nodes.length,1);
+});
+
+
+test('endpoint deletion, query changes and key rotation require higher versions and survive expiry', async t => {
+  const f = fixture(t);
+  const endpoints = ['quic://punch.example:4433', 'wss://signal.example/punch?region=hk'];
+  const original = await token('punch', 'versioned', { endpoints });
+  assert.equal((await f.request('/v1/nodes/self', original, 'PUT', reportBody)).status, 200);
+  const before = f.sqlite.prepare('SELECT * FROM nodes').get();
+  const mutations = [
+    { endpoints: endpoints.slice(0, 1) },
+    { endpoints: [...endpoints, 'wss://backup.example/punch'] },
+    { endpoints: [endpoints[0], 'wss://signal.example/punch?region=eu'] },
+    { endpoints, public_key: 'BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' },
+  ];
+  for (const changes of mutations) {
+    f.time += 6;
+    const response = await f.request('/v1/nodes/self', await token('punch', 'versioned', changes), 'PUT', reportBody);
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).code, 'identity_conflict');
+    assert.deepEqual(f.sqlite.prepare('SELECT * FROM nodes').get(), before);
+  }
+  f.time += 6;
+  const removed = await token('punch', 'versioned', { identity_version: 2, endpoints: endpoints.slice(0, 1) });
+  assert.equal((await f.request('/v1/nodes/self', removed, 'PUT', reportBody)).status, 200);
+  const latest = f.sqlite.prepare('SELECT * FROM nodes').get();
+  // Lease expiry does not erase the watermark or let a still-valid old token resurrect an address.
+  f.time += 91;
+  const stale = await f.request('/v1/nodes/self', original, 'PUT', reportBody);
+  assert.equal(stale.status, 409);
+  assert.equal((await stale.json()).code, 'stale_identity');
+  assert.deepEqual(f.sqlite.prepare('SELECT * FROM nodes').get(), latest);
+  const next = await token('punch', 'versioned', { identity_version: 3, endpoints, public_key: mutations[3]!.public_key });
+  assert.equal((await f.request('/v1/nodes/self', next, 'PUT', reportBody)).status, 200);
+});
+
+test('interleaved endpoint versions never roll back the final address set or key', async t => {
+  const f = fixture(t);
+  const initial = await token('punch', 'racing');
+  assert.equal((await f.request('/v1/nodes/self', initial, 'PUT', reportBody)).status, 200);
+  f.time += 18;
+  const versions = [4, 2, 3];
+  const identities = await Promise.all(versions.map(identity_version => token('punch', 'racing', {
+    identity_version, endpoints: [`quic://v${identity_version}.example:4433`, `wss://v${identity_version}.example/ws?region=hk`],
+    public_key: identity_version === 4 ? 'BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' : 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+  })));
+  const responses = await Promise.all(identities.map(jwt => f.request('/v1/nodes/self', jwt, 'PUT', reportBody)));
+  assert(responses.every(response => [200, 409].includes(response.status)));
+  const current = await getPunch(f.env.DB, { nodeId: 'racing' });
+  assert.equal(current!.identity_version, 4);
+  assert.equal(current!.public_key, 'BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
+  assert.deepEqual(current!.endpoints, ['quic://v4.example:4433', 'wss://v4.example/ws?region=hk']);
+  assert.equal(responses[0]!.status, 200);
+});
+
+test('equivalent URL spellings and reorder preserve canonical persisted identity', async t => {
+  const f = fixture(t);
+  const endpoints = ['quic://punch.example:4433', 'wss://signal.example/'];
+  const variants = ['WSS://SIGNAL.example:443', 'QUIC://PUNCH.example:04433/'];
+  for (const values of [endpoints, variants]) {
+    assert.equal((await f.request('/v1/nodes/self', await token('punch', 'canonical', { endpoints: values }), 'PUT', reportBody)).status, 200);
+    assert.equal(f.sqlite.prepare('SELECT endpoints_json FROM nodes').get()?.endpoints_json, JSON.stringify(endpoints));
+    f.time += 6;
+  }
+});
+
+test('invalid and old endpoint claims are rejected before acquiring a report budget', async t => {
+  const f = fixture(t);
+  for (const changes of [
+    { endpoints: [] }, { endpoints: ['wss://signal.example', 'WSS://SIGNAL.example:443/'] },
+    { endpoints: ['ws://public.example/ws'] }, { endpoints: ['quic://punch.example:0'] },
+    { endpoints: undefined, advertise_url: 'quic://punch.example:4433' },
+    { websocket_url: 'wss://signal.example/ws' },
+  ]) {
+    assert.equal((await f.request('/v1/nodes/self', await token('punch', 'invalid', changes), 'PUT', reportBody)).status, 401);
+  }
+  assert.equal(f.sqlite.prepare('SELECT count(*) AS n FROM nodes').get()?.n, 0);
+  assert.equal(f.sqlite.prepare('SELECT count(*) AS n FROM report_limits').get()?.n, 0);
+  const valid = await token('punch', 'invalid');
+  for (const field of ['endpoints', 'advertise_url', 'websocket_url']) {
+    assert.equal((await f.request('/v1/nodes/self', valid, 'PUT', { ...reportBody, [field]: ['wss://evil.example/ws'] })).status, 400);
+  }
+  assert.equal(f.sqlite.prepare('SELECT count(*) AS n FROM report_limits').get()?.n, 0);
+});
+
+test('maximum endpoint identity persists and matches HTTP discovery and management without display leakage', async t => {
+  const f = fixture(t);
+  const endpoints = Array.from({ length: 8 }, (_, i) => {
+    const prefix = `wss://signal.example/${i}?region=`;
+    return prefix + 'x'.repeat(2048 - prefix.length);
+  });
+  const jwt = await token('punch', 'maximum', { endpoints: [...endpoints].reverse() });
+  assert(jwt.length > 8192 && jwt.length <= 32768);
+  assert.equal((await f.request('/v1/nodes/self', jwt, 'PUT', reportBody)).status, 200);
+  assert.equal(f.sqlite.prepare('SELECT endpoints_json FROM nodes').get()?.endpoints_json, JSON.stringify(endpoints));
+  const reader = await token('track', 'reader');
+  const discovery = await (await f.request('/v1/discovery/punches', reader)).json() as unknown as { nodes: { endpoints: string[] }[] };
+  assert.deepEqual(discovery.nodes[0]!.endpoints, endpoints);
+  assert.deepEqual((await getPunch(f.env.DB, { nodeId: 'maximum' }))!.endpoints, endpoints);
+  assert.deepEqual((await listPunches(f.env.DB, { limit: 1 })).nodes[0]!.endpoints, endpoints);
+  const display = await (await f.request('/v1/nodes', await token('platform', 'viewer'))).json();
+  for (const field of ['endpoints','endpoints_json','public_key','url','websocket_url']) assert(!Object.hasOwn(display.nodes[0]!, field));
+});
+
+test('endpoint sets require identity revisions, but reordering is not a new identity', async t => {
+  const f=fixture(t), reader=await token('track','reader');
+  const endpoints=['wss://signal.example/punch?region=hk','quic://punch.example:4433'];
+  const first=await token('punch','web',{endpoints});
+  assert.equal((await f.request('/v1/nodes/self',first,'PUT',reportBody)).status,200);
+  const list=async()=>await (await f.request('/v1/discovery/punches',reader)).json() as unknown as {nodes:{endpoints:string[]}[]};
+  assert.deepEqual((await list()).nodes[0]!.endpoints,[...endpoints].sort());
+  f.sqlite.exec("DELETE FROM report_limits");
+  assert.equal((await f.request('/v1/nodes/self',await token('punch','web',{endpoints:[...endpoints].reverse()}),'PUT',reportBody)).status,200);
+  f.sqlite.exec("DELETE FROM report_limits");
+  const moved=['quic://punch.example:4433','wss://new.example/punch'];
+  assert.equal((await f.request('/v1/nodes/self',await token('punch','web',{endpoints:moved}),'PUT',reportBody)).status,409);
+  f.sqlite.exec("DELETE FROM report_limits");
+  assert.equal((await f.request('/v1/nodes/self',await token('punch','web',{identity_version:2,endpoints:moved}),'PUT',reportBody)).status,200);
+  assert.deepEqual((await list()).nodes[0]!.endpoints,moved);
+  f.sqlite.exec("DELETE FROM report_limits");
+  assert.equal((await f.request('/v1/nodes/self',first,'PUT',reportBody)).status,409);
 });

@@ -13,9 +13,30 @@ fn malformed_or_business_frames_are_rejected_during_identity_confirmation() {
       Err(ControlError::Authentication(_))
     ));
   }
-  assert!(decode::<32>("AA==").is_err());
-  assert!(decode::<64>(&B64.encode([0u8; 32])).is_err());
-  assert!(decode::<32>("not base64!").is_err());
+  assert!(
+    Frame::Hello {
+      v: VERSION,
+      nonce: "AA==".into()
+    }
+    .hello_nonce()
+    .is_err()
+  );
+  assert!(
+    Frame::Proof {
+      v: VERSION,
+      signature: B64.encode([0u8; 32])
+    }
+    .proof_signature()
+    .is_err()
+  );
+  assert!(
+    Frame::Hello {
+      v: VERSION,
+      nonce: "not base64!".into()
+    }
+    .hello_nonce()
+    .is_err()
+  );
   assert!(parse(&vec![b' '; MAX_FRAME + 1]).is_err());
 }
 

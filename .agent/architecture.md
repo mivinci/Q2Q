@@ -6,6 +6,10 @@
 
 - Q2Q 面向大文件分发、VOD 和直播场景；发布方从自己的机器提供内容，网络运营方提供 Track、Punch 和 STUN/TURN。
 - 希望发展为完整产品，也保留开源框架价值。当前方向是优先建设内容分发开放平台，官方客户端同时承担上传、下载、做种和平台接入，第三方应用通过 SDK/API 使用相同能力。
+- 用户已确认 `q2q.app` 主站作为 Web 客户端和产品入口，突出直接分享文件、下载与传输任务；`platform.q2q.app` 保留项目和资源管理，文档站负责开发者接入。界面要求简洁、直观、友好。apps/www 已按确认设计接入本机分享/种子导出、P2P/HTTP 下载与完成缓存显式再分享，本地真实页面验收已通过；线上发布与跨设备/TURN 矩阵未完成，设计与执行项见 [web-client.md](../todos/web-client.md)。
+- 主站第一阶段不做平台账号 Auth，不放登录或头像；需要平台账号的云端文件、项目、存储与订阅留在 platform。SDK 自动处理的 Peer 身份认证仍保留。`apps/www/design` 静态设计已确认，正式页面通过 @q2q/client-web 接分享/P2P/HTTP 任务，前台与本地状态边界见应用 README；未部署 q2q-www。
+- Web 客户端先设计独立 SDK 再接主站；采用独立的 `@q2q/client-web`（`packages/client-web`）与 `@q2q/client-node`（`packages/client-node`）；Node 用 napi-rs 绑定现有 Rust Client，Web 先实现并测通 SDK 存储，再接传输。共享代码按具体职责和真实复用提取，不建立 `client-common` 或预建空包。页面不持有传输状态机。接口及 Rust/Wasm/浏览器 host 的提案见 [web-sdk.md](../todos/web-sdk.md)，目前 Web 包已实现 File 读取、文件句柄写入、OPFS 暂存/导出及检查点恢复，逐块校验复用 Rust/Wasm；已接入 HTTP/P2P Client 下载、暂停与恢复；Chromium 与原生 SDK 的本地完整文件链路已验证，纯 Peer 分块证明与跨刷新恢复已验证；Web 完整文件发布已接入并通过本地浏览器互传/Chromium 发布到原生 SDK 的完整哈希验收，活跃下载的已验证提交块共享已实现并通过本地位图/Have、OPFS、检查点失败隔离与 Peer-only 证明转发验证；共享在暂停/取消/完成前关闭，不默认完成后做种。主站分享/P2P 本地页面接线已完成并验过实际哈希，公网 UI/跨设备验收与 npm 发布尚未完成。
+- Web SDK 首版由公信 WSS 证书认证 Punch 代理入口，保留 Peer 签名与 DTLS 指纹绑定；不额外设计 Punch 应用层节点证明。端点列表 endpoints 沿签名节点凭据、Registry 与 Track 传递，原生和 Web SDK 均消费显式入口，不从 QUIC 地址猜测公网浏览器入口。此信任模型已确认；浏览器与本地真实 Track/Punch 的认证、心跳和信令已验证，Chromium 与原生 SDK 的 WebRTC 身份/双向帧交换已通过本地测试；本地 Chromium 完整文件 P2P 已验收；WebKit 原生 ICE、公网 WSS、TURN 和跨 NAT 仍待 C7 验收。
 - 平台规划支持用户自带 S3 Bucket 或使用套餐内的平台存储，套餐以网络能力与存储规模为主要维度；具体配额和价格未确定。**这些是产品方向，不表示账号、托管平台、存储接入及计费功能已经实现**。
 - 产品讨论和后续参考见 [product-direction.md](../todos/product-direction.md)。直播规划见 [live-streaming.md](../todos/live-streaming.md)，不要因为首页提到直播就自行优先启动该规划。
 
@@ -63,3 +67,9 @@
 | 候选选取与数量 | [peer-query-selection.md](../todos/peer-query-selection.md) |
 
 这份文件不承担功能清单职责。当前公共 API、默认值和限制以代码及同步后的正式文档为准；todo 中的旧方案需结合完成状态阅读。
+
+## MVP Punch 多入口约定（2026-10-29）
+
+维护者确认统一改用 endpoints URL 列表，以 scheme 选择传输，不保留单 url/websocket_url 兼容字段。Registry、Workers/原生 Track、Punch 注册、原生/Web SDK 与管理视图一起切换；直接更新初始建表 SQL，允许在明确范围内重建测试状态，不编写旧 schema 兼容迁移。2026-11-07 已完成 E1 共享契约并联动接线：发现/管理 schema、Registry claims、两种 Track、两端 SDK 统一列表格式，旧单地址协议不再接受；详见 todos/web-sdk.md 的 C7.E。Registry 初始 SQL 与 Workers Peer/Discovery 元版本已调整；2026-11-08 按 MVP 授权重建 Registry、上线匹配 Registry/Track，Track 四类状态换代后删除旧 namespace，香港 v0.7.0 新凭据登记成功并通过公网控制面、本机双 SDK 无 CDN 完整文件哈希验收。成都未处理；跨 NAT、强制 TURN 与浏览器公网完整链路仍待验收。详见 todo 的实际部署记录，禁止将 MVP 清理授权扩展到平台业务数据。公网 WSS 使用公共 CA 认证代理入口，QUIC 节点身份与 Peer 认证继续保留。
+
+- 维护者已确认 Punch TLS 分工：QUIC 校验节点公钥，原生与浏览器 WSS 均校验公共 CA/域名/有效期；反向代理属于可信部署边界，本机或受控内网 WS 转发，不持有 Punch 身份私钥。MVP 不新增 Punch 应用层签名证明，票据/MAC 与 Peer 签名、DTLS 指纹绑定保留；连接器已使用显式端点与 WSS 公信 CA 校验，本地反例与互通回归通过，公网 CA/跨 NAT/TURN 仍待验收。

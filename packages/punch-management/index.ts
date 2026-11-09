@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { nodeIdSchema, integer, metricsSchema, punchUrlSchema, punchPublicKeySchema } from '@q2q/punch-discovery';
+import { nodeIdSchema, integer, metricsSchema, punchEndpointsSchema, punchPublicKeySchema } from '@q2q/punch-discovery';
 export const policyInputSchema = z.strictObject({
   requestId: z.uuid(), nodeId: nodeIdSchema, enabled: z.boolean(),
   revision: integer.max(Number.MAX_SAFE_INTEGER - 1), reason: z.string().trim().min(1).max(1000),
@@ -17,9 +17,9 @@ export const outcomeSchema = z.discriminatedUnion('ok',[
   z.object({ok:z.literal(false),code:z.enum(['invalid_request','not_found','conflict','request_conflict'])})
 ]);
 export type PolicyOutcome = z.infer<typeof outcomeSchema>;
-export const managedPunchSchema = z.object({
+export const managedPunchSchema = z.strictObject({
   node_id:nodeIdSchema,service_type:z.literal('punch'),region:z.string().nullable(),version:z.string(),
-  advertise_url:punchUrlSchema,public_key:punchPublicKeySchema,identity_version:integer.positive(),
+  endpoints:punchEndpointsSchema,public_key:punchPublicKeySchema,identity_version:integer.positive(),
   online:z.boolean(),accepting_new_connections:z.boolean(),metrics:metricsSchema.nullable(),
   last_seen:integer,expires_at:integer,enabled:z.boolean(),revision:integer
 });
