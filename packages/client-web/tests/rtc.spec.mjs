@@ -25,3 +25,7 @@ for(const nativeInitiator of [false,true])test(`browser and native webrtc-rs int
 for(const option of ['pressure','overflow','smallMessageSize'])test(`RTC bounded host behavior ${option} @rtc`,async({page,origin})=>{
   await page.goto(origin);await page.evaluate(async option=>(await import('/tests/rtc.browser.ts')).pair({[option]:true}),option);
 });
+
+for(const mode of ['timeout','candidate'])test(`RTC diagnostic captures ${mode} before cleanup @rtc`,async({page,origin})=>{
+ await page.goto(origin);await page.evaluate(async mode=>(await import('/tests/rtc.browser.ts')).diagnosticFailure(mode),mode);
+});

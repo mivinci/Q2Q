@@ -1,6 +1,6 @@
 import type { ContentDestination, ContentSource, OutputReceipt } from './storage.ts';
 import type { ContentIdentity, StateStore } from './checkpoint-types.ts';
-import type { Q2QErrorCode } from './error.ts';
+import type { Q2QErrorCode, ConnectionDiagnostic } from './error.ts';
 
 export interface ContentInfo extends ContentIdentity { readonly name: string | null; readonly blockCount: bigint }
 export interface Seed {
@@ -28,7 +28,7 @@ export interface DownloadOptions { seed: Seed; destination: ContentDestination }
 export interface ResumeDownloadOptions extends DownloadOptions { checkpointId: string }
 export type DownloadState = 'preparing' | 'waiting' | 'downloading' | 'pausing' | 'paused'
   | 'finalizing' | 'completed' | 'cancelling' | 'cancelled' | 'failed';
-export interface Failure { readonly code: Q2QErrorCode; readonly retryable: boolean }
+export interface Failure { readonly code: Q2QErrorCode; readonly retryable: boolean; readonly diagnostic?: Readonly<ConnectionDiagnostic> }
 export interface DownloadSnapshot {
   readonly id: string; readonly state: DownloadState; readonly content: ContentInfo;
   readonly receivedBytes: bigint; readonly verifiedBytes: bigint; readonly committedBytes: bigint;

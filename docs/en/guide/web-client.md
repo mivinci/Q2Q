@@ -1,8 +1,9 @@
 # Web client
 
 `apps/www` implements local file sharing and seed downloads without a platform login.
-**Sharing/P2P page flows are locally verified but not deployed to q2q.app yet.**
-This describes the development build, not availability of every feature on the live site.
+Sharing/P2P pages are deployed. The cross-device browser matrix is incomplete;
+Mac Safari receiving an iPhone Safari share is under investigation. New diagnostics
+described here belong to the development build and require deployment.
 
 ## Share a local file
 
@@ -67,4 +68,15 @@ records can remain until their TTL expires.
 
 These paths were verified with isolated local services. Cross-device, cross-NAT and
 forced TURN acceptance are deferred, not passed. Retry is not a connectivity guarantee
-for every network. Deployment of the Web application remains a separate decision.
+for every network.
+
+
+## Inspect a failed connection (development build)
+
+Open **Details → Transfer details → Connection diagnostics** on a failed task.
+Copy the error code, stage, ICE/connection/channel states and candidate counts for
+troubleshooting. Do not send full SDP, cookies, tickets or TURN credentials.
+Diagnostics exclude addresses and credentials, are not uploaded automatically and
+are not guaranteed to survive refresh. A network failure is not necessarily CORS;
+an online control connection does not prove WebRTC connected. A shared Wi-Fi or
+an Edge success does not establish Safari-to-Safari compatibility.

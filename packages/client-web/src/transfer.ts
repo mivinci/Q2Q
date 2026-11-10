@@ -42,7 +42,7 @@ export function createTransfer(options: DownloadOptions & { checkpointId?: strin
     const now = performance.now();
     snapshot = Object.freeze({ id, state, content: seed.info, receivedBytes: received, verifiedBytes: verified,
       committedBytes: committed, checkpointId, bytesPerSecond: Number(received) * 1000 / Math.max(1, now - began),
-      error: error ? Object.freeze({ code: error.code, retryable: error.retryable }) : null });
+      error: error ? Object.freeze({ code: error.code, retryable: error.retryable, ...(error.diagnostic ? { diagnostic: error.diagnostic } : {}) }) : null });
     if (!force && now - lastEmission < 100) return;
     lastEmission = now;
     for (const listener of listeners) {
@@ -223,7 +223,7 @@ export function createTransfer(options: DownloadOptions & { checkpointId?: strin
       if (terminal) return Promise.reject(new Q2QError('INVALID_STATE'));
       if (snapshot.state === 'paused') return Promise.resolve();
       if (desire !== 'cancel') { desire = 'pause'; network.abort(); preparing?.abort(); emit('pausing'); }
-      return command(async () => { await current; if (snapshot.state === 'failed') throw new Q2QError(snapshot.error!.code, snapshot.error!.retryable); });
+      return command(async () => { await current; if (snapshot.state === 'failed') throw new Q2QError(snapshot.error!.code, snapshot.error!.retryable, snapshot.error!.diagnostic); });
     },
     resume() {
       return command(async () => {
@@ -240,7 +240,7 @@ export function createTransfer(options: DownloadOptions & { checkpointId?: strin
       return command(async () => {
         await current;
         if (!terminal) end({ error: cancelled() });
-        if (snapshot.state === 'failed') throw new Q2QError(snapshot.error!.code, snapshot.error!.retryable);
+        if (snapshot.state === 'failed') throw new Q2QError(snapshot.error!.code, snapshot.error!.retryable, snapshot.error!.diagnostic);
       });
     },
     async wait() { const value = await outcome; if ('error' in value) throw value.error; return value.result; }

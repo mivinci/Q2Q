@@ -96,3 +96,25 @@ export async function nativeExchange(nativePublicKey:string,nativeInitiator:bool
     await bridge.nativeSend({type:'close'});
   }catch(error){if(errors.length){const pc=(peer as unknown as {pc:RTCPeerConnection}).pc;throw Error(errors.map(String).join('\n')+' states '+JSON.stringify({ice:pc.iceConnectionState,state:pc.connectionState,sctp:pc.sctp?.state,stats:Array.from((await pc.getStats()).values()).filter(row=>['transport','candidate-pair','local-candidate','remote-candidate','data-channel'].includes(row.type))}));}throw error;}finally{controller.abort();await peer.close();identity.close();}
 }
+
+export async function diagnosticFailure(mode:'timeout'|'candidate'){
+ const identity=await controlIdentity(),controller=new AbortController();
+ const peer=await RtcPeer.create({identity,remoteKey:decodeKey(identity.info.public_key),infoHash:new Uint8Array(32),connectionId:'diagnostic-test',initiator:true,signal:controller.signal,onCandidate:()=>{},timeoutMs:mode==='timeout'?500:5000});
+ try{
+  await peer.offer();
+  const host=(peer as unknown as {pc:RTCPeerConnection}).pc;
+  if(mode==='candidate'){
+   // Inject the browser rejection only; never serialize its native message.
+   Object.defineProperty(host,'remoteDescription',{get:()=>({type:'answer',sdp:'v=0'})});
+   host.addIceCandidate=async()=>{throw new DOMException('credential=private-message','OperationError');};
+   await rejects(peer.addCandidate({candidate:'candidate:1 1 udp 1 192.0.2.1 9 typ host',sdpMid:'0',sdpMLineIndex:0}),['PEER_PROTOCOL_ERROR']);
+  }
+  try{await peer.ready();throw Error('expected failure');}catch(error){
+   assert(error instanceof Q2QError);const diagnostic=error.diagnostic;
+   assert(diagnostic?.stage===(mode==='timeout'?'rtc-connect':'rtc-candidate'));
+   assert(diagnostic?.connectionState!=='closed' && diagnostic?.signalingState==='have-local-offer');
+   assert(diagnostic?.dataState==='connecting');
+   assert(!JSON.stringify(diagnostic).includes('private-message')&&!JSON.stringify(diagnostic).includes('192.0.2.1'));
+  }
+ }finally{await peer.close();controller.abort();identity.close();}
+}

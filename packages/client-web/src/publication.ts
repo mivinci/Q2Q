@@ -28,7 +28,7 @@ export function createPublication(options:PublishOptions&{preparedSeed?:Seed;blo
  async function fail(value:unknown){
   if(closing||snapshot.state==='pausing'||snapshot.state==='paused'||snapshot.state==='failed')return;
   const error=value instanceof Q2QError?value:new Q2QError('SOURCE_UNAVAILABLE');
-  controller.abort();emit({state:'failed',error:{code:error.code,retryable:error.retryable}});rejectReady(error);
+  controller.abort();emit({state:'failed',error:{code:error.code,retryable:error.retryable,...(error.diagnostic?{diagnostic:error.diagnostic}:{})}});rejectReady(error);
   try{await release();}finally{proofs?.free();proofs=undefined;options.ended();}
  }
  async function prepare(){

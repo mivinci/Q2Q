@@ -118,3 +118,16 @@ export async function checkMalformedFrame(url:string){
     await rejects(socket.rpc('punch.join','{}',signal.signal),'NETWORK_CLOSED');
   }finally{await socket.close();identity.close();}
 }
+
+export async function checkDialTimeout(url:string){
+ const {dialPeer}=await import('../src/peer-dial.ts');
+ const identity=await controlIdentity(),remote=await controlIdentity(),controller=new AbortController();
+ try{
+  await dialPeer({identity,target:{peerId:remote.info.peer_id,publicKey:decodeKey(remote.info.public_key),punchId:'diagnostic-punch',websocketUrl:url,complete:true},hash:new Uint8Array(32),iceServers:[],signal:controller.signal,timeoutMs:500});
+  throw Error('expected dial timeout');
+ }catch(error){
+  assert(error instanceof Q2QError && error.code==='CONTROL_TIMEOUT');
+  assert(error.diagnostic?.stage==='punch-accept');
+  assert(!JSON.stringify(error.diagnostic).includes(url));
+ }finally{controller.abort();identity.close();remote.close();}
+}

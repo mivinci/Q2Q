@@ -21,7 +21,7 @@ export type { CheckpointSession } from './resume-checkpoint.ts';
 
 export { createClient } from './client.ts';
 export { Q2QError } from './error.ts';
-export type { Q2QErrorCode } from './error.ts';
+export type { Q2QErrorCode, ConnectionDiagnostic } from './error.ts';
 export type { Client, ClientOptions, ClientLimits, Seed, ContentInfo, SourceProvider, HttpSources, DownloadOptions, ResumeDownloadOptions, Transfer, DownloadState, DownloadSnapshot, DownloadResult, Failure } from './client-types.ts';
 
 export type { NetworkSession, NetworkSnapshot } from './network.ts';

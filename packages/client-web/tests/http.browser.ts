@@ -47,6 +47,14 @@ async function until(task: Transfer, predicate: (s: Readonly<DownloadSnapshot>) 
   });
 }
 export const cases: Record<string, () => Promise<void>> = {
+  'connection diagnostic survives rejection and failed task snapshot': () => fixture(async f => {
+    const task=f.start();
+    try {await task.wait();throw new Error('expected failure');}
+    catch(error){assert(error instanceof Q2QError && error.code==='CONTROL_TIMEOUT');assert(error.diagnostic?.stage==='rtc-connect');}
+    const error=task.snapshot().error;assert(task.snapshot().state==='failed');
+    assert(error?.code==='CONTROL_TIMEOUT' && error.diagnostic?.iceConnectionState==='checking');
+    assert(Object.isFrozen(error) && Object.isFrozen(error.diagnostic));
+  }, {options:{sourceProvider:{async resolve(){throw new Q2QError('CONTROL_TIMEOUT',true,{stage:'rtc-connect',iceConnectionState:'checking',localCandidates:2,remoteCandidates:1});}}}}),
   'inline seed download verifies and saves real OPFS bytes': () => fixture(async f => {
     const task = f.start(); const states: string[] = [];
     task.subscribe(s => { states.push(s.state); });

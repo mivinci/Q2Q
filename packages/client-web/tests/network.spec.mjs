@@ -127,3 +127,12 @@ for(const mode of ['text','oversize','invalid'])test(`invalid ${mode} frame term
   await page.goto(origin);
   await page.evaluate(async()=>(await import('/tests/network.browser.ts')).checkMalformedFrame('ws://127.0.0.1:19999/control'));
 });
+
+test('dial timeout keeps signal stage and timeout code instead of cleanup cancellation @network',async({page,origin})=>{
+ await page.routeWebSocket('ws://127.0.0.1:19999/diagnostic',socket=>socket.onMessage(data=>{
+  const request=JSON.parse(data.toString()).payload;
+  socket.send(Buffer.from(JSON.stringify({type:'response',payload:{v:1,id:request.id,result:{ok:true}}})));
+ }));
+ await page.goto(origin);
+ await page.evaluate(async()=>(await import('/tests/network.browser.ts')).checkDialTimeout('ws://127.0.0.1:19999/diagnostic'));
+});

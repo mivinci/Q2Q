@@ -121,7 +121,18 @@ async function startDownload(page,seed,name='published.bin'){
  await page.getByRole('button',{name:'开始下载',exact:true}).click();return page.getByRole('article',{name,exact:true}).first();
 }
 async function exportAndVerify(page,row){
- await expect(row.getByText('待保存',{exact:true})).toBeVisible({timeout:30000});const result=page.waitForEvent('download');
+ try{await expect(row.getByText('待保存',{exact:true})).toBeVisible({timeout:30000});}
+ catch(error){
+  // Capture the SDK failure before finally navigates away and erases the page.
+  let diagnostic='unavailable';
+  try{
+   await row.getByRole('button',{name:/详情/}).click({timeout:2000});
+   await page.getByRole('menuitem',{name:'传输详情',exact:true}).click({timeout:2000});
+   diagnostic=await page.getByRole('region',{name:'连接诊断'}).innerText({timeout:2000});
+  }catch{/* Keep the original completion failure if diagnostics are unavailable. */}
+  throw new Error(`${error.message}\nConnection diagnostic: ${diagnostic}`,{cause:error});
+ }
+ const result=page.waitForEvent('download');
  await row.getByRole('button',{name:'保存文件',exact:true}).click();const download=await result;
  expect(createHash('sha256').update(await readFile(await download.path())).digest('hex')).toBe(hash);
 }
@@ -183,4 +194,26 @@ test('reloading an active share never restores a fake online task or persisted f
  await expect(page.getByRole('button',{name:'分享文件',exact:true})).toBeEnabled();await expect(page.getByRole('article')).toHaveCount(0);
  const row=await startSharing(page);await stop(page,row);
  }finally{await page.goto('about:blank').catch(()=>{});await closeServices(context,services);}
+});
+
+
+test('failed RTC offer exposes safe connection stage in transfer details',async({page,context})=>{
+ const services=await networkFixture();let receiver;
+ try{
+  await routeTrack(context,services.trackUrl);const shared=await startSharing(page),seed=await seedFrom(page,shared);
+  receiver=await context.newPage();
+  await receiver.addInitScript(()=>{RTCPeerConnection.prototype.createOffer=async()=>{throw new DOMException('private-native-detail','OperationError');};});
+  const row=await startDownload(receiver,seed);
+  await expect(row.getByText('下载失败',{exact:true})).toBeVisible();
+  await row.getByRole('button',{name:/详情/}).click();
+  await receiver.getByRole('menuitem',{name:'传输详情',exact:true}).click();
+  const diagnostics=receiver.getByRole('dialog').getByRole('region',{name:'连接诊断'});
+  await expect(diagnostics).toContainText('PEER_PROTOCOL_ERROR');
+  await expect(diagnostics).toContainText('rtc-offer');
+  await expect(diagnostics).toContainText('connectionState');
+  const text=await diagnostics.innerText();
+  for(const secret of ['private-native-detail','127.0.0.1','connect_token','credential','fingerprint'])expect(text).not.toContain(secret);
+  expect(await receiver.evaluate(()=>JSON.stringify(Object.entries(localStorage)))).not.toContain('rtc-offer');
+  await stop(page,shared);
+ }finally{await receiver?.close();await page.goto('about:blank').catch(()=>{});await closeServices(context,services);}
 });
