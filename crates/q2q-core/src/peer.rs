@@ -660,7 +660,7 @@ async fn negotiate(
 #[path = "../tests/peer.rs"]
 mod test_support;
 #[cfg(test)]
-pub(crate) use test_support::test_pair;
+pub(crate) use test_support::{test_pair, turn_pair};
 
 // Log only routing fields: the raw candidate can also contain ICE credentials.
 pub(crate) fn log_candidate(direction: &str, candidate: &RTCIceCandidateInit) {

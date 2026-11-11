@@ -77,6 +77,20 @@ pub(crate) struct RtcConnection {
 
 impl RtcConnection {
   pub(crate) async fn new(turn: Option<(&str, &str, &str)>) -> Result<Self, String> {
+    Self::with_configuration(turn, false).await
+  }
+
+  // Only the explicit acceptance fixture requests relay-only transport. Normal
+  // SDK connections retain the existing all-candidates policy.
+  #[cfg(test)]
+  pub(crate) async fn relay_only(turn: (&str, &str, &str)) -> Result<Self, String> {
+    Self::with_configuration(Some(turn), true).await
+  }
+
+  async fn with_configuration(
+    turn: Option<(&str, &str, &str)>,
+    relay_only: bool,
+  ) -> Result<Self, String> {
     let (candidate_tx, candidates) = mpsc::unbounded_channel();
     let (channel_tx, channels) = mpsc::unbounded_channel();
     let (state_tx, states) = mpsc::unbounded_channel();
@@ -87,6 +101,10 @@ impl RtcConnection {
         username: username.to_owned(),
         credential: credential.to_owned(),
       }]);
+    }
+    if relay_only {
+      config =
+        config.with_ice_transport_policy(webrtc::peer_connection::RTCIceTransportPolicy::Relay);
     }
     let peer = PeerConnectionBuilder::new()
       .with_data_channel_send_buffer_limit(256 * 1024)
@@ -237,6 +255,23 @@ impl RtcConnection {
       Ok(None) => tracing::debug!("Selected ICE path unavailable"),
       Err(_) => tracing::debug!("Selected ICE path lookup failed"),
     }
+  }
+
+  #[cfg(test)]
+  pub(crate) async fn selected_pair_is_relay_only(&self) -> bool {
+    let Some(sctp) = self.peer.sctp().await else {
+      return false;
+    };
+    let Ok(Some(pair)) = sctp
+      .transport()
+      .ice_transport()
+      .get_selected_candidate_pair()
+      .await
+    else {
+      return false;
+    };
+    pair.local().typ == webrtc::peer_connection::RTCIceCandidateType::Relay
+      && pair.remote().typ == webrtc::peer_connection::RTCIceCandidateType::Relay
   }
 
   pub(crate) async fn close(&self) -> Result<(), String> {
