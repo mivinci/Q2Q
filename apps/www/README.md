@@ -21,7 +21,7 @@ WWW_PREVIEW=1 npm run www:test
 
 最后一项要求先 build，测试生产预览而非开发服务器。Playwright 使用独立临时磁盘 profile、本地 Range/CORS 来源与测试端口 5180，结束后关闭测试服务。可用 CHROME_PATH 指定 Chromium；默认 Chromium/WebKit，需安装匹配 @playwright/test 的浏览器。Wasm 构建需要仓库相同的 Rust target 与 wasm-bindgen CLI。报告在 `.tmp/www-playwright`，截图和 trace 不进 Git。
 
-Web CI 按自身及工作区依赖影响运行类型、构建、SDK 与浏览器检查，包含生产预览的 UI 下载流程；PR 只执行检查，不注入部署凭据；相关更改合入 main 后，所有检查通过才部署 `q2q-www` Worker，并通过 Custom Domain 绑定 `q2q.app`。也支持在 main 手动触发（不填 base_sha 时完整执行）。复用仓库 Secret `CLOUDFLARE_API_TOKEN` 与 Variable `CLOUDFLARE_ACCOUNT_ID`，与 platform 一致；Token 还需允许管理 q2q.app 所属 Zone 的自定义域名。主站没有 D1 或服务端 Secret，无需数据库迁移。配置已接线，尚未实际触发线上部署。
+Web CI 按自身及工作区依赖影响运行类型、构建、SDK 单元测试、Chromium 打包冒烟与 Chromium/WebKit 生产预览页面测试。SDK 的存储、HTTP、信令、RTC、P2P、部分共享、发布和磁力链完整契约已拆到独立的 `Web SDK` 工作流，页面或 UI 源码改动不触发这套完整回归；PR 只执行检查，不注入部署凭据；相关更改合入 main 后，所有检查通过才部署 `q2q-www` Worker，并通过 Custom Domain 绑定 `q2q.app`。也支持在 main 手动触发（不填 base_sha 时完整执行）。复用仓库 Secret `CLOUDFLARE_API_TOKEN` 与 Variable `CLOUDFLARE_ACCOUNT_ID`，与 platform 一致；Token 还需允许管理 q2q.app 所属 Zone 的自定义域名。主站没有 D1 或服务端 Secret，无需数据库迁移。配置已接线，尚未实际触发线上部署。
 
 ## 已实现路径
 

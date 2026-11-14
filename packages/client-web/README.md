@@ -140,6 +140,8 @@ npm run test:large --workspace @q2q/client-web
 VITE_RESOLVE_FROM=apps/platform/package.json npm run test:bundle --workspace @q2q/client-web
 ```
 
+CI 使用独立的 `.github/workflows/client-web.yml`：SDK/Wasm、依赖的原生 crate、Track/Registry、共享协议与测试配置改动触发 Chromium 完整本地契约；仅 www 页面或公共 UI 源码改动不触发。每天 UTC 19:00（北京时间次日 03:00）及手动触发运行 Chromium/WebKit 两端完整契约，包括 WebKit 原生 OPFS 存储回归。Wasm 与原生测试产物先构建，再统一执行 Playwright，保留完整失败报告；不包含 `@large` 大文件测量和 `@public` 公网测试，不开启额外重试或跳过。独立工作流不属于 WWW 部署 job 的依赖，WWW 自身仍执行双浏览器页面测试和 Chromium SDK 打包冒烟。
+
 浏览器测试使用标准 `@playwright/test` runner，默认 Chromium 与 WebKit 项目；每个契约用例有独立磁盘 profile。失败保存截图/trace，HTML 报告放在仓库 `.tmp/client-web-playwright/report`，大文件结果作为 JSON 附件保留。大文件测试不启用追踪，避免影响资源测量。
 
 可设置 CHROME_PATH 指定浏览器；未设置时使用匹配 Playwright 的安装版本。新增引擎时建议 `PLAYWRIGHT_SKIP_BROWSER_GC=1 npx playwright install chromium webkit`，避免安装器清理其他任务已有的缓存。通过 `TEST_FIREFOX=1` 和 `--project firefox` 可以显式尝试 Firefox，不把本机启动失败标成 SDK 不支持。

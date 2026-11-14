@@ -20,7 +20,9 @@ spec.loader.exec_module(impact)
 class ImpactTests(unittest.TestCase):
     def decision(self, app, paths, npm_changed=False, cargo_changed=False):
         def npm(ref, name):
-            workspaces = [f'apps/{name}']
+            workspaces = [f'packages/{name}' if name == 'client-web' else f'apps/{name}']
+            if name == 'client-web':
+                workspaces += ['crates/q2q-wasm', 'apps/track', 'apps/registry', 'packages/punch-discovery']
             if name == 'www':
                 workspaces += ['packages/ui', 'packages/client-web', 'crates/q2q-wasm', 'apps/track', 'apps/registry', 'packages/punch-discovery']
             if name in ('admin', 'platform'):
@@ -109,6 +111,25 @@ class ImpactTests(unittest.TestCase):
                 self.assertTrue(self.decision('www', [path]))
         self.assertTrue(self.decision('www', ['apps/registry/src/nodes.ts']))
         self.assertFalse(self.decision('www', ['apps/admin/src/routes/+page.svelte']))
+
+    def test_web_sdk_gate_excludes_page_and_ui_changes(self):
+        for path in ['apps/www/src/routes/+page.svelte', 'apps/www/tests/download.spec.mjs',
+                     'packages/ui/src/button/button.svelte', 'docs/zh/guide/web-client.md']:
+            with self.subTest(path=path):
+                self.assertFalse(self.decision('client-web', [path]))
+        for path in ['packages/client-web/src/client.ts', 'packages/client-web/tests/storage.spec.mjs',
+                     'crates/q2q-wasm/src/lib.rs', 'crates/q2q-primitives/src/seed.rs',
+                     'crates/q2q-core/tests/browser_rtc.rs', 'apps/track/src/directory.ts',
+                     'apps/registry/src/nodes.ts', 'packages/punch-discovery/endpoints.ts',
+                     'tests/fixtures/track/v1.json', 'tests/fixtures/punch/endpoints.json',
+                     'apps/www/package.json', '.github/workflows/client-web.yml',
+                     '.github/scripts/app-impact.py', '.github/scripts/test-app-impact.py']:
+            with self.subTest(path=path):
+                self.assertTrue(self.decision('client-web', [path]))
+        self.assertFalse(self.decision('client-web', ['package-lock.json']))
+        self.assertTrue(self.decision('client-web', ['package-lock.json'], npm_changed=True))
+        self.assertFalse(self.decision('client-web', ['Cargo.lock']))
+        self.assertTrue(self.decision('client-web', ['Cargo.lock'], cargo_changed=True))
 
 
 if __name__ == '__main__':

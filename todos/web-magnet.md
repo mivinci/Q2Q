@@ -273,3 +273,10 @@ flowchart TD
 - 与 PR #101 已记录的 WebKit 原生 OPFS 间歇失败属于相近现象，但现有日志不足以确定浏览器底层原因。当前 fixture 为每个用例启动独立 persistent profile，文件名使用 UUID；没有证据指向同文件并发或 SDK lease 泄漏。
 - 本机沙箱内启动 WebKit 被阻止；获准在沙箱外执行同一用例、保持 2 workers、重复 5 次，5/5 通过，未复现 CI 错误。未添加重试/跳过，未修改业务实现，也未据此声称根治。
 - 排查时 Chromium job 仍在运行；WebKit 后续链路仍需成功的 CI 执行验证。
+
+
+### WWW / SDK CI 分层（2026-11-15）
+
+按维护者确认调整配置：WWW 保留双浏览器生产预览页面测试、SDK 单元与 Chromium 打包冒烟；移出 SDK 全量底层回归。新增独立 Web SDK 工作流，按 SDK/Wasm、原生依赖和服务/协议测试依赖变化执行 Chromium 全量本地契约，页面/UI 源码变化不触发；WebKit 全量契约改为每天 UTC 19:00 或手动执行，不阻塞 WWW 部署。保留原测试断言，不以重试或新增 skip 掩盖 OPFS 间歇失败；公网与大文件仍需显式专项运行。统一构建后一次收集运行 SDK 各套 Playwright，减少重复构建并保留一份完整报告。
+
+本地验证：影响规则 11 项通过；两个工作流 YAML 解析通过；Chromium SDK 测试收集 167 项（排除大文件/公网）通过；核对实际 npm lock 的 SDK 依赖闭包不含 www/UI。未运行全套浏览器回归；配置随 PR #103 更新，远端 CI 结果另行核实。
