@@ -215,5 +215,10 @@ export async function webResolveAndDownload(trackUrl:string,link:string,expected
     const second=await receiver.resolveMagnet(link);
     assert(second.info.id===expected.infoId,'post-download resolve mismatch');
     return true;
+  }catch(error){
+    // Surface the sanitized connection diagnostic in CI logs; the raw error
+    // alone cannot distinguish authentication from ICE or PUNCH failures.
+    const value=error as {code?:string;message?:string;diagnostic?:unknown};
+    throw new Error(`web receiver failed: ${JSON.stringify({code:value?.code,message:value?.message,diagnostic:value?.diagnostic})}`);
   }finally{await receiver.close().catch(()=>{});}
 }

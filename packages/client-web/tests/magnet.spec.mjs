@@ -62,15 +62,17 @@ test('web publisher serves metadata end to end @p2p @magnet',async({page,context
   for(let i=0;i<content.length;i++)content[i]=(i*37+Math.floor(i/262144))%251;
   const nodeHash=createHash('sha256').update(content).digest('hex');
   const prepared=await page.evaluate(async({trackUrl,content})=>(await import('/tests/magnet.browser.ts')).webPublishForMagnet(trackUrl,content),{trackUrl:local.trackUrl,content});
-  const receiver=await context.newPage();
+  // The receiver uses its own context: same-page peer connections never
+  // complete ICE, and a separate context also matches the cross-device case
+  // instead of sharing cookies, storage and browser-level resources.
+  const receiverContext=await context.browser().newContext();
+  const receiver=await receiverContext.newPage();
   try{
     await receiver.goto(origin);
-    // Two RTCPeerConnections in one page never complete ICE; the receiver
-    // must be a second page even on the same origin.
     await receiver.evaluate(async({trackUrl,link,expected})=>(await import('/tests/magnet.browser.ts')).webResolveAndDownload(trackUrl,link,expected),
       {trackUrl:local.trackUrl,link:prepared.link,expected:{infoId:prepared.infoId,size:prepared.size,hash:nodeHash}});
   }finally{
-    await receiver.close();
+    await receiverContext.close();
     await page.evaluate(async()=>(await import('/tests/magnet.browser.ts')).webPublishClose()).catch(()=>{});
   }
 });
