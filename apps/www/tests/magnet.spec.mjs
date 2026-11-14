@@ -225,7 +225,7 @@ test('native SDK resolves and downloads the magnet link exported by the live pag
   expect(link).toMatch(/^magnet:\?xt=urn:sha256:[a-f0-9]{64}/);
   // The native side resolves verified metadata from this page's publication
   // and downloads the full file through the same path the CLI uses.
-  const result=await execute(artifact.executable,['native_downloads_browser_publication_magnet','--ignored','--nocapture'],
+  const result=await execute(artifact.executable,['native_downloads_web_magnet_link','--ignored','--nocapture'],
     {cwd:root,env:{...process.env,Q2Q_BROWSER_UPLOAD_TRACK:services.trackUrl,Q2Q_BROWSER_UPLOAD_MAGNET:link},timeout:90000});
   expect(result.stdout).toContain('Browser publication verified by native SDK');
   await stopSharing(page,shared);

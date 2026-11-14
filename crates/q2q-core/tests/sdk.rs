@@ -628,10 +628,18 @@ async fn native_downloads_browser_publication() {
 /// before downloading. This is the same `resolve_magnet` entry the CLI uses.
 #[tokio::test]
 #[ignore = "requires local browser publication; run Web SDK @publish tests"]
-async fn native_downloads_browser_publication_magnet() {
-  let track = std::env::var("Q2Q_BROWSER_UPLOAD_TRACK").unwrap();
+async fn native_downloads_web_magnet_link() {
+  // Test binaries accept a name substring as a filter, so this name must not
+  // share a prefix with the seed-based case above. Missing variables skip
+  // instead of panicking when another filter happens to match.
+  let (Ok(track), Ok(link)) = (
+    std::env::var("Q2Q_BROWSER_UPLOAD_TRACK"),
+    std::env::var("Q2Q_BROWSER_UPLOAD_MAGNET"),
+  ) else {
+    eprintln!("skipped: browser publication magnet variables are not set");
+    return;
+  };
   assert!(track.starts_with("http://127.0.0.1:"));
-  let link = std::env::var("Q2Q_BROWSER_UPLOAD_MAGNET").unwrap();
   let magnet = q2q_primitives::seed::parse_magnet(&link).unwrap();
   let root = tempfile::tempdir().unwrap();
   let client = client::builder()

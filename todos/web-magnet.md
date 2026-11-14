@@ -262,6 +262,14 @@ flowchart TD
 
 - WebKit：本机 Playwright WebKit 的 OPFS 持续报原生 `UnknownError`（PR #101 已记录的已知问题），磁力链下载用例未在 WebKit 执行；
   接收任务改用内存 destination 的用例同样未跑 WebKit（需要 OPFS 的既有套件保持原样）。
-- CLI ↔ www 双向磁力链互通：`native_downloads_browser_publication_magnet` 用例由真实页面导出的磁力链驱动，原生 SDK（与 CLI 相同的 `Client::resolve_magnet` 路径）解析元数据并下载完整文件、哈希一致。CLI 二进制的 magnet 下载入口本身另有既有本地验收（[magnet-download.md](magnet-download.md)）。
+- CLI ↔ www 双向磁力链互通：`native_downloads_web_magnet_link` 用例由真实页面导出的磁力链驱动，原生 SDK（与 CLI 相同的 `Client::resolve_magnet` 路径）解析元数据并下载完整文件、哈希一致。CLI 二进制的 magnet 下载入口本身另有既有本地验收（[magnet-download.md](magnet-download.md)）。
 - `PUBLIC_Q2Q_TRACK_URL` 为空的 HTTP-only 构建：独立 dev server（5181）级用例断言“磁力链下载需要 P2P 网络，当前构建未启用”。
 - 跨 NAT/强制 TURN、真实移动后台、公网 Track/Punch 与线上页面未验证；主站未重新部署，线上仍是旧页面。
+
+### PR #103 首轮 CI 排查（2026-11-15）
+
+- PR head 为 `eb0e6e1`，WWW run `43617011784` 的 WebKit/macOS job `132514199812` 在 SDK `test:browser` 阶段失败：存储组 57 通过、1 跳过、1 失败。
+- 失败用例为 `open cancellation does not truncate content or retain the lease`，错误明确为 `fixture create: UnknownError`：发生在 `file-destination.browser.ts` 的原生 `root.getFileHandle(name, { create: true })`，尚未调用该用例的 SDK 逻辑。当前 PR 未修改这个 fixture 或 `src/file-destination.ts`；后续 HTTP、RTC、P2P 和 WWW 页面步骤未执行，不能据此认定磁力链回归通过或失败。
+- 与 PR #101 已记录的 WebKit 原生 OPFS 间歇失败属于相近现象，但现有日志不足以确定浏览器底层原因。当前 fixture 为每个用例启动独立 persistent profile，文件名使用 UUID；没有证据指向同文件并发或 SDK lease 泄漏。
+- 本机沙箱内启动 WebKit 被阻止；获准在沙箱外执行同一用例、保持 2 workers、重复 5 次，5/5 通过，未复现 CI 错误。未添加重试/跳过，未修改业务实现，也未据此声称根治。
+- 排查时 Chromium job 仍在运行；WebKit 后续链路仍需成功的 CI 执行验证。
