@@ -40,7 +40,14 @@ async function pasteLink(dialog,link){
 async function pasteMagnet(page,link){
  const dialog=await openDownloadDialog(page);
  await pasteLink(dialog,link);
- await expect(page.getByRole('heading',{name:'准备下载',exact:true})).toBeVisible({timeout:30000});
+ try{await expect(page.getByRole('heading',{name:'准备下载',exact:true})).toBeVisible({timeout:30000});}
+ catch(error){
+  // Capture the live dialog before teardown navigates to about:blank.
+  const alerts=await page.getByRole('alert').allTextContents().catch(()=>[]);
+  await test.info().attach('magnet-resolve-failure',{body:JSON.stringify({alerts}),contentType:'application/json'});
+  await test.info().attach('magnet-resolve-page',{body:await page.screenshot(),contentType:'image/png'});
+  throw new Error(`Magnet preview did not open: ${JSON.stringify(alerts)}`,{cause:error});
+ }
  await page.getByRole('button',{name:'开始下载',exact:true}).click();
 }
 async function exportAndVerify(page,row){
@@ -84,13 +91,25 @@ async function stopSharing(page,row){
  await page.getByRole('menuitem',{name:'停止分享',exact:true}).click();
 }
 
-test('pasted magnet resolves from an online publisher, downloads and exports verified bytes',async({page,context,browserName})=>{
- test.setTimeout(90000);const services=await networkFixture();let receiver;
+test('pasted magnet resolves from an online publisher, downloads and exports verified bytes',async({page,context,browserName},testInfo)=>{
+ test.setTimeout(90000);const services=await networkFixture();let receiverContext;
  try{
+  page.on("console",message=>{if(message.text().includes("Q2Q_TEST"))console.log(message.text());});
   await routeTrack(context,services.trackUrl);const shared=await startSharing(page);
   const link=await copyLink(page,shared,{fallback:browserName==='webkit'});
   expect(link).toMatch(/^magnet:\?xt=urn:sha256:[a-f0-9]{64}/);
-  receiver=await context.newPage();
+  // Metadata discovery opens and closes an RTC session before downloading.
+  // Give the receiver its own browser profile, as on two separate devices.
+  // A persistent profile also keeps WebKit's OPFS available for the download.
+  const profile=testInfo.outputPath('receiver-profile');await mkdir(profile,{recursive:true});
+  receiverContext=await {chromium,webkit}[browserName].launchPersistentContext(profile,{
+   headless:true,baseURL:'http://127.0.0.1:5180',acceptDownloads:true,
+   ...(browserName==='chromium'?{args:['--use-mock-keychain']}:{}),
+   ...(browserName==='chromium'&&process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
+  await receiverContext.addInitScript(()=>Object.defineProperty(window,'showSaveFilePicker',{value:undefined,configurable:true}));
+  await routeTrack(receiverContext,services.trackUrl);
+  const receiver=await receiverContext.newPage();
+  receiver.on("console",message=>{if(message.text().includes("Q2Q_TEST"))console.log(message.text());});
   await pasteMagnet(receiver,link);
   const row=receiver.getByRole('article',{name:'published.bin',exact:true}).first();
   await exportAndVerify(receiver,row);
@@ -102,7 +121,11 @@ test('pasted magnet resolves from an online publisher, downloads and exports ver
   expect(records[0].origin).toBe('magnet');
   expect(JSON.stringify(records)).not.toContain('magnet:');
   await stopSharing(page,shared);
- }finally{await receiver?.goto('about:blank').catch(()=>{});await receiver?.close();await page.goto('about:blank').catch(()=>{});await closeServices(context,services);}
+ }finally{
+  if(receiverContext){await receiverContext.unrouteAll({behavior:'wait'});await receiverContext.close();}
+  await rm(testInfo.outputPath('receiver-profile'),{recursive:true,force:true});
+  await page.goto('about:blank').catch(()=>{});await closeServices(context,services);
+ }
 });
 
 test('invalid, BitTorrent and unknown links report typed errors without creating tasks',async({page,context})=>{

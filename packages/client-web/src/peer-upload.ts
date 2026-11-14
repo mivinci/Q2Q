@@ -125,7 +125,7 @@ export function uploadHandler(options:{seed:Seed;source:{open():Promise<SourceRe
    if(peers.size>=options.maxConnections){await context.send({type:'reject',connection_id:message.connection_id,reason:'busy'});return;}
    if(typeof message.connect_token!=='string')return;
    const controller=new AbortController(),inbox=new Inbox<SignalMessage>();
-   const work=serve(message,context,inbox,AbortSignal.any([options.signal,controller.signal])).catch(()=>{}).finally(()=>{peers.delete(message.connection_id);});
+   const work=serve(message,context,inbox,AbortSignal.any([options.signal,controller.signal])).catch(error=>console.log("Q2Q_TEST_UPLOAD_FAILURE",error.code,error.diagnostic)).finally(()=>{peers.delete(message.connection_id);});
    peers.set(message.connection_id,{controller,inbox,work});
   },
   close(){closing??=(async()=>{for(const peer of peers.values())peer.controller.abort();await Promise.allSettled([...peers.values()].map(peer=>peer.work));})();return closing;}
