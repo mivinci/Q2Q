@@ -9,3 +9,8 @@ button, a, input, summary { -webkit-tap-highlight-color: transparent; }
 .task-buttons{display:flex;flex-wrap:wrap;justify-content:center;gap:10px}.task-filters{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}.section-heading .task-buttons{justify-content:flex-start}
 
 @media(max-width:700px){.welcome .task-buttons{flex-wrap:nowrap}.welcome .task-buttons [data-slot=button]{flex:1;min-width:0;padding-inline:10px;font-size:12px;gap:6px}.welcome .task-buttons svg{width:16px;height:16px}}
+
+.magnet-form{margin-top:18px}.magnet-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}.magnet-input{width:100%;height:42px;padding:0 12px;border:1px solid var(--border);border-radius:10px;background:var(--background);color:var(--foreground);font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:13px}.magnet-input:focus-visible{outline:2px solid var(--ring);outline-offset:1px}.magnet-pending{margin-top:20px;font-size:13px;line-height:1.6;color:var(--muted-foreground)}.magnet-hash{margin-top:8px;font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:12px;color:var(--foreground)}.dialog-separator{display:flex;align-items:center;gap:10px;margin:22px 0 0;color:var(--muted-foreground);font-size:12px}.dialog-separator::before,.dialog-separator::after{content:'';flex:1;height:1px;background:var(--border)}
+@media(max-width:700px){.magnet-form .dialog-actions,.magnet-form .dialog-actions [data-slot=button]{width:100%}}
+
+.copy-status{font-size:12px;color:var(--primary);white-space:nowrap}

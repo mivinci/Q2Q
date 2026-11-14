@@ -144,3 +144,5 @@ await import("./check-peer.mjs");
 await import("./check-witness.mjs");
 
 await import('./check-upload.mjs');
+
+await import('./check-magnet.mjs');

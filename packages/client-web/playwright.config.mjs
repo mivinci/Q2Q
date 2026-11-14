@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
   testDir: './tests',
-  testMatch: ['storage.spec.mjs','network.spec.mjs','rtc.spec.mjs','p2p.spec.mjs','public-p2p.spec.mjs','publication.spec.mjs','partial.spec.mjs'],
+  testMatch: ['storage.spec.mjs','network.spec.mjs','rtc.spec.mjs','p2p.spec.mjs','public-p2p.spec.mjs','publication.spec.mjs','partial.spec.mjs','magnet.spec.mjs'],
   timeout: 45000,
   expect: { timeout: 5000 },
   fullyParallel: true,

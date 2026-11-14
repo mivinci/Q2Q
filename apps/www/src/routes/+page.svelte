@@ -34,6 +34,11 @@
   let deleting = $state<Row | null>(null);
   let dragging = $state(false);
   let dragDepth = 0;
+  /** Download dialog: paste a magnet link or choose a .q2q seed file. */
+  let downloadOpen = $state(false);
+  let magnetInput = $state('');
+  let magnetInputBox = $state<HTMLInputElement | undefined>(undefined);
+  $effect(() => { if (downloadOpen && !session.magnetResolving) { const box = magnetInputBox; if (box) { box.focus(); box.select(); } } });
   onMount(() => {
     void session.init();
     const unload = (event: BeforeUnloadEvent) => {
@@ -47,6 +52,39 @@
     const file = (event.currentTarget as HTMLInputElement).files?.[0];
     if (file) void session.select(file,resumeId);
     resumeId = undefined;
+  }
+  /** The download button opens one dialog for both entry forms; the hidden
+   * input stays for drag/drop and the in-dialog file chooser. */
+  let dialogResume: string | undefined;
+  function openDownload(row?: Row) {
+    if (!session.ready || session.parsing) return;
+    dialogResume = row?.id;
+    magnetInput = '';
+    downloadOpen = true;
+    session.magnetError = null;
+    session.magnetLink = null;
+  }
+  function closeDownload() {
+    if (session.magnetResolving) session.cancelMagnet();
+    downloadOpen = false; dialogResume = undefined; magnetInput = '';
+    session.magnetError = null; session.magnetLink = null;
+  }
+  function submitMagnet() {
+    const link = magnetInput.trim();
+    if (!link || session.magnetResolving) return;
+    void session.openMagnet(link, dialogResume).then(() => {
+      if (session.preview) { downloadOpen = false; magnetInput = ''; }
+    });
+  }
+  function chooseSeedInDialog() {
+    // Keep dialogResume for the resume target; close the dialog first so the
+    // native chooser is not covered by the modal.
+    const target = dialogResume;
+    downloadOpen = false; magnetInput = '';
+    choose(target ? session.rows.find(r => r.id === target) : undefined);
+  }
+  function relink(row: Row) {
+    openDownload(row);
   }
   function chooseShare(){shareInput.value='';shareInput.click();}
   function sharePicked(event:Event){const file=(event.currentTarget as HTMLInputElement).files?.[0];if(file)session.selectShare(file);}
@@ -109,14 +147,14 @@
           ondragenter={(e) => { e.preventDefault(); dragDepth++; dragging = true; }}
           ondragleave={() => { dragDepth = Math.max(0,dragDepth - 1); if (!dragDepth) dragging = false; }}>
           <div class="task-buttons"><Button class="h-11 gap-2 px-6" disabled={!session.ready} onclick={chooseShare}><ArrowUp />{text.share}</Button>
-          <Button variant="outline" class="h-11 gap-2 px-6" disabled={!session.ready || session.parsing} onclick={() => choose()}><ArrowDown />{session.parsing ? text.preparing : text.open}</Button></div>
+          <Button variant="outline" class="h-11 gap-2 px-6" disabled={!session.ready || session.parsing} onclick={() => openDownload()}><ArrowDown />{session.parsing ? text.preparing : text.download}</Button></div>
           <p class="drop-hint">{text.drop}</p>
         </div>
         <div class="assurances"><span><ShieldCheck />{text.verified}</span><span><Check />{text.account}</span></div>
       </section>
     {:else}
       <section class="transfers" aria-labelledby="tasks-title">
-        <div class="section-heading"><div><h1 id="tasks-title">{text.tasks}</h1><p>{session.rows.length+session.shares.length} {session.rows.length+session.shares.length===1?text.countOne:text.count}</p></div><div class="task-buttons"><Button class="h-10 gap-2 px-4" disabled={!session.ready} onclick={chooseShare}><ArrowUp />{text.share}</Button><Button variant="outline" class="h-10 gap-2 px-4" disabled={!session.ready || session.parsing} onclick={() => choose()}><ArrowDown />{text.open}</Button></div></div>
+        <div class="section-heading"><div><h1 id="tasks-title">{text.tasks}</h1><p>{session.rows.length+session.shares.length} {session.rows.length+session.shares.length===1?text.countOne:text.count}</p></div><div class="task-buttons"><Button class="h-10 gap-2 px-4" disabled={!session.ready} onclick={chooseShare}><ArrowUp />{text.share}</Button><Button variant="outline" class="h-10 gap-2 px-4" disabled={!session.ready || session.parsing} onclick={() => openDownload()}><ArrowDown />{text.download}</Button></div></div>
         {#if session.rows.length && session.shares.length}<div class="task-filters" role="group" aria-label={text.tasks}>{#each ['all','download','share'] as key}<Button variant={filter===key?'secondary':'ghost'} aria-pressed={filter===key} onclick={()=>{filter=key as typeof filter;}}>{key==='all'?text.all:key==='download'?text.downloadType:text.shareType}</Button>{/each}</div>{/if}
         <div class="task-list">
           {#each session.shares.filter(()=>filter!=='download'||!session.rows.length) as row (row.id)}
@@ -128,9 +166,11 @@
                 {:else}<p class="progress-caption">{text.shareSent} {bytes(row.snapshot.sentBytes)} · {row.snapshot.activeConnections} {text.shareConnections}</p>{/if}
               </div>
               <div class="task-actions">
+                {#if row.magnetCopied}<span class="copy-status" role="status">{text.magnetCopied}</span>{/if}
                 <Button variant="outline" disabled={!row.seed||row.busy} onclick={()=>session.saveSeed(row)}>{text.saveSeed}</Button>
                 <Menu.Root><Menu.Trigger class="row-menu" aria-label={`${text.details}: ${row.name}`}><More class="size-4" /></Menu.Trigger><Menu.Content align="end">
                   <Menu.Item onSelect={()=>{shareDetail=row;detail=null;detailsOpen=true;}}>{text.readDetails}</Menu.Item>
+                  {#if row.seed && row.snapshot.state!=='preparing'}<Menu.Item disabled={row.busy} onSelect={()=>session.copyMagnet(row)}>{row.magnetCopied ? text.magnetCopied : text.copyMagnet}</Menu.Item>{/if}
                   {#if row.snapshot.state==='paused'}<Menu.Item disabled={row.busy} onSelect={()=>session.shareControl(row,'resume')}>{text.resume}</Menu.Item>
                   {:else if !['closed','failed','closing'].includes(row.snapshot.state)}<Menu.Item disabled={row.busy} onSelect={()=>session.shareControl(row,'pause')}>{text.pause}</Menu.Item>{/if}
                   {#if !['closed','closing','failed'].includes(row.snapshot.state)}<Menu.Item disabled={row.busy} onSelect={()=>session.shareControl(row,'close')}>{text.stopShare}</Menu.Item>{/if}
@@ -158,6 +198,7 @@
                 {:else if row.snapshot?.state === 'paused'}<Button variant="outline" disabled={row.busy} onclick={() => session.control(row,'resume')}>{text.resume}</Button>
                 {:else if session.running(row)}<Button variant="outline" disabled={row.busy} onclick={() => session.control(row,'pause')}>{text.pause}</Button>
                 {:else if session.hasSeed(row)}<Button variant="outline" disabled={row.busy || row.unavailable} onclick={() => session.control(row,'retry')}>{text.retry}</Button>
+                {:else if row.origin === 'magnet'}<Button variant="outline" disabled={!session.ready || row.busy || row.unavailable} onclick={() => relink(row)}>{text.relink}</Button>
                 {:else}<Button variant="outline" disabled={!session.ready || row.busy || row.unavailable} onclick={() => choose(row)}>{text.resume}</Button>{/if}
                 <Menu.Root><Menu.Trigger class="row-menu" aria-label={`${text.details}: ${row.name}`}><More class="size-4" /></Menu.Trigger><Menu.Content align="end">
                   <Menu.Item onSelect={() => { detail = row;shareDetail=null; detailsOpen = true; }}>{text.readDetails}</Menu.Item>
@@ -168,7 +209,7 @@
                 </Menu.Content></Menu.Root>
               </div>
               {#if row.error}<p class="row-error" role="alert">{text[row.error]}</p>
-              {:else if !row.snapshot && !row.complete}<p class="restore-note">{text.restoreHelp}</p>{/if}
+              {:else if !row.snapshot && !row.complete}<p class="restore-note">{row.origin === 'magnet' ? text.restoreHelpMagnet : text.restoreHelp}</p>{/if}
             </article>
           {/each}
         </div>
@@ -182,6 +223,33 @@
   <footer class="site-footer"><span>{text.privacy}</span><a href="https://docs.q2q.app/guide/what-is-q2q" target="_blank" rel="noopener noreferrer">Q2Q <ArrowUpRight /></a></footer>
 </div>
 
+<AppDialog open={downloadOpen} title={text.downloadTitle} description={text.magnetNote} closeLabel={text.dismiss} onOpenChange={(open) => { if (!open) closeDownload(); }}>
+  {#if session.magnetResolving}
+    <div class="magnet-pending" aria-busy="true" role="status">
+      <p>{text.resolving}</p>
+      {#if session.magnetHash}<p class="magnet-hash">{session.magnetHash.slice(0, 12)}…</p>{/if}
+    </div>
+    <div class="dialog-actions"><Button variant="outline" onclick={() => session.cancelMagnet()}>{text.dismiss}</Button></div>
+  {:else if session.magnetError}
+    <p class="row-error" role="alert">{text[session.magnetError]}</p>
+    <div class="dialog-actions"><Button variant="outline" onclick={() => closeDownload()}>{text.backToInput}</Button><Button onclick={submitMagnet} disabled={!magnetInput.trim()}>{text.magnetRetry}</Button></div>
+  {:else}
+    <form class="magnet-form" onsubmit={(event) => { event.preventDefault(); submitMagnet(); }}>
+      <label class="magnet-label" for="magnet-input">{text.magnetPlaceholder}</label>
+      <input id="magnet-input" bind:this={magnetInputBox} bind:value={magnetInput} class="magnet-input" type="text" inputmode="url" autocomplete="off" spellcheck="false"
+        placeholder={text.magnetPlaceholder} aria-describedby="magnet-note" />
+      <div class="dialog-actions"><Button type="submit" disabled={!magnetInput.trim()}>{text.fetchMagnet}</Button></div>
+    </form>
+    <div class="dialog-separator" aria-hidden="true">{locale === 'en' ? 'or' : '或'}</div>
+    <div class="dialog-actions"><Button variant="outline" onclick={chooseSeedInDialog}>{text.chooseFile}</Button></div>
+  {/if}
+</AppDialog>
+<AppDialog open={!!session.magnetLink} title={text.copyMagnet} description={text.magnetCopyFailed} closeLabel={text.dismiss} onOpenChange={(open) => { if (!open) session.magnetLink = null; }}>
+  {#if session.magnetLink}
+    <input class="magnet-input" readonly aria-label={text.copyMagnet} value={session.magnetLink} onfocus={(event) => event.currentTarget.select()} />
+  {/if}
+  <div class="dialog-actions"><Button variant="outline" onclick={() => { session.magnetLink = null; }}>{text.dismiss}</Button></div>
+</AppDialog>
 <AppDialog open={!!session.sharePreview} title={text.sharePreview} description={text.shareNote} closeLabel={text.dismiss} onOpenChange={open=>{if(!open)session.sharePreview=null;}}>
   {#if session.sharePreview}<div class="preview-file"><FileIcon/><div><span class="file-name">{filename(session.sharePreview.name)}</span><span class="file-meta">{bytes(BigInt(session.sharePreview.size))}</span></div></div>{/if}
   <div class="dialog-actions"><Button variant="outline" onclick={()=>{session.sharePreview=null;}}>{text.dismiss}</Button><Button onclick={()=>session.startShare()}>{text.startShare}</Button></div>
