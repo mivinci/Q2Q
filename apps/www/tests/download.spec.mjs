@@ -12,6 +12,7 @@ const test = base.extend({
     const profile=testInfo.outputPath('profile');await mkdir(profile,{recursive:true});
     const context=await {chromium,webkit}[browserName].launchPersistentContext(profile,{
       headless:true,baseURL:'http://127.0.0.1:5180',acceptDownloads:true,viewport:{width:1280,height:800},
+      ...(browserName==='chromium'?{args:['--use-mock-keychain']}:{}),
       ...(browserName==='chromium'&&process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {})
     });
     await context.route(/^https:\/\/track\.(?:test\.invalid|q2q\.app)\//,route=>route.fulfill({status:503,json:{code:'test-http-only'}}));
@@ -62,7 +63,7 @@ async function upload(page,file) {
   await page.getByRole('button',{name:'开始下载',exact:true}).click();
 }
 async function ready(page) {
-  await page.goto('/');await expect(page.getByRole('button',{name:'打开种子',exact:true})).toBeEnabled();
+  await page.goto('/');await expect(page.getByRole('button',{name:'下载',exact:true})).toBeEnabled();
 }
 test('real HTTP download verifies bytes, exports through browser downloads, and deletes cached history',async ({page,source})=>{
   // Exercise the bounded fallback used by browsers without the native picker.
@@ -127,7 +128,7 @@ test('settings preserve language after reload, dark mode and mobile layout have 
   await page.getByRole('button',{name:'语言: 简体中文',exact:true}).click();
   await page.getByRole('menuitemradio',{name:'English',exact:true}).click();
   await page.keyboard.press('Escape');await page.reload();
-  await expect(page.getByRole('button',{name:'Open seed',exact:true})).toBeEnabled();
+  await expect(page.getByRole('button',{name:'Download',exact:true})).toBeEnabled();
   await expect(page.locator('html')).toHaveAttribute('lang','en');
   expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)).toBe(false);
 });

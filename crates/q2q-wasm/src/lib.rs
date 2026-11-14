@@ -262,6 +262,168 @@ impl UploadProofs {
   }
 }
 
+/// Magnet link parsing stays local; `tr` hints are validated but never dialed here.
+/// Errors are stable machine codes so hosts can map them without string matching.
+#[wasm_bindgen]
+pub fn parse_magnet(link: &str) -> Result<String, JsError> {
+  use q2q_primitives::seed::parse_magnet;
+  let magnet = parse_magnet(link).map_err(|error| JsError::new(magnet_error_code(error)))?;
+  let hex = |value: &[u8]| {
+    value
+      .iter()
+      .map(|byte| format!("{byte:02x}"))
+      .collect::<String>()
+  };
+  Ok(
+    serde_json::json!({
+      "infoHash": hex(&magnet.info_hash),
+      "displayName": magnet.display_name,
+      "trackers": magnet.trackers,
+    })
+    .to_string(),
+  )
+}
+
+fn magnet_error_code(error: q2q_primitives::seed::MagnetError) -> &'static str {
+  use q2q_primitives::seed::MagnetError;
+  match error {
+    MagnetError::NotAMagnet => "not_magnet",
+    MagnetError::MissingXt => "missing_xt",
+    MagnetError::WrongNamespace => "wrong_namespace",
+    MagnetError::BadHash => "bad_hash",
+    MagnetError::TooLong => "too_long",
+    MagnetError::ConflictingXt => "conflicting_xt",
+    MagnetError::BadEncoding => "bad_encoding",
+  }
+}
+
+/// Verified peer metadata becomes a minimal seed: identity bound to `xt`, no
+/// source hints. The hash is checked against the raw canonical info bytes.
+#[wasm_bindgen]
+pub fn magnet_seed(info_b64: &str, info_hash: &[u8]) -> Result<Vec<u8>, JsError> {
+  use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+  use q2q_primitives::seed::MAX_INFO_BYTES;
+  if info_b64.len() > MAX_INFO_BYTES.div_ceil(3) * 4 {
+    return Err(JsError::new("info_too_large"));
+  }
+  let expected: [u8; 32] = info_hash.try_into().map_err(|_| JsError::new("bad_hash"))?;
+  let bytes = B64
+    .decode(info_b64)
+    .map_err(|_| JsError::new("malformed_metadata"))?;
+  let info = q2q_primitives::seed::Info::parse_verified(&bytes, &expected)
+    .map_err(|error| JsError::new(seed_error_code(error)))?;
+  Ok(q2q_primitives::seed::Seed::new(info).encode())
+}
+
+fn seed_error_code(error: q2q_primitives::seed::SeedError) -> &'static str {
+  use q2q_primitives::seed::SeedError;
+  match error {
+    SeedError::InfoTooLarge => "info_too_large",
+    SeedError::InfoHashMismatch => "info_hash_mismatch",
+    _ => "malformed_metadata",
+  }
+}
+
+/// The publisher's canonical info bytes, base64-encoded for `request_info`
+/// responses. Oversized info is an error, not a truncation.
+#[wasm_bindgen]
+pub fn seed_info_b64(seed_bytes: &[u8]) -> Result<String, JsError> {
+  use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+  let seed = q2q_primitives::seed::Seed::parse(seed_bytes)?;
+  seed.validate()?;
+  let encoded = seed.info.encode();
+  if encoded.len() > q2q_primitives::seed::MAX_INFO_BYTES {
+    return Err(JsError::new("info_too_large"));
+  }
+  Ok(B64.encode(encoded))
+}
+
+/// Share-side link generation from a local seed; pure and offline.
+#[wasm_bindgen]
+pub fn seed_magnet(seed_bytes: &[u8]) -> Result<String, JsError> {
+  let seed = q2q_primitives::seed::Seed::parse(seed_bytes)?;
+  seed.validate()?;
+  Ok(q2q_primitives::seed::to_magnet(&seed))
+}
+
 mod control;
 
 mod peer;
+
+#[cfg(test)]
+mod magnet_tests {
+  use super::*;
+  use q2q_primitives::seed::{Info, MagnetError, Seed, SeedError};
+
+  fn fixture() -> (Seed, [u8; 32]) {
+    let mut info = Info::new(1024, [7u8; 32]);
+    info.name = Some("fixture.bin".to_owned());
+    let hash = q2q_primitives::bencode::digest(&info.to_value());
+    (Seed::new(info), hash)
+  }
+
+  #[test]
+  fn magnet_error_codes_are_stable() {
+    for (error, code) in [
+      (MagnetError::NotAMagnet, "not_magnet"),
+      (MagnetError::MissingXt, "missing_xt"),
+      (MagnetError::WrongNamespace, "wrong_namespace"),
+      (MagnetError::BadHash, "bad_hash"),
+      (MagnetError::TooLong, "too_long"),
+      (MagnetError::ConflictingXt, "conflicting_xt"),
+      (MagnetError::BadEncoding, "bad_encoding"),
+    ] {
+      assert_eq!(magnet_error_code(error), code);
+    }
+    assert_eq!(seed_error_code(SeedError::InfoTooLarge), "info_too_large");
+    assert_eq!(
+      seed_error_code(SeedError::InfoHashMismatch),
+      "info_hash_mismatch"
+    );
+    assert_eq!(
+      seed_error_code(SeedError::RootWrongLength),
+      "malformed_metadata"
+    );
+    assert_eq!(
+      seed_error_code(SeedError::Malformed(
+        q2q_primitives::bencode::DecodeError::UnexpectedEnd,
+      )),
+      "malformed_metadata"
+    );
+  }
+
+  #[test]
+  fn magnet_link_roundtrip_and_minimal_seed() {
+    let (seed, hash) = fixture();
+    let link = seed_magnet(&seed.encode()).unwrap();
+    assert!(link.starts_with("magnet:?xt=urn:sha256:"));
+    let parsed = q2q_primitives::seed::parse_magnet(&link).unwrap();
+    assert_eq!(parsed.info_hash, hash);
+    assert_eq!(parsed.display_name.as_deref(), Some("fixture.bin"));
+
+    let info_b64 = seed_info_b64(&seed.encode()).unwrap();
+    let minimal = magnet_seed(&info_b64, &hash).unwrap();
+    let parsed = Seed::parse(&minimal).unwrap();
+    assert_eq!(parsed.info_hash(), hash);
+    assert_eq!(parsed.info.name.as_deref(), Some("fixture.bin"));
+    assert!(
+      parsed.cdn_list.is_empty()
+        && parsed.proof_list.is_empty()
+        && parsed.track_list.is_empty()
+        && parsed.leaf_hashes.is_none()
+    );
+  }
+
+  #[test]
+  fn unknown_info_fields_preserve_identity_through_magnet() {
+    // Unknown fields participate in the content identity; a magnet-resolved
+    // seed must keep them instead of recomputing the hash from known fields.
+    let (seed, hash) = fixture();
+    let link = seed_magnet(&seed.encode()).unwrap();
+    assert!(link.contains(&format!("urn:sha256:{}", hex(&hash))));
+  }
+
+  fn hex(value: &[u8]) -> String {
+    value.iter().map(|byte| format!("{byte:02x}")).collect()
+  }
+}
