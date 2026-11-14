@@ -63,7 +63,15 @@ async function upload(page,file) {
   await page.getByRole('button',{name:'开始下载',exact:true}).click();
 }
 async function ready(page) {
-  await page.goto('/');await expect(page.getByRole('button',{name:'下载',exact:true})).toBeEnabled();
+  await page.goto('/');
+  const download=page.getByRole('button',{name:'下载',exact:true});
+  // Report a terminal initialization error directly instead of timing out on
+  // the disabled button and losing the useful page message.
+  await expect.poll(async()=>{
+    const alerts=await page.getByRole('alert').allTextContents();
+    if(alerts.length)throw new Error(`Page initialization failed: ${JSON.stringify(alerts)}`);
+    return download.isEnabled();
+  }).toBe(true);
 }
 test('real HTTP download verifies bytes, exports through browser downloads, and deletes cached history',async ({page,source})=>{
   // Exercise the bounded fallback used by browsers without the native picker.

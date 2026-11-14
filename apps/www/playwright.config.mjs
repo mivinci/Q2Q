@@ -10,6 +10,8 @@ export default defineConfig({
   webServer:{env:{PUBLIC_Q2Q_TRACK_URL:'https://track.test.invalid',...(process.env.WWW_DEV_HOME?{HOME:process.env.WWW_DEV_HOME}:{})},command:process.env.WWW_PREVIEW === '1' ? 'npm run preview -- --port 5180' : 'npm run dev -- --port 5180',url:'http://127.0.0.1:5180',reuseExistingServer:false,timeout:60000},
   projects:[
     {name:'chromium',use:{browserName:'chromium',launchOptions:process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {}}},
-    {name:'webkit',use:{browserName:'webkit'}}
+    // Avoid overlapping native storage initialization across persistent profiles
+    // on the runner. Cross-tab/concurrent-transfer assertions inside tests remain.
+    {name:'webkit',workers:1,use:{browserName:'webkit'}}
   ]
 });
