@@ -13,7 +13,9 @@ const test=base.extend({
   const profile=testInfo.outputPath('profile');await mkdir(profile,{recursive:true});
   const context=await {chromium,webkit}[browserName].launchPersistentContext(profile,{headless:true,baseURL:'http://127.0.0.1:5180',acceptDownloads:true,viewport:{width:1280,height:800},...(browserName==='chromium'?{args:['--use-mock-keychain']}:{}),
    ...(browserName==='chromium'&&process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{}),
-   permissions:['clipboard-read','clipboard-write']});
+   // Clipboard permissions are Chromium-only; WebKit rejects the names and
+   // the tests use the manual-copy fallback there instead.
+   ...(browserName==='chromium'?{permissions:['clipboard-read','clipboard-write']}:{})});
   await context.addInitScript(()=>Object.defineProperty(window,'showSaveFilePicker',{value:undefined,configurable:true}));
   try{await use(context);}finally{await context.close();await rm(profile,{recursive:true,force:true});}
  }
@@ -56,7 +58,14 @@ async function startSharing(page){
  await expect(row.getByText('等待接收',{exact:true})).toBeVisible();
  await expect(row.getByRole('button',{name:'保存种子',exact:true})).toBeEnabled();return row;
 }
-async function copyLink(page,row){
+async function copyLink(page,row,{fallback=false}={}){
+ // WebKit cannot grant clipboard permissions; force the product's denial path
+ // there so the same test covers the manual-copy fallback dialog.
+ if(fallback)await page.evaluate(()=>{
+   const denied=()=>Promise.reject(new DOMException('denied','NotAllowedError'));
+   try{globalThis.Clipboard.prototype.writeText=denied;}
+   catch{Object.defineProperty(navigator,'clipboard',{value:{writeText:denied},configurable:true});}
+ });
  await row.getByRole('button',{name:/详情/}).click();
  await page.getByRole('menuitem',{name:'复制磁力链',exact:true}).click();
  // Copy is async; the row confirms success, and a clipboard denial falls back
@@ -75,11 +84,11 @@ async function stopSharing(page,row){
  await page.getByRole('menuitem',{name:'停止分享',exact:true}).click();
 }
 
-test('pasted magnet resolves from an online publisher, downloads and exports verified bytes',async({page,context})=>{
+test('pasted magnet resolves from an online publisher, downloads and exports verified bytes',async({page,context,browserName})=>{
  test.setTimeout(90000);const services=await networkFixture();let receiver;
  try{
   await routeTrack(context,services.trackUrl);const shared=await startSharing(page);
-  const link=await copyLink(page,shared);
+  const link=await copyLink(page,shared,{fallback:browserName==='webkit'});
   expect(link).toMatch(/^magnet:\?xt=urn:sha256:[a-f0-9]{64}/);
   receiver=await context.newPage();
   await pasteMagnet(receiver,link);
