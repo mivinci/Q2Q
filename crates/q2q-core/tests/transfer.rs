@@ -981,3 +981,59 @@ async fn duplicate_pieces_without_proof_cannot_extend_the_progress_deadline() {
   assert!(matches!(result, Err(TransferError::Timeout)));
   assert!(started.elapsed() >= Duration::from_secs(19));
 }
+
+/// Explicit external-network acceptance: never runs in normal CI and never
+/// falls back to host candidates. No Track/Punch or HTTP content is involved.
+#[tokio::test]
+#[ignore = "requires Q2Q_TEST_TURN_URL, Q2Q_TEST_TURN_USERNAME and Q2Q_TEST_TURN_CREDENTIAL"]
+async fn turn_only_full_file_checks_selected_relay_path_and_bytes() {
+  fn required(name: &str) -> String {
+    std::env::var(name)
+      .ok()
+      .filter(|s| !s.is_empty())
+      .unwrap_or_else(|| panic!("set {name} to run explicit TURN acceptance"))
+  }
+  let url = required("Q2Q_TEST_TURN_URL");
+  let username = required("Q2Q_TEST_TURN_USERNAME");
+  let credential = required("Q2Q_TEST_TURN_CREDENTIAL");
+  assert!(
+    url.starts_with("turn:") || url.starts_with("turns:"),
+    "TURN URL must use turn: or turns:"
+  );
+  let directory = tempfile::tempdir().unwrap();
+  // Multiple blocks force proof exchange and completion, not just channel open.
+  let bytes: Vec<_> = (0..(2 * 262144 + 19)).map(|i| (i % 251) as u8).collect();
+  let prepared = source(directory.path(), &bytes);
+  let mut seed = prepared.seed().clone();
+  seed.leaf_hashes = None;
+  let destination = directory.path().join("turn-download.bin");
+  let work = async {
+    eprintln!(
+      "TURN acceptance: allocating relay-only connections (endpoint and credentials redacted)"
+    );
+    let pair = crate::peer::turn_pair(seed.info_hash(), (&url, &username, &credential)).await;
+    let (download, upload) = match pair {
+      Ok(pair) => pair,
+      Err(_) => panic!(
+        "TURN relay-only negotiation/authentication failed; inspect TURN server logs (details redacted)"
+      ),
+    };
+    let (received, served) = tokio::join!(
+      download.download_file(seed, &destination),
+      upload.serve_file(Arc::new(Mutex::new(prepared)))
+    );
+    assert!(received.is_ok(), "TURN download failed (details redacted)");
+    assert!(served.is_ok(), "TURN upload failed (details redacted)");
+    assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+    eprintln!(
+      "TURN acceptance: complete file verified byte-for-byte ({} bytes)",
+      bytes.len()
+    );
+  };
+  assert!(
+    tokio::time::timeout(Duration::from_secs(120), work)
+      .await
+      .is_ok(),
+    "TURN acceptance exceeded 120 seconds"
+  );
+}

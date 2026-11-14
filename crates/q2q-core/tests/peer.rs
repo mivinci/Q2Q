@@ -9,6 +9,22 @@ async fn authenticated_pair(
   prefetch: bool,
   corrupt_nonce: bool,
 ) -> Result<(PeerSession, PeerSession), ControlError> {
+  authenticated_pair_with_turn(info_hash, prefetch, corrupt_nonce, None).await
+}
+
+pub(crate) async fn turn_pair(
+  info_hash: [u8; 32],
+  turn: (&str, &str, &str),
+) -> Result<(PeerSession, PeerSession), ControlError> {
+  authenticated_pair_with_turn(info_hash, false, false, Some(turn)).await
+}
+
+async fn authenticated_pair_with_turn(
+  info_hash: [u8; 32],
+  prefetch: bool,
+  corrupt_nonce: bool,
+  turn: Option<(&str, &str, &str)>,
+) -> Result<(PeerSession, PeerSession), ControlError> {
   use tokio::sync::{Mutex, mpsc};
   struct Pipe {
     tx: mpsc::Sender<SignalRequest>,
@@ -40,7 +56,8 @@ async fn authenticated_pair(
         .ok_or_else(|| ControlError::Transport("test signal closed".into()))
     }
   }
-  tokio::time::timeout(Duration::from_secs(10), async {
+  let timeout = if turn.is_some() { 60 } else { 10 };
+  tokio::time::timeout(Duration::from_secs(timeout), async {
     let (left_tx, left_rx) = mpsc::channel(64);
     let (right_tx, right_rx) = mpsc::channel(64);
     let left_pipe = Pipe {
@@ -51,9 +68,15 @@ async fn authenticated_pair(
       tx: right_tx,
       rx: Mutex::new(left_rx),
     };
-    let mut left = RtcConnection::new(None).await.unwrap();
+    let create = || async {
+      match turn {
+        Some(credentials) => RtcConnection::relay_only(credentials).await,
+        None => RtcConnection::new(None).await,
+      }.map_err(|_| ControlError::Transport("test RTC construction failed (details redacted)".into()))
+    };
+    let mut left = create().await?;
     let (offer, channels) = left.offer().await.unwrap();
-    let mut right = RtcConnection::new(None).await.unwrap();
+    let mut right = create().await?;
     let answer = right.answer(offer).await.unwrap();
     left.apply_answer(answer).await.unwrap();
     let directory = tempfile::tempdir().unwrap();
@@ -116,6 +139,13 @@ async fn authenticated_pair(
     let (a, b) = tokio::join!(left_ready, right_ready);
     let left_channels = a?;
     let right_channels = b?;
+    if turn.is_some() {
+      if !left.selected_pair_is_relay_only().await || !right.selected_pair_is_relay_only().await {
+        let _ = tokio::join!(left.close(), right.close());
+        return Err(ControlError::Transport("TURN acceptance did not select relay/relay on both peers".into()));
+      }
+      eprintln!("TURN acceptance: both selected candidate pairs are relay/relay; mutual authentication passed");
+    }
     Ok((
       PeerSession {
         peer_id: right_identity.peer_id().clone(),
@@ -136,7 +166,7 @@ async fn authenticated_pair(
     ))
   })
   .await
-  .expect("local test peer negotiation timed out")
+  .map_err(|_| ControlError::Transport("test peer negotiation timed out".into()))?
 }
 
 fn hello_event(nonce: [u8; 32]) -> DataChannelEvent {
@@ -223,4 +253,21 @@ async fn prefetched_challenge_cannot_bypass_control_channel_validation() {
     .unwrap_err();
   assert!(error.to_string().contains("reliable ordered q2q-control"));
   right.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn relay_only_pair_cannot_fall_back_to_local_direct_candidates() {
+  // Bind an inert local TURN endpoint so no external traffic or credentials are
+  // needed. The ordinary fixture connects these same local peers in under 1s.
+  let endpoint = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+  let url = format!("turn:{}", endpoint.local_addr().unwrap());
+  let result = tokio::time::timeout(
+    Duration::from_secs(3),
+    turn_pair([27; 32], (&url, "fixture-user", "fixture-credential")),
+  )
+  .await;
+  assert!(
+    !matches!(result, Ok(Ok(_))),
+    "relay-only peers bypassed unavailable TURN"
+  );
 }

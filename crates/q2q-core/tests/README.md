@@ -73,3 +73,34 @@ The same runner also executes an isolated private control-session regression fro
 partial/complete state and serialize withdrawal. Forced local scheduler deadlines avoid
 a 150-second sleep; remote clocks and protocol remain real. Real 429 responses verify
 that failed renewal cannot extend a lease and failed withdrawal stops local renewal intent.
+
+
+## Explicit TURN-only acceptance
+
+`turn_only_full_file_checks_selected_relay_path_and_bytes` reuses the real native
+WebRTC identity handshake and Q2Q block/proof file protocol. Both connections use
+`RTCIceTransportPolicy::Relay` and assert their **selected** candidate pair is
+relay/relay before transferring and comparing all 524,307 bytes. It bypasses
+Track/Punch with an in-memory signaling pipe; no HTTP content fallback is present.
+The test is ignored by default and is not a browser or cross-device acceptance.
+
+Supply a fresh short-lived TURN URL, username and credential through these environment
+variables (never commit credentials or use the long-term server shared secret):
+
+- `Q2Q_TEST_TURN_URL`
+- `Q2Q_TEST_TURN_USERNAME`
+- `Q2Q_TEST_TURN_CREDENTIAL`
+
+```sh
+cargo test --locked -p q2q-core --lib turn_only_full_file -- --ignored --nocapture
+```
+
+Run once with a `turn:host:3478?transport=udp` endpoint, then with
+`turn:host:3478?transport=tcp` only if that endpoint/transport is supported by the
+server and native transport. Success must include the selected relay/relay assertion
+and complete-file verification, not just gathering a candidate. Overall timeout is
+120 seconds; negotiation has its own bounded deadline. Endpoints, credentials and
+native error text are not printed by this acceptance test. Missing variables fail
+explicitly instead of silently skipping. Normal CI includes the local negative
+`relay_only_pair_cannot_fall_back_to_local_direct_candidates` regression, which
+uses an inert loopback TURN endpoint and must not establish a direct connection.
