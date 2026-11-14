@@ -94,22 +94,23 @@ async function stopSharing(page,row){
 test('pasted magnet resolves from an online publisher, downloads and exports verified bytes',async({page,context,browserName},testInfo)=>{
  test.setTimeout(90000);const services=await networkFixture();let receiverContext;
  try{
-  page.on("console",message=>{if(message.text().includes("Q2Q_TEST"))console.log(message.text());});
   await routeTrack(context,services.trackUrl);const shared=await startSharing(page);
   const link=await copyLink(page,shared,{fallback:browserName==='webkit'});
   expect(link).toMatch(/^magnet:\?xt=urn:sha256:[a-f0-9]{64}/);
-  // Metadata discovery opens and closes an RTC session before downloading.
-  // Give the receiver its own browser profile, as on two separate devices.
-  // A persistent profile also keeps WebKit's OPFS available for the download.
-  const profile=testInfo.outputPath('receiver-profile');await mkdir(profile,{recursive:true});
-  receiverContext=await {chromium,webkit}[browserName].launchPersistentContext(profile,{
-   headless:true,baseURL:'http://127.0.0.1:5180',acceptDownloads:true,
-   ...(browserName==='chromium'?{args:['--use-mock-keychain']}:{}),
-   ...(browserName==='chromium'&&process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
-  await receiverContext.addInitScript(()=>Object.defineProperty(window,'showSaveFilePicker',{value:undefined,configurable:true}));
-  await routeTrack(receiverContext,services.trackUrl);
-  const receiver=await receiverContext.newPage();
-  receiver.on("console",message=>{if(message.text().includes("Q2Q_TEST"))console.log(message.text());});
+  let receiver;
+  if(browserName==='chromium'){
+   // Chromium's loopback metadata RTC handshake is unreliable between pages
+   // sharing one profile. Use independent browser processes as on two devices.
+   const profile=testInfo.outputPath('receiver-profile');await mkdir(profile,{recursive:true});
+   receiverContext=await chromium.launchPersistentContext(profile,{
+    headless:true,baseURL:'http://127.0.0.1:5180',acceptDownloads:true,args:['--use-mock-keychain'],
+    ...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
+   await receiverContext.addInitScript(()=>Object.defineProperty(window,'showSaveFilePicker',{value:undefined,configurable:true}));
+   await routeTrack(receiverContext,services.trackUrl);
+   receiver=await receiverContext.newPage();
+  }else{
+   receiver=await context.newPage();
+  }
   await pasteMagnet(receiver,link);
   const row=receiver.getByRole('article',{name:'published.bin',exact:true}).first();
   await exportAndVerify(receiver,row);

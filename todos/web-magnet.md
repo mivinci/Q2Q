@@ -280,3 +280,11 @@ flowchart TD
 按维护者确认调整配置：WWW 保留双浏览器生产预览页面测试、SDK 单元与 Chromium 打包冒烟；移出 SDK 全量底层回归。新增独立 Web SDK 工作流，按 SDK/Wasm、原生依赖和服务/协议测试依赖变化执行 Chromium 全量本地契约，页面/UI 源码变化不触发；WebKit 全量契约改为每天 UTC 19:00 或手动执行，不阻塞 WWW 部署。保留原测试断言，不以重试或新增 skip 掩盖 OPFS 间歇失败；公网与大文件仍需显式专项运行。统一构建后一次收集运行 SDK 各套 Playwright，减少重复构建并保留一份完整报告。
 
 本地验证：影响规则 11 项通过；两个工作流 YAML 解析通过；Chromium SDK 测试收集 167 项（排除大文件/公网）通过；核对实际 npm lock 的 SDK 依赖闭包不含 www/UI。未运行全套浏览器回归；配置随 PR #103 更新，远端 CI 结果另行核实。
+
+
+### 页面磁力链 CI 后续排查（2026-11-15）
+
+- `6f8d95d` 的 WebKit 页面任务因 fixture 无条件请求 Chromium 专用 `clipboard-write` 权限导致 9 项磁力链用例启动失败；`10c6fc8` 已按浏览器区分权限并在 WebKit 验证手动复制回退。该提交的 WebKit CI（run `43622375131`、job `132530710909`）最终 34 通过、9 个既有跳过。
+- 同提交 Chromium 页面 CI 为 40 通过、2 个既有跳过、1 失败，唯一失败是 Web→Web 磁力链解析未进入预览；失败发生在建立元数据连接阶段，不能归因于原先 OPFS fixture 错误。
+- Chromium 接收端改用独立持久浏览器 profile 和独立 Track 转发，保留完整页面交互、OPFS 导出与独立 SHA-256 断言；WebKit 保持 CI 已通过的双页面路径，不增加 skip/retry。失败时在清理导航前附对话框错误与截图，移除临时 SDK 控制台诊断日志。
+- 本机 Edge/Chromium 使用独立接收端的目标用例先单次通过，再按 2 workers 重复 3 次全部通过；脚本语法与 diff 检查通过。WebKit 本机仍可遇到 RTC 建连失败，独立 profile 也未解决，不将其记录为本机验收通过。远端新提交待 CI 验证。

@@ -146,7 +146,6 @@ export async function resolveMagnet(options: ResolveMagnetOptions): Promise<Seed
           settled.abort();
         }
       } catch (error) {
-        console.log("Q2Q_TEST_METADATA_FAILURE", error instanceof Q2QError ? error.code : "unknown", error instanceof Q2QError ? error.diagnostic : null);
         if (winner || options.signal.aborted) return;
         const failure = error instanceof Q2QError ? error : new Q2QError('NETWORK_UNAVAILABLE', true);
         if (failure.code === 'METADATA_MISMATCH') metadataFailed = true;
