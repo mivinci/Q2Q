@@ -21,7 +21,10 @@ for(const mode of ['memory','opfs','metadata-fail','pause','close-sharing','spar
   await page.goto(origin);const value=await page.evaluate(async({track,mode,seed})=>(await import('/tests/partial.browser.ts')).start(track,mode,seed),{track:services.trackUrl,mode,seed:services.externalSeed});
   await expect.poll(()=>page.evaluate(async()=>(await import('/tests/partial.browser.ts')).waiting())).toBe(true);
   peer=await context.newPage();await peer.goto(origin);
-  await peer.evaluate(async({track,id})=>(await import('/tests/partial.browser.ts')).probe(track,id),{track:services.trackUrl,id:value.id});
+  await peer.evaluate(async({track,id})=>{
+   try{await(await import('/tests/partial.browser.ts')).probe(track,id);}
+   catch(error){throw new Error(`Partial peer probe failed: ${JSON.stringify({code:error.code,diagnostic:error.diagnostic})}`);}
+  },{track:services.trackUrl,id:value.id});
   await page.evaluate(async()=>(await import('/tests/partial.browser.ts')).commit());
   if(mode==='metadata-fail'){
     await page.evaluate(async()=>(await import('/tests/partial.browser.ts')).rejectedCommit());return;

@@ -293,3 +293,8 @@ flowchart TD
 `a58f965` 的远端 CI：Chromium WWW 与 SDK 契约均通过；WebKit 的磁力链用例通过，但 HTTP 暂停/刷新恢复用例在初始 `ready()` 失败。下载失败报告（run `43624043328`、job `132535879783`）核对截图与 trace，确认是页面原生存储初始化报“无法访问本地存储”，不是 5 秒等待不足，也没有执行到恢复逻辑。WebKit 项目改为单 worker，降低多个持久 profile 同时初始化的宿主存储争用；用例内部多标签页与传输并发仍保留，不加重试、不延长等待、不跳过用例。HTTP ready helper 直接报告初始化 alert。串行方案属于稳定性缓解，尚不能断言根治浏览器底层原因。
 
 本机 WebKit 暂停/真实刷新/重选种子恢复用例按单 worker 重复 3 次全部通过；配置/脚本语法与 diff 检查通过。新配置仍需远端全套回归验证。
+
+
+`3137567` 后续 CI：两端 WWW 均因新增 ready helper 将任务行中的正常“其他页面正在使用”提示误判为初始化错误，导致多标签页历史测试失败；已把检测范围收窄为 `.page-error[role="alert"]`（仅 session 初始化错误），不将任务行提示视为页面初始化失败。串行 WebKit 的原 HTTP 恢复用例和磁力链场景本轮均通过。修正后，多标签页用例在本机 Chromium（2 workers）与 WebKit（单 worker）分别重复 3 次全部通过。
+
+独立 SDK 同轮为 166 通过、1 项部分共享 pause 场景在 probe 阶段报 `PEER_AUTH_FAILED`。本机 pause 用例 2 workers 重复 5 次全部通过，随后完整部分共享 8 场景重复 3 轮共 24 项全部通过，未复现认证失败，不声称修复 SDK 认证问题。probe 失败补充已有白名单 ConnectionDiagnostic（不输出地址/凭据/SDP），保留原断言；没有添加重试或跳过。脚本语法和 diff 检查通过，新提交继续核对远端 CI。

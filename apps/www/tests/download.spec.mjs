@@ -68,7 +68,7 @@ async function ready(page) {
   // Report a terminal initialization error directly instead of timing out on
   // the disabled button and losing the useful page message.
   await expect.poll(async()=>{
-    const alerts=await page.getByRole('alert').allTextContents();
+    const alerts=await page.locator('.page-error[role="alert"]').allTextContents();
     if(alerts.length)throw new Error(`Page initialization failed: ${JSON.stringify(alerts)}`);
     return download.isEnabled();
   }).toBe(true);
