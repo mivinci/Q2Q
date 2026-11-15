@@ -1,5 +1,16 @@
 # TURN 路径下的 Peer 握手与传输可靠性
 
+## Web SDK 接收通道首条身份帧（2026-11-15）
+
+- PR #105 合并提交 `7bd523e` 的 WWW push run `43683029364`：Chromium 页面 40 通过、1 失败，WebKit 通过；部署因此跳过。失败在来源暂停/恢复后的下载重试，诊断为 `PEER_AUTH_FAILED` / `peer-auth`，ICE 与连接已 connected、双通道已 open，排除单纯来源离线的解释。
+- 此用例的 Track/Registry/Punch 均为临时本地服务，TURN 为 `turn:127.0.0.1:9`；不是依赖生产公网服务的测试。公网/跨 NAT/强制 TURN 验收继续独立显式启用，不因此跳过本地协议回归。
+- 修复前本机真实页面重复运行也复现认证失败；临时有界帧类型诊断捕获验证器先收到 `identity_proof`、尚未消费 hello 的情况。后续另一组 20 次运行通过，说明随机重复通过不能证明根治。
+- [WebRTC 上游 2026-11-06 修复](https://webrtc.googlesource.com/src/+/8bb5e8c5c41ac5ee8c4268a2982d2630be1a3fa7) 描述了接收通道在 `OnTransportReady` 前就被宣布 open、导致首条发送丢失的竞态，与当前症状吻合。新增确定性 host 事件模拟，保留真实 Rust/Wasm 身份、签名和指纹校验：提前 open 丢掉接收方首次发送时，旧实现稳定报同一 `PEER_AUTH_FAILED`。
+- 修复限定在 `rtc-peer.ts`：发起方照常先发送 hello；接收方仅在首个身份帧到达、且两个本地通道就绪后发送自身 hello/proof。仍由 Rust 验证暂存 hello 与证明，原帧上限、签名/角色/内容/指纹绑定、认证前数据拒绝、截止时间及取消清理保持。
+- 回归覆盖正常顺序、提前宣布 open、早到 hello/延迟数据通道、错误首帧、重复 hello、坏签名证明、认证前文件数据、无挑战超时及取消。原协议与 native/Web 双角色互通不变；不添加 retry/skip，不新增依赖。
+
+本地最终验证：SDK/WWW 类型检查、SDK 13 项单元、生产构建、11 项影响规则与 diff 检查通过；Chromium SDK 完整本地契约 178 项通过（含最终 11 个确定性场景和真实 native 双角色）；最终 WebKit RTC 22 通过、2 个既有 WebKit/native 跳过；主站 Chromium 生产预览 41 通过、2 个既有大文件跳过；原 CI 失败场景在修复后连续 20 次完成下载及独立导出哈希比对。没有修改 CI 过滤规则、添加重试或新增跳过。临时控制台诊断已移除，远端 CI 结果以修复 PR 为准；本轮不代表真实 Safari/跨 NAT/TURN 的完整验收。
+
 状态：SDK 修复、阶段日志、双语文档和本地回归已完成。用户与朋友所在网络的实际 TURN 路径复测待完成。
 
 ## 证据与结论边界

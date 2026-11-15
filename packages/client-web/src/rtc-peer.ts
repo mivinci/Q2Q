@@ -95,7 +95,7 @@ export class RtcPeer {
           if(!this.authenticated){
             if(!this.auth){
               if(this.early!==undefined||event.data.length>512)throw new Q2QError('PEER_AUTH_FAILED');
-              this.early=event.data;return;
+              this.early=event.data;this.startAuth();return;
             }
             this.authenticate(event.data);return;
           }
@@ -116,6 +116,11 @@ export class RtcPeer {
       if(!this.control.ordered||this.control.maxRetransmits!==null||this.control.maxPacketLifeTime!==null)throw new Q2QError('PEER_PROTOCOL_ERROR');
       const max=this.pc.sctp?.maxMessageSize;
       if(max===undefined||max!==0&&max<CONTROL_MAX)throw new Q2QError('UNSUPPORTED_CAPABILITY');
+      // A remote-created channel may be announced open before its native send
+      // path is ready. Let the initiator start; a responder waits for the first
+      // incoming frame before sending. Rust still validates that buffered hello
+      // and the proof, and the original handshake deadline remains in force.
+      if(!this.options.initiator&&this.early===undefined)return;
       this.auth=this.options.identity.beginPeer(this.options.remoteKey,this.options.initiator,this.options.infoHash,this.options.connectionId,this.pc.localDescription.sdp,this.pc.remoteDescription.sdp);
       this.control.send(this.auth.hello());
       if(this.early!==undefined){const early=this.early;this.early=undefined;this.authenticate(early);}

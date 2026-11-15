@@ -232,6 +232,8 @@ Punch 控制帧最多 64 KiB；Track JSON 响应最多 256 KiB，最多 32 个�
 
 内部 rtc-peer.ts 已实现与原生一致的双通道、Wasm 双向身份确认及 DTLS SHA-256 指纹绑定。可靠有序控制帧保持原始 JSON；块帧复用 Rust Piece 编码，数据通道为 negotiated stream 1 / unordered / maxRetransmits=0，重传由后续 Q2Q 块调度处理。认证前不向应用交付内容；发送背压、收件箱、早到候选和待处理工作有上限，关闭会取消并清理资源。
 
+浏览器发起方在通道就绪后照常发送 hello；浏览器接收方等到首个身份帧到达、且本地两个通道就绪后，才发送自己的 hello/proof。这样避免远端创建的通道在 DOM 已宣布 open、原生发送路径尚未就绪时丢失首次发送。暂存帧仍由 Rust 严格验证为合法 hello，随后验证签名、角色、内容与 DTLS 指纹绑定；重复/错误身份帧、认证前文件数据、超时和取消仍会终止连接，握手预算不延长。这是宿主时序适配，不增加或修改协议帧。
+
 `npm run test:rtc --workspace @q2q/client-web` 构建 Wasm，运行 Chromium/WebKit 浏览器契约，并通过临时 TCP 信令桥与真实原生 SDK WebRTC/身份交换互通。测试桥只用于测试，不进入 SDK 产物，不经过 Track/Punch；数据在真实 DataChannel 上双向交换。
 
 当前 Chromium ↔ 原生双角色通过；macOS Playwright WebKit ↔ 原生停留在 ICE 建连阶段，原因未定，默认跳过该两例，可设 `TEST_NATIVE_WEBKIT=1` 复测。WebKit 浏览器双端契约仍默认运行。共享帧、u64 边界及 transcript 使用 `npm run wasm:check -- 1` 验证。

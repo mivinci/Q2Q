@@ -1,6 +1,10 @@
 import { test as base } from '@playwright/test';
 import { startServer } from './browser-server.mjs';
 const test=base.extend({origin:[async({},use)=>{const {server,origin}=await startServer();try{await use(origin);}finally{await new Promise(resolve=>server.close(resolve));}},{scope:'worker'}]});
+for(const mode of ['normal','announced','early-hello','bad-first-frame','duplicate-hello','bad-proof','preauth-data','wrong-channel','small-message-size','silent','cancel'])test(`RTC announced-channel authentication: ${mode} @rtc`,async({page,origin})=>{
+  await page.goto(origin);
+  await page.evaluate(async mode=>(await import('/tests/rtc-auth.browser.ts')).announcedAuthentication(mode),mode);
+});
 for(const mismatch of [undefined,'hash','key','connection'])test(`RTC identity and binary exchange ${mismatch??'valid'} @rtc`,async({page,origin})=>{
   await page.goto(origin);await page.evaluate(async mismatch=>(await import('/tests/rtc.browser.ts')).pair({mismatch}),mismatch);
 });
