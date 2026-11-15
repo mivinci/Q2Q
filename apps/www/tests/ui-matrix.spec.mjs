@@ -64,6 +64,13 @@ for(const width of [320,390,1280])for(const locale of ['zh','en'])for(const them
   const offlineBuilder=new SeedBuilder(1);offlineBuilder.update(new Uint8Array([99]));const offline=offlineBuilder.finish_inline('offline.bin');
   await page.locator('input[type=file][accept]').setInputFiles({name:'offline.q2q',mimeType:'application/octet-stream',buffer:Buffer.from(offline.seed_bytes())});offline.free();await page.getByRole('button',{name:text.startDownload,exact:true}).click();
   await expect(page.getByRole('article',{name:'offline.bin',exact:true}).getByText(text.failed,{exact:true})).toBeVisible({timeout:15000});await capture('error');
+  // A refresh shows completed cache entries and unfinished history together.
+  // Unvalidated history must offer recovery without a misleading live 0% bar.
+  await page.reload();await expect(page.getByRole('button',{name:text.open,exact:true})).toBeEnabled();
+  const restored=page.getByRole('article',{name:'offline.bin',exact:true});
+  await expect(restored.getByRole('button',{name:text.resume,exact:true})).toBeEnabled();
+  await expect(restored.getByRole('progressbar')).toHaveCount(0);
+  await capture('restored');
   expect(errors).toEqual([]);
  }finally{await page.goto('about:blank').catch(()=>{});await services.close();originServer.closeAllConnections();await new Promise(resolve=>originServer.close(resolve));}
 });

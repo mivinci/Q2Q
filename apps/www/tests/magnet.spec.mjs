@@ -226,6 +226,7 @@ test('magnet dialog is keyboard reachable and fits a narrow viewport',async({pag
  await page.getByRole('button',{name:'下载',exact:true}).focus();await page.keyboard.press('Enter');
  const input=page.getByLabel(MAGNET_LABEL);
  await expect(input).toBeFocused();
+ await expect(input).toHaveAccessibleDescription('磁力链需要分享方保持在线；仅支持 urn:sha256 链接。');
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
  const box=await page.getByRole('dialog').boundingBox();
  expect(box.x).toBeGreaterThanOrEqual(8);expect(box.x+box.width).toBeLessThanOrEqual(320-8);
