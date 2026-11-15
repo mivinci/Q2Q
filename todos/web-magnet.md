@@ -1,6 +1,6 @@
 # Q2Q Web 磁力链方案（apps/www）
 
-状态：**方案已确认（2026-11-14），按实施顺序推进**。D1–D4 均按推荐项确认：不使用 `tr`、入口改“下载”对话框、分享侧加“复制磁力链”。本文不表示任何能力已实现；完成状态见文末执行记录。
+状态：**已合并（PR #103，2026-11-15 merge commit `942e3f4`），CI 全绿并已部署 q2q-www**。D1–D4 按推荐项确认：不使用 `tr`、入口改“下载”对话框、分享侧加“复制磁力链”。实现与本地验证细节见文末执行记录。
 依据：[磁力链核心方案](magnet-download.md)（Rust core/CLI 已实现并本地验收）、[协议 4.3 / 5.3](../docs/zh/spec.md)、[Web 客户端方案](web-client.md)。
 当前实况：`apps/www` 只接受 `.q2q` 种子与本机分享，无磁力链入口；`packages/client-web` 与 `q2q-wasm` 均无 magnet API；原生端 `request_info` / `info` 消息、上传端响应与 `Client::resolve_magnet` 已上线（协议面无需改动）。
 
@@ -298,3 +298,10 @@ flowchart TD
 `3137567` 后续 CI：两端 WWW 均因新增 ready helper 将任务行中的正常“其他页面正在使用”提示误判为初始化错误，导致多标签页历史测试失败；已把检测范围收窄为 `.page-error[role="alert"]`（仅 session 初始化错误），不将任务行提示视为页面初始化失败。串行 WebKit 的原 HTTP 恢复用例和磁力链场景本轮均通过。修正后，多标签页用例在本机 Chromium（2 workers）与 WebKit（单 worker）分别重复 3 次全部通过。
 
 独立 SDK 同轮为 166 通过、1 项部分共享 pause 场景在 probe 阶段报 `PEER_AUTH_FAILED`。本机 pause 用例 2 workers 重复 5 次全部通过，随后完整部分共享 8 场景重复 3 轮共 24 项全部通过，未复现认证失败，不声称修复 SDK 认证问题。probe 失败补充已有白名单 ConnectionDiagnostic（不输出地址/凭据/SDP），保留原断言；没有添加重试或跳过。脚本语法和 diff 检查通过，新提交继续核对远端 CI。
+
+
+## 合并与上线（2026-11-15）
+
+- PR #103 以 merge commit `942e3f4` 合入 main；合并后 main 的 Rust/WWW/Web SDK/Track/Registry/Platform/Admin/Docs/Seed Processing 九个工作流全部 success，WWW 双浏览器（Chromium/WebKit）检查通过，`Deploy WWW` 成功部署 q2q-www——线上页面已包含磁力链功能。
+- CI 排查过程中修复的问题：原生测试名与 `native_downloads_browser_publication` 共前缀导致被子串过滤误执行（已改名 `native_downloads_web_magnet_link` 并在变量缺失时跳过）；WebKit 拒绝 Chromium 专属 `clipboard-write` 权限名（已按浏览器区分并覆盖手动复制 fallback）；web→web 接收端改用独立浏览器 context。维护者随后补充分层 CI（`client-web.yml`：Chromium 全量本地契约按需触发，WebKit 全量契约每日 UTC 19:00，不阻塞 WWW 部署）并处理了 WebKit 既有间歇用例。
+- 线上边界不变：跨设备/跨 NAT/强制 TURN 与真实移动端仍未验收；磁力链需在线 Peer，CDN-only 内容仍需 `.q2q` 冷启动。
