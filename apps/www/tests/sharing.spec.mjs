@@ -10,7 +10,7 @@ const hash=createHash('sha256').update(payload).digest('hex');
 const test=base.extend({
  context:async({browserName},use,testInfo)=>{
   const profile=testInfo.outputPath('profile');await mkdir(profile,{recursive:true});
-  const context=await {chromium,webkit}[browserName].launchPersistentContext(profile,{headless:true,baseURL:'http://127.0.0.1:5180',acceptDownloads:true,viewport:{width:1280,height:800},
+  const context=await {chromium,webkit}[browserName].launchPersistentContext(profile,{headless:true,baseURL:'http://127.0.0.1:5180',acceptDownloads:true,viewport:{width:1280,height:800},...(browserName==='chromium'?{args:['--use-mock-keychain']}:{}),
    ...(browserName==='chromium'&&process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})});
   await context.addInitScript(()=>Object.defineProperty(window,'showSaveFilePicker',{value:undefined,configurable:true}));
   try{await use(context);}finally{await context.close();await rm(profile,{recursive:true,force:true});}
@@ -35,7 +35,7 @@ async function startSharing(page){
 }
 async function seedFrom(page,row){const result=page.waitForEvent('download');await row.getByRole('button',{name:'保存种子',exact:true}).click();const download=await result;return await readFile(await download.path());}
 async function receive(page,seed,name='published.bin'){
- await page.goto('/');await expect(page.getByRole('button',{name:'打开种子',exact:true})).toBeEnabled();
+ await page.goto('/');await expect(page.getByRole('button',{name:'下载',exact:true})).toBeEnabled();
  const count=await page.getByRole('article',{name,exact:true}).count();
  await page.locator('input[type=file][accept]').setInputFiles({name:'publication.q2q',mimeType:'application/octet-stream',buffer:seed});
  await page.getByRole('button',{name:'开始下载',exact:true}).click();
@@ -116,7 +116,7 @@ test('sharing confirmation is cancellable, details do not stop publication, and 
 });
 
 async function startDownload(page,seed,name='published.bin'){
- await page.goto('/');await expect(page.getByRole('button',{name:'打开种子',exact:true})).toBeEnabled();
+ await page.goto('/');await expect(page.getByRole('button',{name:'下载',exact:true})).toBeEnabled();
  await page.locator('input[type=file][accept]').setInputFiles({name:'original.q2q',mimeType:'application/octet-stream',buffer:seed});
  await page.getByRole('button',{name:'开始下载',exact:true}).click();return page.getByRole('article',{name,exact:true}).first();
 }

@@ -72,17 +72,12 @@ jobs:
       - run: npm run www:build
       - run: npx playwright install --with-deps ${{ matrix.browser }}
       - run: npm test --workspace @q2q/client-web
-      - run: npm run test:browser --workspace @q2q/client-web -- --project ${{ matrix.browser }}
-      - run: npm run test:http --workspace @q2q/client-web -- --project ${{ matrix.browser }}
-      - run: npm run test:bundle --workspace @q2q/client-web -- --project ${{ matrix.browser }}
+      # Exercise the packaged SDK/Worker/Wasm path once; full SDK contracts live
+      # in client-web.yml and do not block page-only changes.
+      - run: npm run test:bundle --workspace @q2q/client-web -- --project chromium
+        if: matrix.browser == 'chromium'
         env:
           VITE_RESOLVE_FROM: apps/www/package.json
-      - run: npm run wasm:check -- 1
-      - run: npm run test:network --workspace @q2q/client-web -- --project ${{ matrix.browser }}
-      - run: npm run test:rtc --workspace @q2q/client-web -- --project ${{ matrix.browser }}
-      - run: npm run test:p2p --workspace @q2q/client-web -- --project ${{ matrix.browser }}
-      - run: npm run test:partial --workspace @q2q/client-web -- --project ${{ matrix.browser }}
-      - run: npm run test:publish --workspace @q2q/client-web -- --project ${{ matrix.browser }}
       - run: npm test --workspace @q2q/www -- --project ${{ matrix.browser }}
         env:
           WWW_PREVIEW: '1'

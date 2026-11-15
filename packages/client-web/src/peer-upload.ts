@@ -2,6 +2,7 @@ import type {LiveBlocks} from './partial-sharing.ts';
 import {hasBlock} from './checkpoint-codec.ts';
 import { Q2QError } from './error.ts';
 import { initializeWasm } from './block-verifier.ts';
+import { seedData } from './seed.ts';
 import { decodeKey } from './control-identity.ts';
 import type { ControlIdentity } from './control-identity.ts';
 import type { SignalMessage } from './punch-socket.ts';
@@ -46,8 +47,23 @@ export function uploadHandler(options:{seed:Seed;source:{open():Promise<SourceRe
    }})();void pump.catch(()=>controller.abort());
    await rtc.ready();options.connections(1);counted=true;
    const count=Number(options.seed.info.blockCount),bits=options.blocks?.bitmap()??new Uint8Array(Math.ceil(count/8));if(!options.blocks)for(let i=0;i<count;i++)bits[i>>3]!|=1<<(i%8);
+   // Metadata precedes bitfields: a magnet receiver does not know their size
+   // until info is verified. Seed receivers still send bitfield immediately.
    const firstRaw=await rtc.readControl(AbortSignal.any([combined,AbortSignal.timeout(10000)]));
-   options.wasm.peer_bitfield(firstRaw,count);
+   let availabilityRaw=firstRaw;
+   let initial:{type:string};
+   try{initial=JSON.parse(options.wasm.decode_peer_control(firstRaw)) as {type:string};}
+   catch{throw new Q2QError('PEER_PROTOCOL_ERROR');}
+   if(initial.type==='request_info'){
+    let info:string;
+    try{info=options.wasm.seed_info_b64(seedData(options.seed).bytes);}
+    catch{throw new Q2QError('PEER_PROTOCOL_ERROR');}
+    await rtc.sendControl(`{"v":1,"message":{"type":"info","data":${JSON.stringify(info)}}}`,combined);
+    // Metadata-only receivers close here; that is a successful exchange. A
+    // repeated request_info fails bitfield decoding and ends this connection.
+    availabilityRaw=await rtc.readControl(AbortSignal.any([combined,AbortSignal.timeout(10000)]));
+   }
+   options.wasm.peer_bitfield(availabilityRaw,count);
    await rtc.sendControl(options.wasm.encode_peer_bitfield(bits,count),combined);
    // Await actual host open even when cancelled: keep ownership until it settles.
    if(options.blocks){

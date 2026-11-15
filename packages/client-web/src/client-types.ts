@@ -9,6 +9,8 @@ export interface Seed {
   toBytes(): Uint8Array;
 }
 export interface HttpSources { readonly contentUrls: readonly string[]; readonly proofUrls?: readonly string[] }
+/** Parsed magnet link: `infoHash` is the content identity; name and trackers are hints only. */
+export interface MagnetLink { readonly infoHash: string; readonly displayName: string | null; readonly trackers: readonly string[] }
 export interface SourceProvider {
   resolve(options: { content: ContentInfo; reason: 'initial' | 'unauthorized'; signal: AbortSignal }): Promise<HttpSources>;
 }
@@ -64,6 +66,12 @@ export interface Client {
   readonly capabilities: Readonly<{ http: true; p2p: boolean; publish: boolean; checkpointStore: 'memory' | 'provided' }>;
   connectNetwork(): Promise<import('./network.ts').NetworkSession>;
   parseSeed(input: Uint8Array | ContentSource, options?: { signal?: AbortSignal }): Promise<Seed>;
+  /** Pure local magnet parse via the shared Wasm implementation; never touches the network. */
+  parseMagnet(link: string, options?: { signal?: AbortSignal }): Promise<MagnetLink>;
+  /** Cache-first metadata discovery. A cache hit works without P2P; a miss needs an online peer. */
+  resolveMagnet(link: string | MagnetLink, options?: { signal?: AbortSignal }): Promise<Seed>;
+  /** Offline magnet link generation from a local seed handle. */
+  seedMagnet(seed: Seed): Promise<string>;
   publish(options: PublishOptions): Publication;
   /** Sharing ends before the download pauses, cancels, fails or finalizes. */
   downloadShared(options: DownloadOptions): {readonly transfer:Transfer;readonly publication:Publication};

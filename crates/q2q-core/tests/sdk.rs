@@ -622,3 +622,64 @@ async fn native_downloads_browser_publication() {
   );
   client.connect().await.unwrap().close().await.unwrap();
 }
+
+/// Explicitly driven by the browser publication suite: a live page exports a
+/// magnet link, and native resolves the verified metadata from that publisher
+/// before downloading. This is the same `resolve_magnet` entry the CLI uses.
+#[tokio::test]
+#[ignore = "requires local browser publication; run Web SDK @publish tests"]
+async fn native_downloads_web_magnet_link() {
+  // Test binaries accept a name substring as a filter, so this name must not
+  // share a prefix with the seed-based case above. Missing variables skip
+  // instead of panicking when another filter happens to match.
+  let (Ok(track), Ok(link)) = (
+    std::env::var("Q2Q_BROWSER_UPLOAD_TRACK"),
+    std::env::var("Q2Q_BROWSER_UPLOAD_MAGNET"),
+  ) else {
+    eprintln!("skipped: browser publication magnet variables are not set");
+    return;
+  };
+  assert!(track.starts_with("http://127.0.0.1:"));
+  let magnet = q2q_primitives::seed::parse_magnet(&link).unwrap();
+  let root = tempfile::tempdir().unwrap();
+  let client = client::builder()
+    .track_url(track)
+    .identity_file(root.path().join("identity"))
+    .storage_dir(root.path().join("state"))
+    .build()
+    .await
+    .unwrap();
+  let seed = tokio::time::timeout(Duration::from_secs(60), client.resolve_magnet(&magnet))
+    .await
+    .unwrap()
+    .unwrap();
+  assert_eq!(seed.info_hash(), magnet.info_hash);
+  assert!(seed.cdn_list.is_empty() && seed.proof_list.is_empty());
+  let transfer = client
+    .download_with_track_discovery(&seed, root.path().join("downloaded"))
+    .await
+    .unwrap();
+  let path = tokio::time::timeout(Duration::from_secs(40), transfer.wait())
+    .await
+    .unwrap()
+    .unwrap();
+  let bytes = std::fs::read(path).unwrap();
+  assert_eq!(bytes.len(), 3 * 262144 + 17);
+  for (index, byte) in bytes.iter().enumerate() {
+    assert_eq!(*byte, ((index * 31 + index / 262144) % 251) as u8);
+  }
+  use sha2::{Digest, Sha256};
+  let hash = Sha256::digest(&bytes)
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect::<String>();
+  assert_eq!(
+    hash,
+    "3ba31e034e8297dab9200e0e697a3440048b3d9d113d5460ad0b5cff9c324cd1"
+  );
+  println!(
+    "Browser publication verified by native SDK: {} bytes sha256={hash}",
+    bytes.len()
+  );
+  client.connect().await.unwrap().close().await.unwrap();
+}

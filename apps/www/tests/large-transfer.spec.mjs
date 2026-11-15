@@ -22,7 +22,7 @@ for(const mib of [100,1024])test(`large actual-page publication and P2P download
   do{changed=false;for(const[pid,parent]of rows)if(ids.has(parent)&&!ids.has(pid)){ids.add(pid);changed=true;}}while(changed);
   const value=rows.reduce((sum,[pid,,rss])=>sum+(ids.has(pid)?rss*1024:0),0);peak=Math.max(peak,value);samples++;return value;
  }
- const launch={headless:true,acceptDownloads:true,viewport:{width:1280,height:800},...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})};
+ const launch={headless:true,acceptDownloads:true,viewport:{width:1280,height:800},args:['--use-mock-keychain'],...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{})};
  const baseURL='http://127.0.0.1:5180';
  async function routeTrack(context){await context.route(/^https:\/\/track\.(?:test\.invalid|q2q\.app)\//,async route=>{
   const url=new URL(route.request().url());const response=await route.fetch({url:services.trackUrl+url.pathname+url.search});await route.fulfill({response});
@@ -55,7 +55,7 @@ for(const mib of [100,1024])test(`large actual-page publication and P2P download
   receiver=await chromium.launchPersistentContext(join(folder,'receiver'),{...launch,baseURL});await routeTrack(receiver);
   const receiverCdp=await receiver.browser().newBrowserCDPSession();const receiverInfo=await receiverCdp.send('SystemInfo.getProcessInfo');rootPids.add(receiverInfo.processInfo.find(row=>row.type==='browser').id);await receiverCdp.detach();report.combinedBaselineRss=sample();
   const receiving=await receiver.newPage();await receiving.addInitScript(()=>Object.defineProperty(window,'showSaveFilePicker',{value:undefined,configurable:true}));await receiving.goto('/');
-  await expect(receiving.getByRole('button',{name:'打开种子',exact:true})).toBeEnabled();
+  await expect(receiving.getByRole('button',{name:'下载',exact:true})).toBeEnabled();
   await receiving.locator('input[type=file][accept]').setInputFiles({name:'large.q2q',mimeType:'application/octet-stream',buffer:seed});await receiving.getByRole('button',{name:'开始下载',exact:true}).click();
   const row=receiving.getByRole('article',{name,exact:true});
   const usage=async()=>{const session=await receiver.newCDPSession(receiving);try{return(await session.send('Storage.getUsageAndQuota',{origin:baseURL})).usage;}finally{await session.detach();}};

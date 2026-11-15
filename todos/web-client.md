@@ -277,7 +277,7 @@ flowchart TD
 - [x] 验证浅/深/系统主题、320/390 窄屏与桌面、键盘、两种语言及实际任务状态；真实字节样例独立哈希一致。2026-11-08 本机矩阵完成，窄屏不等于真实手机系统/后台验收。
 - [ ] 同步中英文使用文档、支持矩阵、前台生命周期和已知限制，补隐私说明中的本机传输与本地缓存行为。
 
-发布门槛：W1–W6 与 W8 的首版验收通过，包括本机分享、浏览器下载、真实校验与原生互通；W7 可独立交付，主站不把尚未实现的托管操作显示为可用功能。目录/多文件打包、公开分享短链接、磁力链、直播和后台常驻另立后续任务。
+发布门槛：W1–W6 与 W8 的首版验收通过，包括本机分享、浏览器下载、真实校验与原生互通；W7 可独立交付，主站不把尚未实现的托管操作显示为可用功能。目录/多文件打包、公开分享短链接、直播和后台常驻另立后续任务；磁力链方案见 [web-magnet.md](web-magnet.md)（设计稿，待确认）。
 
 ## 本轮交付记录
 
@@ -472,3 +472,16 @@ failed-close 存储用例报原生 UnknownError；Chromium SDK 阶段通过，WW
 fixture 标明 root/create/cleanup，failed-close 标明 open/write/finish/reopen/abort。
 本地 WebKit failed-close 重复 20 次通过、离线恢复重复 16 次通过；SDK 类型、脚本语法、
 diff 检查通过。未根治这两项 CI 间歇失败，不以重试或 skip 掩盖；更新 PR 后继续核实 CI。
+
+
+### 磁力链接入（2026-11-14，本机验收）
+
+按 [web-magnet.md](web-magnet.md) 实施并本地验收：Wasm 新增磁力链解析/元数据验证/最小种子/链接生成四个导出；SDK 新增
+`parseMagnet`/`resolveMagnet`/`seedMagnet`、缓存优先的元数据发现与 IndexedDB 缓存，上传端首消息状态机支持
+`request_info`→`info`；主站“下载”对话框支持粘贴磁力链，任务历史记录来源类型并提供“重新粘贴链接”恢复，
+分享行菜单可复制磁力链（剪贴板被拒时给出只读链接）。决策项按推荐执行：页面不使用链接 `tr`、入口改为“下载”对话框、分享侧加复制。
+
+本机 Chromium/Edge 148：SDK 磁力链用例 6/6、相关 p2p/publication/partial 回归 22/8/8 通过，www 磁力链用例 9/9（含原生 SDK 从页面磁力链解析下载、HTTP-only 构建提示）、
+既有 download 7/7、sharing 12/12 与 ui-matrix 13/13 通过；Wasm Node check 4 组与 Rust 单元测试通过，Rust sdk 集成 11 通过/2 显式忽略、fmt 与 clippy 通过。WebKit 本机 OPFS 持续原生
+`UnknownError`，磁力链页面用例未在 WebKit 执行；跨 NAT/TURN、真实移动端与线上页面未验证，主站未部署新版本。
+以上结果不等同 CI 通过或发布完成。

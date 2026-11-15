@@ -5,7 +5,10 @@ import { Q2QError } from './error.ts';
 import { peerSource } from './peer-download.ts';
 import { peerNetwork } from './network.ts';
 import { abortable, PermitPool } from './http.ts';
+import { initializeWasm } from './block-verifier.ts';
 import { parseSeed, seedData } from './seed.ts';
+import { parseMagnetLink, cachedMagnetSeed, resolveMagnet } from './magnet.ts';
+import type { MagnetLink } from './client-types.ts';
 import { controlIdentity } from './control-identity.ts';
 import { connectNetwork } from './network.ts';
 import type { NetworkSession } from './network.ts';
@@ -104,6 +107,61 @@ export function createClient(options: ClientOptions = {}): Client {
         controller.signal.removeEventListener('abort', abort); settings.signal?.removeEventListener('abort', abort); parsing.delete(work);
       });
       parsing.add(work); return work;
+    },
+    parseMagnet(link, settings = {}) {
+      check();
+      if (typeof link !== 'string' || link.length === 0 || link.length > 16 * 1024) return Promise.reject(new Q2QError('INVALID_MAGNET'));
+      if (parsing.size >= limits.maxTasks) return Promise.reject(new Q2QError('RESOURCE_LIMIT'));
+      const own = new AbortController();
+      const abort = () => own.abort();
+      controller.signal.addEventListener('abort', abort, { once: true });
+      settings.signal?.addEventListener('abort', abort, { once: true });
+      if (settings.signal?.aborted) own.abort();
+      const work = parseMagnetLink(link, own.signal, wasmUrl).finally(() => {
+        controller.signal.removeEventListener('abort', abort); settings.signal?.removeEventListener('abort', abort); parsing.delete(work);
+      });
+      parsing.add(work); return work;
+    },
+    async resolveMagnet(input, settings = {}) {
+      check();
+      const isLink = (value: unknown): value is MagnetLink =>
+        !!value && typeof value === 'object' && typeof (value as MagnetLink).infoHash === 'string'
+        && /^[a-f0-9]{64}$/.test((value as MagnetLink).infoHash)
+        && ((value as MagnetLink).displayName === null || typeof (value as MagnetLink).displayName === 'string')
+        && Array.isArray((value as MagnetLink).trackers);
+      if (typeof input !== 'string' && !isLink(input)) throw new Q2QError('INVALID_ARGUMENT');
+      if (typeof input === 'string' && (input.length === 0 || input.length > 16 * 1024)) throw new Q2QError('INVALID_MAGNET');
+      if (parsing.size >= limits.maxTasks) throw new Q2QError('RESOURCE_LIMIT');
+      const own = new AbortController();
+      const abort = () => own.abort();
+      controller.signal.addEventListener('abort', abort, { once: true });
+      settings.signal?.addEventListener('abort', abort, { once: true });
+      if (settings.signal?.aborted) own.abort();
+      const work = (async () => {
+        const link = typeof input === 'string' ? await parseMagnetLink(input, own.signal, wasmUrl) : input;
+        // A verified cache hit needs no network; only discovery requires P2P.
+        const cached = await cachedMagnetSeed(link, own.signal, wasmUrl);
+        if (cached) return cached;
+        if (!trackUrl || typeof RTCPeerConnection !== 'function') throw new Q2QError('UNSUPPORTED_CAPABILITY');
+        return resolveMagnet({ link, connect, permits: peerPermits, signal: own.signal, wasmUrl });
+      })().finally(() => {
+        controller.signal.removeEventListener('abort', abort); settings.signal?.removeEventListener('abort', abort); parsing.delete(work);
+      });
+      parsing.add(work); return work;
+    },
+    async seedMagnet(seed) {
+      check();
+      // Read through the public handle method: UI frameworks may wrap the
+      // handle in a proxy, which would miss the internal WeakMap entry.
+      let bytes: Uint8Array | undefined;
+      try {
+        const candidate = seed as unknown as { toBytes?: () => Uint8Array };
+        if (typeof candidate?.toBytes === 'function') bytes = candidate.toBytes();
+      } catch { /* fall through to the identity lookup */ }
+      if (!bytes) bytes = seedData(seed).bytes;
+      const module = await initializeWasm(wasmUrl);
+      try { return module.seed_magnet(bytes); }
+      catch { throw new Q2QError('INVALID_SEED'); }
     },
     downloadShared:sharedDownload,
     resumeDownloadShared(input){

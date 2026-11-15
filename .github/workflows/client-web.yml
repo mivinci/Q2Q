@@ -1,0 +1,74 @@
+name: Web SDK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  impact:
+    name: Determine Web SDK impact
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.impact.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: python3 .github/scripts/test-app-impact.py
+      - name: Determine SDK impact
+        id: impact
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 .github/scripts/app-impact.py client-web
+
+  check:
+    name: SDK contracts (${{ matrix.browser }}, ${{ matrix.os }})
+    needs: impact
+    if: needs.impact.outputs.run == 'true'
+    strategy:
+      fail-fast: false
+      # Keep native WebKit OPFS regressions visible in their own scheduled/manual
+      # run. PRs and main pushes run the full Chromium SDK contracts.
+      matrix:
+        include: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '[{"os":"ubuntu-24.04","browser":"chromium"},{"os":"macos-15","browser":"webkit"}]' || '[{"os":"ubuntu-24.04","browser":"chromium"}]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+      VITE_RESOLVE_FROM: apps/www/package.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.node-version'
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
+      - run: npm run check --workspace @q2q/client-web
+      - run: npm test --workspace @q2q/client-web
+      - run: npm run wasm:check -- 1
+      - run: cargo build --locked -p q2q-punch-server
+      - run: cargo test --locked -p q2q-core --lib --no-run
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Run local SDK contracts with shared build artifacts
+        working-directory: packages/client-web
+        run: npx playwright test --project ${{ matrix.browser }} --grep-invert '@large|@public'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: client-web-reports-${{ matrix.browser }}
+          path: .tmp/client-web-playwright
+          retention-days: 7

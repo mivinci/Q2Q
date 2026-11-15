@@ -1,6 +1,13 @@
 export type Locale = 'zh-CN' | 'en';
 const zh = {
   title: '你的内容，随处可达。', intro: '打开种子，开始一次安心的传输。', open: '打开种子', drop: '拖入文件以分享，或拖入 .q2q 种子下载',
+  download: '下载', downloadTitle: '下载文件', magnetPlaceholder: '粘贴磁力链 magnet:?xt=urn:sha256:…', fetchMagnet: '获取并下载', chooseFile: '选择 .q2q 种子文件…',
+  magnetNote: '磁力链需要分享方保持在线；仅支持 urn:sha256 链接。', resolving: '正在查找在线来源并获取元数据…',
+  magnetInvalid: '无法识别这个磁力链，请检查后重试。', magnetUnsupported: '不支持 BitTorrent 磁力链；Q2Q 使用 urn:sha256 链接。',
+  magnetNoSources: '此内容没有可用来源，请确认分享方在线后重试。', magnetTimeout: '获取元数据超时，请确认分享方在线后重试。',
+  magnetBadMetadata: '来源提供的元数据与链接不符，已全部拒绝。', magnetRequiresP2P: '磁力链下载需要 P2P 网络，当前构建未启用。',
+  magnetRetry: '重试', backToInput: '返回', relink: '重新粘贴链接', restoreHelpMagnet: '重新粘贴磁力链后，将校验暂存内容并继续下载。',
+  copyMagnet: '复制磁力链', magnetCopied: '已复制', magnetCopyFailed: '自动复制失败，请手动选择并复制下方链接。',
   local: '本地解析', verified: '内容校验', account: '无需登录', docs: '文档', console: '控制台', tasks: '传输任务',
   start: '开始下载', dismiss: '取消', preview: '准备下载', cached: '下载内容暂存在此设备，完成后可保存到文件。',
   pause: '暂停', resume: '继续', cancel: '取消下载', save: '保存文件', saving: '正在保存', saved: '已保存到文件',
@@ -20,13 +27,20 @@ const zh = {
   space: '本地空间不足，请释放空间后重试。', busy: '此任务正在其他页面使用，请先关闭另一页面。',
   confirmRemove: '删除此任务和本机暂存内容？已保存到其他位置的文件不会删除。', cancelSave: '停止保存',
   countOne:'个任务', count: '个任务', resumeNote: '刷新后需重新选择原种子。', dataCleared: '找不到暂存内容，可能已被浏览器清理。',
-  proofUnavailable: '种子缺少可用的校验数据来源，请获取完整种子后重试。', lastCommitted: '上次已提交', pendingValidation: '待重新校验', submitted: '已提交浏览器保存', settings: '设置', preferences: '选择适合你的外观和语言。', cachedTitle: '待保存', readDetails: '传输详情', downloadingOnly: '分享本地文件，或打开种子下载。',
+  proofUnavailable: '种子缺少可用的校验数据来源，请获取完整种子后重试。', lastCommitted: '上次已提交', pendingValidation: '待重新校验', submitted: '已提交浏览器保存', settings: '设置', preferences: '选择适合你的外观和语言。', cachedTitle: '待保存', readDetails: '传输详情', downloadingOnly: '分享本地文件，或打开种子、粘贴磁力链下载。',
   networkStatus:'P2P 控制连接',networkConnecting:'连接中',networkOnline:'在线',networkOffline:'离线',networkClosed:'已关闭',sourcePolicy:'P2P 可用时尝试连接；HTTP 回退与内容校验由 SDK 处理。连接在线不代表字节一定来自 P2P。',continueShare:'继续分享',stopSharingFirst:'请先停止使用此暂存文件的分享，再删除暂存。',share:'分享文件',sharePreview:'准备分享',startShare:'开始分享',saveSeed:'保存种子',stopShare:'停止分享',removeShare:'移除任务',shareNote:'请保持页面打开，对方才能从本机下载。选择文件不会上传到平台。',sharePublishing:'等待接收',shareSending:'分享中',shareClosed:'已停止分享',shareFailed:'分享失败',shareConnections:'个连接',shareSent:'已发送',shareUnsupported:'此环境无法分享文件，请使用支持 WebRTC 的浏览器并检查网络配置。',downloadType:'下载',shareType:'分享',all:'全部',
   connectionDiagnostics: '连接诊断', diagnosticPrivacy: '仅包含错误码和连接状态，不含地址或凭据；可复制这些内容协助排查。',
   historyFailure: '任务历史无法保存；请不要刷新页面，完成后及时保存文件。'
 };
 const en: typeof zh = {
   title: 'Your content. Within reach.', intro: 'Open a seed. Let the transfer begin.', open: 'Open seed', drop: 'Drop a file to share, or a .q2q seed to download',
+  download: 'Download', downloadTitle: 'Download a file', magnetPlaceholder: 'Paste a magnet:?xt=urn:sha256:… link', fetchMagnet: 'Fetch and download', chooseFile: 'Choose a .q2q seed file…',
+  magnetNote: 'Magnets need the publisher online; only urn:sha256 links are supported.', resolving: 'Finding an online source and fetching metadata…',
+  magnetInvalid: 'Cannot read this magnet link. Check it and try again.', magnetUnsupported: 'BitTorrent magnets are unsupported; Q2Q uses urn:sha256 links.',
+  magnetNoSources: 'No source is available. Check that the publisher is online and retry.', magnetTimeout: 'Metadata fetch timed out. Check that the publisher is online and retry.',
+  magnetBadMetadata: 'Sources returned metadata that does not match the link; all were rejected.', magnetRequiresP2P: 'Magnet downloads need P2P, which this build does not enable.',
+  magnetRetry: 'Retry', backToInput: 'Back', relink: 'Paste link again', restoreHelpMagnet: 'Paste the magnet link again to verify cached content and resume.',
+  copyMagnet: 'Copy magnet link', magnetCopied: 'Copied', magnetCopyFailed: 'Could not copy automatically. Select and copy the link below.',
   local: 'Parsed locally', verified: 'Content verified', account: 'No account needed', docs: 'Docs', console: 'Console', tasks: 'Transfers',
   start: 'Start download', dismiss: 'Cancel', preview: 'Ready to download', cached: 'Content is stored on this device until you save it to a file.',
   pause: 'Pause', resume: 'Resume', cancel: 'Cancel download', save: 'Save file', saving: 'Saving', saved: 'Saved to file',
@@ -46,7 +60,7 @@ const en: typeof zh = {
   space: 'Local storage is full. Free some space and retry.', busy: 'Another page is using this transfer. Close it first.',
   confirmRemove: 'Delete this transfer and its cached data? Files saved elsewhere will remain.', cancelSave: 'Stop saving',
   countOne:'transfer', count: 'transfers', resumeNote: 'Select the original seed after refreshing.', dataCleared: 'Cached content was not found. Your browser may have cleared it.',
-  proofUnavailable: 'Verification data is unavailable. Obtain a complete seed and retry.', lastCommitted: 'Previously committed', pendingValidation: 'Awaiting verification', submitted: 'Sent to browser downloads', settings: 'Settings', preferences: 'Choose your appearance and language.', cachedTitle: 'Ready to save', readDetails: 'Transfer details', downloadingOnly: 'Share a local file, or open a seed to download.',
+  proofUnavailable: 'Verification data is unavailable. Obtain a complete seed and retry.', lastCommitted: 'Previously committed', pendingValidation: 'Awaiting verification', submitted: 'Sent to browser downloads', settings: 'Settings', preferences: 'Choose your appearance and language.', cachedTitle: 'Ready to save', readDetails: 'Transfer details', downloadingOnly: 'Share a local file, or open a seed or paste a magnet link to download.',
   networkStatus:'P2P control connection',networkConnecting:'Connecting',networkOnline:'Online',networkOffline:'Offline',networkClosed:'Closed',sourcePolicy:'The SDK tries available peers and handles HTTP fallback and verification. An online control connection does not prove bytes came from P2P.',continueShare:'Share this file',stopSharingFirst:'Stop sharing this cached file before deleting it.',share:'Share file',sharePreview:'Ready to share',startShare:'Start sharing',saveSeed:'Save seed',stopShare:'Stop sharing',removeShare:'Remove task',shareNote:'Keep this page open so others can download from this device. Selecting a file does not upload it to the platform.',sharePublishing:'Waiting for receiver',shareSending:'Sharing',shareClosed:'Sharing stopped',shareFailed:'Sharing failed',shareConnections:'connections',shareSent:'Sent',shareUnsupported:'Sharing is unavailable. Use a WebRTC-capable browser and check the network configuration.',downloadType:'Download',shareType:'Share',all:'All',
   connectionDiagnostics: 'Connection diagnostics', diagnosticPrivacy: 'Only error codes and connection states, without addresses or credentials. Copy this information for troubleshooting.',
   historyFailure: 'Transfer history could not be saved. Keep this page open and save completed files promptly.'

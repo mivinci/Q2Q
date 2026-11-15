@@ -27,11 +27,33 @@ connections, HTTP fallback, verification and checkpoints, including peer-only se
 Missing/offline sources are distinct from corrupt content. Details show the P2P control
 connection state only: online does not prove content used P2P or a particular TURN path.
 
+## Download with a magnet link
+
+**Download** accepts both a `.q2q` seed and a Q2Q magnet link (`magnet:?xt=urn:sha256:…`):
+paste the link, fetch metadata, review, then start the download. A magnet carries only the
+content identity; name, size and proof data come from verified metadata served by an
+online peer. At least one peer must be online and metadata discovery has a 60-second
+budget. Only `urn:sha256` is supported; BitTorrent `btih`/`btmh` links report a clear
+error. CDN-only content with no online peer cannot cold-start from a magnet and still
+needs the complete `.q2q` seed.
+
+- The page connects only to its build-configured Track and ignores `tr` hints. The
+  `dn` display name is never trusted or used to name the target.
+- Unverified metadata is rejected and the next candidate is tried; exhausting candidates
+  reports "no source", separately from connection failure or timeout.
+- The verified minimal seed is cached in local IndexedDB (content hash and seed bytes
+  only, no link or display name). **Paste link again** after reload prefers that cache
+  instead of fetching metadata again, and a matching `.q2q` seed can also restore the
+  same task.
+- **Copy magnet link** in a share row's menu produces a pasteable link. If clipboard
+  access is denied, a dialog shows the readonly link for manual copying. The link content
+  follows the seed's Track list; the receiving page still uses only its build Track.
+
 Completed data stays in local OPFS until **Save file** exports it. A native save picker
 uses streaming export; otherwise the bounded Blob fallback is limited to 32 MiB and
 reports submission to browser downloads, not confirmed operating-system durability.
-After reload, history is a hint: reselect the matching seed so the SDK can reread and
-verify checkpointed bytes before continuing.
+After reload, history is a hint: reselect the matching seed (or re-paste the same magnet
+link) so the SDK can reread and verify checkpointed bytes before continuing.
 
 Completion does **not** start sharing. **Share this file** in the menu explicitly asks
 the SDK to reverify the complete cache and publish it. Stop that publication before
