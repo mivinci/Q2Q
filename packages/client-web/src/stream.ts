@@ -228,7 +228,9 @@ export function createStream(options: {
       await opening;
       check();
       position = offset;
-      focus(position >= seed.info.size ? Math.max(0, total - 1) : Number(position / blockSize));
+      // EOF and beyond establish no window: nothing is left to prefetch.
+      if (position >= seed.info.size) { windowStart = -1; windowEnd = -1; return; }
+      focus(Number(position / blockSize));
     },
     read(length: number, settings: { signal?: AbortSignal } = {}) {
       const run = async () => {

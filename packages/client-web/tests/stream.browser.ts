@@ -142,9 +142,12 @@ export async function argumentBounds() {
     await rejects(reader.read(0), 'INVALID_RANGE');
     await rejects(f.client.openStream({ seed: f.seed, destination: f.entry.destination, prefetchBlocks: 65 }), 'INVALID_ARGUMENT');
     await rejects(f.client.openStream({ seed: f.seed, destination: f.entry.destination, readTimeoutMs: 0 }), 'INVALID_ARGUMENT');
-    // Seeking to EOF is legal and reads return empty without prefetching.
+    // Seeking to EOF is legal, reads return empty, and no window is established.
+    const before = (await ranges(f.key)).length;
     await reader.seek(f.seed.info.size);
     assert((await reader.read(16)).length === 0, 'read at EOF is empty');
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert((await ranges(f.key)).length === before, 'EOF must not prefetch');
     return true;
   } finally { await reader?.close(); await cleanup(f); }
 }
