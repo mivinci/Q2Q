@@ -192,6 +192,8 @@ SDK 只交付"能按位置读已验证字节"。应用侧两条路径：
 
 未验证：真实播放器起播（MSE/Safari）、Service Worker range 代理、跨 NAT/TURN、真实码率；`apps/www` 尚未提供预览播放界面。
 
+远端 CI（PR #107，head `27e9540`）：SDK contracts（Chromium）通过 6m14s，含 `@stream` 7 项；WWW checks 的 Chromium 与 WebKit 均通过；其余 11 项 pass、2 项 Deploy 按 PR 规则跳过，无失败。WebKit 的 SDK 全量契约按既定分层每日/手动执行。
+
 ## 9. 实施顺序与规模（原始估算）
 
 1. **调度原语**：块级 deferred + 窗口队列 + `focus/seek`（改造 `transfer.ts` 的推进方式，抽出可共用的调度器）。约 250 行。
