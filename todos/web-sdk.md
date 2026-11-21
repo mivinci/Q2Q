@@ -339,6 +339,8 @@ Web 包已提供 `fileSource(file)` 和异步 `fileDestination(已授权句柄)`
 
 ClientCapabilities 报告实际的 P2P、HTTP 下载与本地状态能力；目标是否能流式写入、读回、持久恢复则由具体目标适配报告。不得用单个 canResume=true 掩盖源文件、目标权限和检查点组合的限制，也不把“支持浏览器”泛化为支持任意文件大小。
 
+按位置读取已验证字节（边播边下）属于独立能力，当前未实现：Web 包只有整文件顺序下载，没有窗口调度与对外读取接口。设计与边界见 [web-vod-streaming.md](web-vod-streaming.md)（设计稿，待确认）；Rust 侧对应能力见 [scheduling.md](../docs/zh/guide/scheduling.md#vod-的读取窗口)。
+
 ClientLimits 第一版对应原生的真实资源维度：下载 Peer 数、HTTP 请求数、上传连接数、并发读取数、缓存字节和上传速率；提供经过验证的默认值及范围，不允许无限制值绕开浏览器预算。默认值由能力验证确定，不以不存在的性能数据定稿。
 
 ### 3.8. 错误与验证清单

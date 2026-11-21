@@ -265,6 +265,31 @@ try {
 `npm run test:p2p --workspace @q2q/client-web` 使用临时真实 Workers Track/Registry、原生 Punch 和原生 SDK publication，没有在线服务操作。浏览器通过公开 Client API 下载；测试经独立 SHA-256 和逐字节比较检查 OPFS 导出。丢包/损坏在收包接口注入，修复数据仍从真实原生端重传。WebKit/native 用例默认跳过，设置 TEST_NATIVE_WEBKIT=1 可诊断复测。
 
 
+## 按需读取窗口（边播边下的数据面）
+
+```ts
+const reader = await client.openStream({ seed, destination, prefetchBlocks: 8, readTimeoutMs: 30_000 });
+try {
+  await reader.seek(offset);              // 建立窗口：当前块 + 前向预取
+  const bytes = await reader.read(65536); // 已验证且已提交的字节
+} finally {
+  await reader.close();                   // 取消网络，保留已验证块与检查点
+}
+```
+
+窗口语义对齐原生 `client.open()`：首次 read/seek 才建立需求，只取当前块与前向预取（默认 8，最大 64，0 只取当前块）；
+seek 撤下旧窗口未开始的块，在途块仍完成并缓存；缺少的块最多等待 `readTimeoutMs`（默认 30s），超时报 `CONTROL_TIMEOUT` 且游标不动；
+读到 EOF 返回空数组，seek 越界报 `INVALID_RANGE`。单次读不跨块边界，因此可能少于请求长度。
+
+只读 `readCommittedBlock` 返回的字节：本会话写入并提交后该块才可读，稀疏区域永不对外暴露；读回时仍按种子根重验。
+需要 proof 表（内嵌叶子表或外置证明）才能重验读回内容，纯 Peer 证明的种子在 `openStream` 阶段报 `PROOF_UNAVAILABLE`。
+`checkpointId` 可继续同内容身份的既有会话；关闭后重开不会重下已提交块。
+
+`npm run test:stream --workspace @q2q/client-web` 覆盖：prefetch=0 只取游标块、窗口与 seek 边界、缺块超时不推进游标、
+关闭后重开复用已提交块、无 proof 表被拒绝、参数边界，以及从真实原生发布者经 Track/Punch 读头部与尾部。播放器对接
+（MSE / Service Worker range 代理）与 MP4 `moov` 容器策略不在 SDK 内，见 [web-vod-streaming.md](../../todos/web-vod-streaming.md)。
+
+
 ## 纯 Peer 证明的恢复状态
 
 外置种子现在可仅凭种子根、Peer 数据及原有 Proof 帧下载。Wasm 复用 primitives 的 Merkle 校验，将有效证明规范化为兄弟节点见证；不会把“Peer 已证明”或本地缓存叶子哈希当作可信标记。证明节点不得覆盖当前数据及其计算路径上的祖先；有效的展开兄弟节点证明也能规范化保存。

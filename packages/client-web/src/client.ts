@@ -15,7 +15,8 @@ import type { NetworkSession } from './network.ts';
 import type { ControlIdentity } from './control-identity.ts';
 import { memoryState } from './memory-state.ts';
 import { createTransfer } from './transfer.ts';
-import type { Client, ClientOptions, ClientLimits, DownloadOptions, Transfer, Publication } from './client-types.ts';
+import { createStream } from './stream.ts';
+import type { Client, ClientOptions, ClientLimits, DownloadOptions, StreamOptions, StreamReader, Transfer, Publication } from './client-types.ts';
 
 export function createClient(options: ClientOptions = {}): Client {
   const limits: ClientLimits = { httpRequests: 2, peerConnections:2, uploadConnections:2, uploadReads:1, maxTasks: 4, commitBytes: 16 * 1024 * 1024,
@@ -37,6 +38,7 @@ export function createClient(options: ClientOptions = {}): Client {
   const peerPermits=new PermitPool(limits.peerConnections);
   const controller = new AbortController();
   const tasks = new Set<Transfer>();
+  const streams = new Set<StreamReader>();
   const publications=new Set<Publication>();const uploadReads=new PermitPool(limits.uploadReads);const uploadPermits=new PermitPool(limits.uploadConnections);
   const parsing = new Set<Promise<unknown>>();
   let closing: Promise<void> | undefined;
@@ -69,6 +71,35 @@ export function createClient(options: ClientOptions = {}): Client {
         return peerSource({network:peerNetwork(session),content:input.seed.info,committed,signal,permits:peerPermits,received});
       }}:{}), ended: () => tasks.delete(task) });
     tasks.add(task); return task;
+  }
+  async function openStream(input: StreamOptions): Promise<StreamReader> {
+    check(); seedData(input.seed);
+    if (!input.destination?.targetId || typeof input.destination.open !== 'function') throw new Q2QError('INVALID_ARGUMENT');
+    if (tasks.size+publications.size >= limits.maxTasks) throw new Q2QError('RESOURCE_LIMIT');
+    const reader = createStream({ seed: input.seed, destination: input.destination, state, pool, limits,
+      sourceProvider, wasmUrl, prefetchBlocks: input.prefetchBlocks, readTimeoutMs: input.readTimeoutMs,
+      ...(input.checkpointId ? { checkpointId: input.checkpointId } : {}),
+      ...(trackUrl&&typeof RTCPeerConnection==='function'?{openPeers:async(committed:Uint8Array,signal:AbortSignal,received:(bytes:number)=>void)=>{
+        const session=await abortable(connect(),signal);
+        return peerSource({network:peerNetwork(session),content:input.seed.info,committed,signal,permits:peerPermits,received});
+      }}:{}) });
+    // Setup runs lazily inside the reader; await it so capability problems
+    // (missing proof table, unusable target) surface here instead of on read().
+    const opened = reader as StreamReader & { ready(): Promise<void> };
+    await opened.ready();
+    // Track for Client.close(); the wrapper drops itself so a closed reader is
+    // not closed twice by shutdown.
+    const wrapper: StreamReader = Object.freeze({
+      info: reader.info,
+      get position() { return reader.position; },
+      get checkpointId() { return reader.checkpointId; },
+      read: (length: number, settings?: { signal?: AbortSignal }) => reader.read(length, settings),
+      seek: (offset: bigint) => reader.seek(offset),
+      progress: () => reader.progress(),
+      close: async () => { streams.delete(wrapper); await reader.close(); }
+    });
+    streams.add(wrapper);
+    return wrapper;
   }
   function sharedDownload(input:DownloadOptions,checkpointId?:string){
       check();seedData(input.seed);
@@ -169,6 +200,7 @@ export function createClient(options: ClientOptions = {}): Client {
       return sharedDownload(input,input.checkpointId);
     },
     download,
+    openStream,
     resumeDownload(input) {
       if (typeof input.checkpointId !== 'string' || !input.checkpointId) throw new Q2QError('INVALID_ARGUMENT');
       return download(input, input.checkpointId);
@@ -180,6 +212,8 @@ export function createClient(options: ClientOptions = {}): Client {
         closing = Promise.resolve().then(async () => {
           const publicationResults=await Promise.allSettled([...publications].map(publication=>publication.close()));
           controller.abort();
+          await Promise.allSettled([...streams].map(stream => stream.close()));
+          streams.clear();
           const results = await Promise.allSettled([...tasks].map(task => task.cancel()));
           await Promise.allSettled([...parsing, ...(networkWork ? [networkWork] : []), ...(identityWork ? [identityWork] : [])]);
           try { await network?.close(); }

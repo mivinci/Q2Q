@@ -1,22 +1,21 @@
 import type {PartialSharing} from './partial-sharing.ts';
 import type { PeerSource,PeerBlock } from './peer-download.ts';
 import { Q2QError } from './error.ts';
-import { abortable, cancelled, httpBytes, normalizeUrls, PermitPool } from './http.ts';
-import { seedData } from './seed.ts';
-import { createBlockVerifier, createPeerBlockVerifier } from './block-verifier.ts';
+import { cancelled, PermitPool } from './http.ts';
+import { sourcePipeline } from './source.ts';
+import type { SourcePipeline } from './source.ts';
 import { hasBlock, setBlock } from './checkpoint-codec.ts';
 import { resumeCheckpoint } from './resume-checkpoint.ts';
 import type { CheckpointSession } from './resume-checkpoint.ts';
 import type { ContentVerifier } from './block-verifier.ts';
 import type { StateStore } from './checkpoint-types.ts';
-import type { DownloadOptions, ClientLimits, SourceProvider, Transfer, DownloadSnapshot, DownloadResult, HttpSources, DownloadState } from './client-types.ts';
+import type { DownloadOptions, ClientLimits, SourceProvider, Transfer, DownloadSnapshot, DownloadResult, DownloadState } from './client-types.ts';
 
 function failure(error: unknown): Q2QError { return error instanceof Q2QError ? error : new Q2QError('NETWORK_UNAVAILABLE', true); }
 
 export function createTransfer(options: DownloadOptions & { checkpointId?: string; sharing?:PartialSharing; stopSharing?():Promise<void>; state: StateStore;
   pool: PermitPool; limits: ClientLimits; sourceProvider?: SourceProvider; wasmUrl?: string | URL; openPeers?(committed:Uint8Array,signal:AbortSignal,received:(bytes:number)=>void):Promise<PeerSource>; ended(): void }): Transfer {
   const { seed, limits } = options;
-  const data = seedData(seed);
   const id = crypto.randomUUID();
   let checkpointId = options.checkpointId ?? null;
   let mode: 'create' | 'resume' = options.checkpointId ? 'resume' : 'create';
@@ -63,75 +62,23 @@ export function createTransfer(options: DownloadOptions & { checkpointId?: strin
     const prep = preparing;
     let session: CheckpointSession | undefined;
     let verifier: ContentVerifier | undefined;
+    let pipeline: SourcePipeline | undefined;
     let dirty = 0;
     let peerSource:PeerSource|undefined;let peerOpening:Promise<PeerSource>|undefined;
     let problem: Q2QError | undefined;
     let success:DownloadResult|undefined;
     try {
       check(); emit('preparing');
-      let refreshed = false;
-      let refreshPromise: Promise<void> | undefined;
-      let sourceRevision = 0;
-      let sources: HttpSources;
-      async function resolve(reason: 'initial' | 'unauthorized') {
-        const value = options.sourceProvider
-          ? await abortable(Promise.resolve().then(() => options.sourceProvider!.resolve({ content: seed.info, reason, signal: network.signal })), network.signal)
-          : { contentUrls: data.contentUrls, proofUrls: data.proofUrls };
-        sourceRevision++;
-        sources = { contentUrls: normalizeUrls(value.contentUrls), proofUrls: normalizeUrls(value.proofUrls ?? []) };
-      }
-      await resolve('initial');
-      async function obtain(kind: 'content' | 'proof', length: number, range?: { start: bigint; end: bigint; total: bigint }): Promise<Uint8Array> {
-        let last = new Q2QError(kind === 'proof' ? 'PROOF_UNAVAILABLE' : 'NO_SOURCES');
-        for (;;) {
-          const revision = sourceRevision;
-          const urls = kind === 'proof' ? sources.proofUrls ?? [] : sources.contentUrls;
-          let refresh = false;
-          for (const url of urls) {
-            for (let attempt = 0; attempt < limits.attemptsPerSource; attempt++) {
-              check();
-              if (snapshot.state !== 'preparing') emit('downloading');
-              try {
-                const bytes = await httpBytes({ pool: options.pool, url, length, range, signal: network.signal,
-                  timeoutMs: limits.requestTimeoutMs, received: kind === 'content' ? count => { received += BigInt(count); emit(undefined, null, false); } : undefined });
-                // Content corruption is a source failure, so another origin may repair it.
-                if (kind === 'content' && verifier && !verifier.verify(range!.start / BigInt(seed.info.blockSize), bytes)) throw new Q2QError('CONTENT_MISMATCH');
-                if (kind === 'proof') {
-                  try { verifier = await createBlockVerifier({ seed: data.bytes, proof: bytes, wasmUrl: options.wasmUrl }); }
-                  catch (error) { if (error instanceof Q2QError && error.code === 'INVALID_SEED') throw new Q2QError('CONTENT_MISMATCH'); throw error; }
-                }
-                return bytes;
-              } catch (error) {
-                check(); last = failure(error);
-                if (last.code === 'AUTH_REQUIRED' && options.sourceProvider && (!refreshed || refreshPromise || revision !== sourceRevision)) { refresh = true; break; }
-                if (!last.retryable || attempt + 1 === limits.attemptsPerSource) break;
-                if (snapshot.state !== 'preparing') emit('waiting');
-                await new Promise<void>((resolve, reject) => {
-                  const stop = () => { clearTimeout(timer); reject(cancelled()); };
-                  const timer = setTimeout(() => { network.signal.removeEventListener('abort', stop); resolve(); }, limits.retryDelayMs);
-                  network.signal.addEventListener('abort', stop, { once: true });
-                  if (network.signal.aborted) stop();
-                });
-              }
-            }
-            if (refresh) break;
-          }
-          if (!refresh) throw last;
-          if (revision !== sourceRevision) continue;
-          if (!refreshed) {
-            refreshed = true;
-            refreshPromise = resolve('unauthorized').finally(() => { refreshPromise = undefined; });
-          }
-          if (refreshPromise) await refreshPromise;
-          else throw last;
-        }
-      }
-      if (data.inline || seed.info.blockCount === 0n) verifier = await createBlockVerifier({ seed: data.bytes, wasmUrl: options.wasmUrl });
-      else {
-        try{await obtain('proof',Number(seed.info.blockCount)*32);}
-        catch(error){check();if(!options.openPeers)throw error;verifier=await createPeerBlockVerifier({seed:data.bytes,wasmUrl:options.wasmUrl});}
-      }
-      check();
+      // Authorization, retries and content verification live in the shared
+      // pipeline so windowed reads apply exactly the same rules.
+      pipeline = sourcePipeline({ seed, signal: network.signal, pool: options.pool, limits,
+        sourceProvider: options.sourceProvider, wasmUrl: options.wasmUrl,
+        onReceived: count => { received += BigInt(count); emit(undefined, null, false); },
+        onAttempt: () => { if (snapshot.state !== 'preparing') emit('downloading'); },
+        onWaiting: () => { if (snapshot.state !== 'preparing') emit('waiting'); } });
+      await pipeline.prepareSources();
+      verifier = await pipeline.prepareVerifier({ peerOnly: !!options.openPeers });
+      const obtain = pipeline.obtain;
       if (checkpointId === null) {
         const record = await options.state.create({ content: seed.info, targetId: options.destination.targetId });
         checkpointId = record.id; emit('preparing');
@@ -167,7 +114,7 @@ export function createTransfer(options: DownloadOptions & { checkpointId?: strin
             let bytes:Uint8Array;
             if(peerBlock)bytes=peerBlock.bytes;
             else if(verifier!.requiresWitness)throw peerError??new Q2QError('PROOF_UNAVAILABLE');
-            else if(sources.contentUrls.length===0&&peerError)throw peerError;
+            else if(pipeline!.contentSourceCount()===0&&peerError)throw peerError;
             else bytes = await obtain('content', length, { start, end: start + BigInt(length) - 1n, total: seed.info.size });
             const write = io.then(async () => {
               check(); await session!.writeBlock(BigInt(index), bytes,peerBlock?.witness);
@@ -202,7 +149,7 @@ export function createTransfer(options: DownloadOptions & { checkpointId?: strin
         try { await session.abort(); } catch (error) { problem = failure(error); }
       }
       try{await peerSource?.close();}catch(error){problem=failure(error);}
-      finally{verifier?.close();}
+      finally{pipeline?.close();}
     }
     if (terminal) return;
     // Completion owns transport cleanup too; wait()/Client.close() must not race

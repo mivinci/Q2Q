@@ -19,7 +19,8 @@
     "test:partial": "npm run wasm:build --prefix ../.. && cargo build --manifest-path ../../Cargo.toml -p q2q-punch-server && playwright test --config playwright.config.mjs --grep @partial",
     "test:publish": "npm run wasm:build --prefix ../.. && cargo build --manifest-path ../../Cargo.toml -p q2q-punch-server && playwright test --config playwright.config.mjs --grep @publish",
     "test:p2p": "npm run wasm:build --prefix ../.. && cargo build --manifest-path ../../Cargo.toml -p q2q-punch-server && playwright test --config playwright.config.mjs --grep @p2p",
-    "test:magnet": "npm run wasm:build --prefix ../.. && cargo test --manifest-path ../../Cargo.toml --locked -p q2q-core --lib --no-run && playwright test --config playwright.config.mjs --grep @magnet"
+    "test:magnet": "npm run wasm:build --prefix ../.. && cargo test --manifest-path ../../Cargo.toml --locked -p q2q-core --lib --no-run && playwright test --config playwright.config.mjs --grep @magnet",
+    "test:stream": "npm run wasm:build --prefix ../.. && cargo build --manifest-path ../../Cargo.toml -p q2q-punch-server && playwright test --config playwright.config.mjs --grep @stream"
   },
   "dependencies": {
     "@q2q/wasm": "*",

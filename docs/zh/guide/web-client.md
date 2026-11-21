@@ -41,6 +41,18 @@
 下载完成**默认不继续分享**。用户在更多菜单明确点击“继续分享”后，SDK 会重验完整缓存并宣告；活跃分享期间不能删除该缓存，
 先停止分享再删除。该操作不删除已保存到其他位置的用户文件。下载中的部分块共享虽有 SDK API，页面本版不提供默认开关。
 
+## 按需读取（SDK 能力，页面尚未提供播放界面）
+
+浏览器 SDK 已提供 `openStream()`：按位置读取已验证字节，只取当前块和前向预取块，支持 seek 重建窗口，适合边播边下、
+预览或先取尾部元数据。它与整文件下载共用同一套认证、重试、逐块校验和检查点，不会暴露未验证或稀疏区域。
+
+- 需要 proof 表（内嵌叶子表或外置证明）才能重验读回内容；纯 Peer 证明的种子会明确报错。
+- 默认预取 8 块（0–64），单块等待默认 30 秒；超时不推进游标，可重试。
+- 关闭读取句柄会取消网络任务，但保留已验证块与检查点，重新打开不会重下。
+
+主站页面目前只做整文件下载，没有接入播放器或 Service Worker range 代理；Safari、跨 NAT 与真实码率未验收。
+接口与边界见 [SDK README](https://github.com/mivinci/Q2Q/blob/main/packages/client-web/README.md) 与 [方案](https://github.com/mivinci/Q2Q/blob/main/todos/web-vod-streaming.md)。
+
 ## 配置与运行边界
 
 `PUBLIC_Q2Q_TRACK_URL` 通过 SvelteKit `src/env.ts` 声明为公开、构建期配置，默认 `https://track.q2q.app`；
