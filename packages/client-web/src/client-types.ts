@@ -27,6 +27,29 @@ export interface ClientLimits {
 }
 export interface ClientOptions { state?: StateStore; sourceProvider?: SourceProvider; limits?: Partial<ClientLimits>; trackUrl?: string; wasmUrl?: string | URL }
 export interface DownloadOptions { seed: Seed; destination: ContentDestination }
+/** Seek-driven window read: fetch only what the cursor needs, ahead by a bounded prefetch. */
+export interface StreamOptions {
+  seed: Seed;
+  destination: ContentDestination;
+  /** Blocks fetched ahead of the cursor (default 8, maximum 64; 0 fetches only the current block). */
+  prefetchBlocks?: number;
+  /** Maximum wait for one missing block, including verification and disk IO (default 30s). */
+  readTimeoutMs?: number;
+  /** Resume a stream this client created; the checkpoint must match the seed. */
+  checkpointId?: string;
+}
+export interface StreamReader {
+  readonly info: ContentInfo;
+  readonly position: bigint;
+  readonly checkpointId: string;
+  /** Waits for the block under the cursor, then returns verified bytes. A read
+   * never crosses a block boundary and may return fewer than `length` bytes. */
+  read(length: number, options?: { signal?: AbortSignal }): Promise<Uint8Array>;
+  seek(offset: bigint): Promise<void>;
+  progress(): Readonly<DownloadSnapshot>;
+  /** Cancels network work; verified blocks and the checkpoint stay resumable. */
+  close(): Promise<void>;
+}
 export interface ResumeDownloadOptions extends DownloadOptions { checkpointId: string }
 export type DownloadState = 'preparing' | 'waiting' | 'downloading' | 'pausing' | 'paused'
   | 'finalizing' | 'completed' | 'cancelling' | 'cancelled' | 'failed';
@@ -77,6 +100,9 @@ export interface Client {
   downloadShared(options: DownloadOptions): {readonly transfer:Transfer;readonly publication:Publication};
   resumeDownloadShared(options: ResumeDownloadOptions): {readonly transfer:Transfer;readonly publication:Publication};
   download(options: DownloadOptions): Transfer;
+  /** Opens a seek-driven reader; requires a proof table (peer-only content is
+   * rejected) and a target whose committed ranges can be read back. */
+  openStream(options: StreamOptions): Promise<StreamReader>;
   resumeDownload(options: ResumeDownloadOptions): Transfer;
   listCheckpoints(options?: { after?: string; limit?: number }): ReturnType<StateStore['list']>;
   discardCheckpoint(id: string): Promise<void>;

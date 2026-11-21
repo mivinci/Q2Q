@@ -60,6 +60,26 @@ the SDK to reverify the complete cache and publish it. Stop that publication bef
 deleting its cache; files already saved elsewhere are not deleted. Live partial-block
 sharing is available in the SDK but is not enabled by default or exposed in this UI.
 
+## On-demand reads (SDK capability, no player UI yet)
+
+The browser SDK exposes `openStream()`: read verified bytes by position, fetching only the
+cursor block plus a bounded prefetch window, with seek rebuilding that window. It suits
+progressive playback, previews and fetching tail metadata first. It shares the same
+authentication, retries, per-block verification and checkpoints as whole-file downloads and
+never returns unverified or sparse regions.
+
+- A proof table (inline leaf hashes or external proofs) is required to re-verify reads;
+  peer-only seeds report a clear error.
+- Prefetch defaults to 8 blocks (0–64) and one block waits at most 30 seconds by default; a
+  timeout leaves the cursor in place so the read can be retried.
+- Closing the reader cancels network work but keeps verified blocks and the checkpoint, so
+  reopening does not refetch them.
+
+The web app still performs whole-file downloads only: no player or Service Worker range proxy
+is wired in, and Safari, cross-NAT and real bitrate remain unverified. See the
+[SDK README](https://github.com/mivinci/Q2Q/blob/main/packages/client-web/README.md) and the
+[design notes](https://github.com/mivinci/Q2Q/blob/main/todos/web-vod-streaming.md).
+
 ## Configuration and limits
 
 `PUBLIC_Q2Q_TRACK_URL` is declared public/static in SvelteKit `src/env.ts` and defaults
