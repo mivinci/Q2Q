@@ -1,6 +1,6 @@
 # Q2Q Web
 
-`q2q.app` 的浏览器客户端，采用与 platform 相同的 SvelteKit 3、TypeScript、Tailwind 4、shadcn-svelte/Lucide 与 Cloudflare adapter。已接 `@q2q/client-web` 的本机完整文件分享、P2P/HTTP 下载、种子导出、磁力链粘贴下载与分享侧复制磁力链，不包含平台账号 Auth 或云端上传。分享/P2P 页面已部署；跨设备矩阵尚未完成，Safari 双端互通正在排查。后文标注日期的本地验收与未部署状态属于当时记录。
+`q2q.app` 的浏览器客户端，采用与 platform 相同的 SvelteKit 3、TypeScript、Tailwind 4、shadcn-svelte/Lucide 与 Cloudflare adapter。已接 `@q2q/client-browser` 的本机完整文件分享、P2P/HTTP 下载、种子导出、磁力链粘贴下载与分享侧复制磁力链，不包含平台账号 Auth 或云端上传。分享/P2P 页面已部署；跨设备矩阵尚未完成，Safari 双端互通正在排查。后文标注日期的本地验收与未部署状态属于当时记录。
 
 ## 本地运行
 
@@ -48,7 +48,7 @@ Web CI 按自身及工作区依赖影响运行类型、构建、SDK 单元测试
 
 [design](design/README.md) 保存用户确认的视觉基准与紧凑密度约定。真实页面提供分享、种子/磁力链下载和恢复，按钮、输入框与菜单样式复用 `@q2q/ui`；桌面任务行以 72px 为基准，工具栏 32px、行内按钮 28px，粗指针设备保留 44px 触控目标。历史原型文件和示意进度不作为已实现能力或线上数据展示。
 
-本地 2026-10-28：Chromium 148 / Playwright WebKit 26 的正常磁盘 profile，真实页面通过 HTTP 下载、导出后独立 SHA-256 比对、暂停与页面刷新恢复、错误恢复种子、非法种子/损坏内容/过期授权、取消/重试、多标签页记录隔离、删除缓存和语言/主题操作。Node/浏览器测试使用生成的约 2 MiB 内容，不表示新的大文件 HTTP 容量、真实 Safari/iOS/Firefox、公网来源或 P2P 已验收。SDK 的大文件存储和原生文件保存验收记录见 packages/client-web/README.md。
+本地 2026-10-28：Chromium 148 / Playwright WebKit 26 的正常磁盘 profile，真实页面通过 HTTP 下载、导出后独立 SHA-256 比对、暂停与页面刷新恢复、错误恢复种子、非法种子/损坏内容/过期授权、取消/重试、多标签页记录隔离、删除缓存和语言/主题操作。Node/浏览器测试使用生成的约 2 MiB 内容，不表示新的大文件 HTTP 容量、真实 Safari/iOS/Firefox、公网来源或 P2P 已验收。SDK 的大文件存储和原生文件保存验收记录见 packages/client-browser/README.md。
 
 
 ## 分享/P2P 接线（2026-11-08）

@@ -28,7 +28,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: python3 .github/scripts/app-impact.py client-web
+        run: python3 .github/scripts/app-impact.py client-browser
 
   check:
     name: SDK contracts (${{ matrix.browser }}, ${{ matrix.os }})
@@ -57,18 +57,18 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
-      - run: npm run check --workspace @q2q/client-web
-      - run: npm test --workspace @q2q/client-web
+      - run: npm run check --workspace @q2q/client-browser
+      - run: npm test --workspace @q2q/client-browser
       - run: npm run wasm:check -- 1
       - run: cargo build --locked -p q2q-punch-server
       - run: cargo test --locked -p q2q-core --lib --no-run
       - run: npx playwright install --with-deps ${{ matrix.browser }}
       - name: Run local SDK contracts with shared build artifacts
-        working-directory: packages/client-web
+        working-directory: packages/client-browser
         run: npx playwright test --project ${{ matrix.browser }} --grep-invert '@large|@public'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: client-web-reports-${{ matrix.browser }}
-          path: .tmp/client-web-playwright
+          name: client-browser-reports-${{ matrix.browser }}
+          path: .tmp/client-browser-playwright
           retention-days: 7

@@ -1,9 +1,9 @@
-# @q2q/client-web
+# @q2q/client-browser
 
 浏览器客户端 SDK，开发中、尚未发布。当前实现已选择 `File` 的范围读取，以及文件句柄的乱序写入、提交与独占访问；已提供 OPFS 暂存、流式导出与清理；已实现版本化下载检查点及逐块恢复校验；已接入 `createClient`、HTTP 下载任务、暂停/恢复与受限来源刷新；WebRTC 内部传输层已接线并完成部分互通验证，已接入 Client 的 P2P 下载、暂停/恢复和 HTTP 回退；完整文件 Web 发布已接线并完成本地互通；下载中已提交块的显式共享已实现；主站分享接线已完成并上线；真实 Safari 双端跨设备互通仍在排查。设计与执行项见 [SDK 方案](../../todos/web-sdk.md)。
 
 ```ts
-import { fileSource } from '@q2q/client-web';
+import { fileSource } from '@q2q/client-browser';
 
 // file 由应用的文件选择事件提供；SDK 不弹选择器。
 const source = fileSource(file);
@@ -24,7 +24,7 @@ AbortSignal 取消会抑制迟到结果，但不能强行终止 Blob 的宿主�
 ## 文件写入
 
 ```ts
-import { fileDestination } from '@q2q/client-web';
+import { fileDestination } from '@q2q/client-browser';
 
 // handle 已由应用通过用户操作获得授权；工厂是异步的。
 const destination = await fileDestination(handle);
@@ -50,7 +50,7 @@ try {
 ## OPFS 暂存与导出
 
 ```ts
-import { opfsCache, fileDestination } from '@q2q/client-web';
+import { opfsCache, fileDestination } from '@q2q/client-browser';
 
 const cache = await opfsCache();
 const entry = await cache.create({ name: 'example.bin', size: 4n });
@@ -88,7 +88,7 @@ await cache.remove(entry.id);
 ## 检查点与恢复校验
 
 ```ts
-import { browserState, createBlockVerifier, resumeCheckpoint } from '@q2q/client-web';
+import { browserState, createBlockVerifier, resumeCheckpoint } from '@q2q/client-browser';
 
 // 种子与外置证明由应用提供；内联证明的种子可省略 proof。
 const verifier = await createBlockVerifier({ seed: seedBytes, proof: proofBytes });
@@ -132,17 +132,17 @@ check 与 test:browser 会先生成 Wasm 产物，需要已配置 wasm32-unknown
 ## 测试
 
 ```sh
-npm run check --workspace @q2q/client-web
-npm test --workspace @q2q/client-web
-npm run test:browser --workspace @q2q/client-web
-npm run test:http --workspace @q2q/client-web
-npm run test:large --workspace @q2q/client-web
-VITE_RESOLVE_FROM=apps/platform/package.json npm run test:bundle --workspace @q2q/client-web
+npm run check --workspace @q2q/client-browser
+npm test --workspace @q2q/client-browser
+npm run test:browser --workspace @q2q/client-browser
+npm run test:http --workspace @q2q/client-browser
+npm run test:large --workspace @q2q/client-browser
+VITE_RESOLVE_FROM=apps/platform/package.json npm run test:bundle --workspace @q2q/client-browser
 ```
 
-CI 使用独立的 `.github/workflows/client-web.yml`：SDK/Wasm、依赖的原生 crate、Track/Registry、共享协议与测试配置改动触发 Chromium 完整本地契约；仅 www 页面或公共 UI 源码改动不触发。每天 UTC 19:00（北京时间次日 03:00）及手动触发运行 Chromium/WebKit 两端完整契约，包括 WebKit 原生 OPFS 存储回归。Wasm 与原生测试产物先构建，再统一执行 Playwright，保留完整失败报告；不包含 `@large` 大文件测量和 `@public` 公网测试，不开启额外重试或跳过。独立工作流不属于 WWW 部署 job 的依赖，WWW 自身仍执行双浏览器页面测试和 Chromium SDK 打包冒烟。
+CI 使用独立的 `.github/workflows/client-browser.yml`：SDK/Wasm、依赖的原生 crate、Track/Registry、共享协议与测试配置改动触发 Chromium 完整本地契约；仅 www 页面或公共 UI 源码改动不触发。每天 UTC 19:00（北京时间次日 03:00）及手动触发运行 Chromium/WebKit 两端完整契约，包括 WebKit 原生 OPFS 存储回归。Wasm 与原生测试产物先构建，再统一执行 Playwright，保留完整失败报告；不包含 `@large` 大文件测量和 `@public` 公网测试，不开启额外重试或跳过。独立工作流不属于 WWW 部署 job 的依赖，WWW 自身仍执行双浏览器页面测试和 Chromium SDK 打包冒烟。
 
-浏览器测试使用标准 `@playwright/test` runner，默认 Chromium 与 WebKit 项目；每个契约用例有独立磁盘 profile。失败保存截图/trace，HTML 报告放在仓库 `.tmp/client-web-playwright/report`，大文件结果作为 JSON 附件保留。大文件测试不启用追踪，避免影响资源测量。
+浏览器测试使用标准 `@playwright/test` runner，默认 Chromium 与 WebKit 项目；每个契约用例有独立磁盘 profile。失败保存截图/trace，HTML 报告放在仓库 `.tmp/client-browser-playwright/report`，大文件结果作为 JSON 附件保留。大文件测试不启用追踪，避免影响资源测量。
 
 可设置 CHROME_PATH 指定浏览器；未设置时使用匹配 Playwright 的安装版本。新增引擎时建议 `PLAYWRIGHT_SKIP_BROWSER_GC=1 npx playwright install chromium webkit`，避免安装器清理其他任务已有的缓存。通过 `TEST_FIREFOX=1` 和 `--project firefox` 可以显式尝试 Firefox，不把本机启动失败标成 SDK 不支持。
 
@@ -150,7 +150,7 @@ CI 使用独立的 `.github/workflows/client-web.yml`：SDK/Wasm、依赖的原�
 
 `test:bundle` 用仓库已有 Vite 构建真实包导出，再以仅允许同源脚本/Worker 和 wasm-unsafe-eval 的 CSP 验证默认资源加载。VITE_RESOLVE_FROM 相对仓库根目录解析，可选择工作区所用的 Vite；SDK 运行时代码不依赖该应用。
 
-系统保存是单独的交互测试：`npm run test:save --workspace @q2q/client-web` 会打印临时目录并打开可见测试页，需要在原生保存窗口选择该目录。也可设置 MANUAL_BROWSER=1 后在已连接的测试浏览器打开打印的网址。测试通过系统路径独立读回文件，与浏览器侧字节及 SHA-256 比对；清理只删除本次创建的测试目录。
+系统保存是单独的交互测试：`npm run test:save --workspace @q2q/client-browser` 会打印临时目录并打开可见测试页，需要在原生保存窗口选择该目录。也可设置 MANUAL_BROWSER=1 后在已连接的测试浏览器打开打印的网址。测试通过系统路径独立读回文件，与浏览器侧字节及 SHA-256 比对；清理只删除本次创建的测试目录。
 
 2026-10-28 桌面验收：标准 runner 104 项通过、2 项 CDP 专用场景在 WebKit 跳过；另有 10 项 Node File/Blob 测试通过。Chromium 148 的正常磁盘 profile 已验证到 1 GiB，WebKit 26 的共用存储契约及 Vite 8.3.4 产物通过；WebKit 没有系统保存选择器，不能据此宣称完整主站下载体验已支持 Safari。Firefox 在本机启动失败，Safari.app、移动端、真实撤销文件权限及物理磁盘耗尽尚未验收。该轮只验收存储；HTTP 下载验收见下文。详细矩阵与资源数值见设计文档 C5 记录。
 
@@ -160,7 +160,7 @@ CI 使用独立的 `.github/workflows/client-web.yml`：SDK/Wasm、依赖的原�
 ## HTTP 下载任务
 
 ```ts
-import { createClient, browserState, opfsCache } from '@q2q/client-web';
+import { createClient, browserState, opfsCache } from '@q2q/client-browser';
 
 const state = await browserState({ namespace: 'my-app' });
 const client = createClient({ state });
@@ -206,7 +206,7 @@ await task.wait();
 ## Track / Punch 控制连接
 
 ```ts
-import { createClient } from '@q2q/client-web';
+import { createClient } from '@q2q/client-browser';
 const client = createClient({ trackUrl: 'https://track.example.com' });
 try {
   const network = await client.connectNetwork();
@@ -225,7 +225,7 @@ try {
 
 Punch 控制帧最多 64 KiB；Track JSON 响应最多 256 KiB，最多 32 个待响应 RPC、8 个在途信令处理、256 KiB 发送缓冲；不无限排队。尚未实现 RTC 时拒绝入站连接。签名和 MAC 复用 Rust/Wasm，消息序列保留 u64 精度。
 
-运行 `npm run test:network --workspace @q2q/client-web`，会构建临时原生 Punch 并使用真实本地 workerd Track/Registry，在 Chromium/WebKit 验证控制协议；故障测试用 Playwright WebSocket 路由注入。公网证书、RTC、TURN 与跨 NAT 另行验收。
+运行 `npm run test:network --workspace @q2q/client-browser`，会构建临时原生 Punch 并使用真实本地 workerd Track/Registry，在 Chromium/WebKit 验证控制协议；故障测试用 Playwright WebSocket 路由注入。公网证书、RTC、TURN 与跨 NAT 另行验收。
 
 
 ## WebRTC 传输层进度
@@ -234,7 +234,7 @@ Punch 控制帧最多 64 KiB；Track JSON 响应最多 256 KiB，最多 32 个�
 
 浏览器发起方在通道就绪后照常发送 hello；浏览器接收方等到首个身份帧到达、且本地两个通道就绪后，才发送自己的 hello/proof。这样避免远端创建的通道在 DOM 已宣布 open、原生发送路径尚未就绪时丢失首次发送。暂存帧仍由 Rust 严格验证为合法 hello，随后验证签名、角色、内容与 DTLS 指纹绑定；重复/错误身份帧、认证前文件数据、超时和取消仍会终止连接，握手预算不延长。这是宿主时序适配，不增加或修改协议帧。
 
-`npm run test:rtc --workspace @q2q/client-web` 构建 Wasm，运行 Chromium/WebKit 浏览器契约，并通过临时 TCP 信令桥与真实原生 SDK WebRTC/身份交换互通。测试桥只用于测试，不进入 SDK 产物，不经过 Track/Punch；数据在真实 DataChannel 上双向交换。
+`npm run test:rtc --workspace @q2q/client-browser` 构建 Wasm，运行 Chromium/WebKit 浏览器契约，并通过临时 TCP 信令桥与真实原生 SDK WebRTC/身份交换互通。测试桥只用于测试，不进入 SDK 产物，不经过 Track/Punch；数据在真实 DataChannel 上双向交换。
 
 当前 Chromium ↔ 原生双角色通过；macOS Playwright WebKit ↔ 原生停留在 ICE 建连阶段，原因未定，默认跳过该两例，可设 `TEST_NATIVE_WEBKIT=1` 复测。WebKit 浏览器双端契约仍默认运行。共享帧、u64 边界及 transcript 使用 `npm run wasm:check -- 1` 验证。
 
@@ -262,7 +262,7 @@ try {
 
 优先复用已验证的内嵌叶子表或 HTTP 外置叶子表；没有可用叶子表且配置了 Peer 网络时，使用 Peer 的分块证明直接校验并保存紧凑见证，不再依赖 HTTP 证明地址。P2P 最多 65,536 个块。内存检查点仅当前 Client 可用；跨 Client/刷新恢复仍需 browserState、同一种子和原目标授权。
 
-`npm run test:p2p --workspace @q2q/client-web` 使用临时真实 Workers Track/Registry、原生 Punch 和原生 SDK publication，没有在线服务操作。浏览器通过公开 Client API 下载；测试经独立 SHA-256 和逐字节比较检查 OPFS 导出。丢包/损坏在收包接口注入，修复数据仍从真实原生端重传。WebKit/native 用例默认跳过，设置 TEST_NATIVE_WEBKIT=1 可诊断复测。
+`npm run test:p2p --workspace @q2q/client-browser` 使用临时真实 Workers Track/Registry、原生 Punch 和原生 SDK publication，没有在线服务操作。浏览器通过公开 Client API 下载；测试经独立 SHA-256 和逐字节比较检查 OPFS 导出。丢包/损坏在收包接口注入，修复数据仍从真实原生端重传。WebKit/native 用例默认跳过，设置 TEST_NATIVE_WEBKIT=1 可诊断复测。
 
 
 ## 按需读取窗口（边播边下的数据面）
@@ -285,7 +285,7 @@ seek 撤下旧窗口未开始的块，在途块仍完成并缓存；缺少的块
 需要 proof 表（内嵌叶子表或外置证明）才能重验读回内容，纯 Peer 证明的种子在 `openStream` 阶段报 `PROOF_UNAVAILABLE`。
 `checkpointId` 可继续同内容身份的既有会话；关闭后重开不会重下已提交块。
 
-`npm run test:stream --workspace @q2q/client-web` 覆盖：prefetch=0 只取游标块、窗口与 seek 边界、缺块超时不推进游标、
+`npm run test:stream --workspace @q2q/client-browser` 覆盖：prefetch=0 只取游标块、窗口与 seek 边界、缺块超时不推进游标、
 关闭后重开复用已提交块、无 proof 表被拒绝、参数边界，以及从真实原生发布者经 Track/Punch 读头部与尾部。播放器对接
 （MSE / Service Worker range 代理）与 MP4 `moov` 容器策略不在 SDK 内，见 [web-vod-streaming.md](../../todos/web-vod-streaming.md)。
 
@@ -324,7 +324,7 @@ HTTP 来源，文件字节走 WebRTC。最初串联场景遇到 join/exit rate_l
 ## 本机完整文件发布
 
 ```ts
-import { createClient, fileSource } from '@q2q/client-web';
+import { createClient, fileSource } from '@q2q/client-browser';
 
 const client = createClient({ trackUrl: 'https://track.example.com' });
 const publication = client.publish({ source: fileSource(selectedFile) });
@@ -372,7 +372,7 @@ observer 重入关闭、源变化拒绝、丢片 NACK 修复通过。WebKit/nati
 协议测试用有界内存目标隔离 WebKit 隐私 profile 的 OPFS 限制；原生下载测试实际写盘，
 生产 OPFS/检查点由独立持久 profile 套件验证，不能将内存目标当作系统保存验收。
 
-`npm run test:publish --workspace @q2q/client-web` 使用临时本地真实服务；CI 已接线，
+`npm run test:publish --workspace @q2q/client-browser` 使用临时本地真实服务；CI 已接线，
 不访问生产。主站仍未开放分享/P2P 页面；下载中的部分块共享见下节，多个发布任务、上传限速、
 发布侧公网/跨 NAT/TURN、大文件发布性能仍未完成或未验收。
 
@@ -424,7 +424,7 @@ try {
 Bitfield/Have、缺块拒绝、关闭分享不取消下载、暂停/完成先撤回、检查点新会话重验、
 已提交内容被改坏停止宣告，以及原生 origin → 浏览器中间节点 → 浏览器接收已提交块的
 Peer-only proof 转发。后者传的是块与证明，不把低层分块验收冒充三端完整文件级调度。
-`npm run test:partial --workspace @q2q/client-web` 只用临时本地服务，CI 已接线；
+`npm run test:partial --workspace @q2q/client-browser` 只用临时本地服务，CI 已接线；
 WebKit/native 与私有上下文 OPFS 两项明确跳过，不宣称已兼容。
 
 

@@ -62,7 +62,7 @@ impl SignalChannel for Bridge {
 }
 
 #[tokio::test]
-#[ignore = "requires a Playwright browser; npm run test:rtc --workspace @q2q/client-web"]
+#[ignore = "requires a Playwright browser; npm run test:rtc --workspace @q2q/client-browser"]
 async fn browser_rtc_bridge() {
   assert_eq!(std::env::var("Q2Q_BROWSER_RTC").as_deref(), Ok("1"));
   tokio::time::timeout(Duration::from_secs(40), async {

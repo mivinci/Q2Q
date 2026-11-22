@@ -52,7 +52,7 @@ python3 -m http.server 5190 --bind 127.0.0.1 --directory apps/www/design
 - **共享视觉。** 沿用 platform 的 Q2Q Logo、系统字体、蓝色强调、浅深色语义配色、细边框与圆角。Logo 直接复制共享品牌资源，图标来自已安装的 Lucide，许可证在 assets 中。
 - **状态真实区分。** 下载中、已暂停、等待接收、待保存和失败使用不同文案。本机分享不显示“文件下载百分比”；下载完成仍需保存到用户文件位置。
 - **手机自然重排。** 390px 与 320px 下无横向滚动；文件和操作在上方，进度在下方，不缩小整张桌面表格。
-- **不将原型脚本移作传输内核。** 后续正式应用沿用 platform 的 SvelteKit、TypeScript、Tailwind、shadcn-svelte、Lucide，放在 apps/www；状态和传输由 @q2q/client-web 管理。
+- **不将原型脚本移作传输内核。** 后续正式应用沿用 platform 的 SvelteKit、TypeScript、Tailwind、shadcn-svelte、Lucide，放在 apps/www；状态和传输由 @q2q/client-browser 管理。
 
 ## 历史截图（2026-10-28）
 

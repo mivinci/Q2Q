@@ -71,10 +71,10 @@ jobs:
       - run: npm run www:check
       - run: npm run www:build
       - run: npx playwright install --with-deps ${{ matrix.browser }}
-      - run: npm test --workspace @q2q/client-web
+      - run: npm test --workspace @q2q/client-browser
       # Exercise the packaged SDK/Worker/Wasm path once; full SDK contracts live
-      # in client-web.yml and do not block page-only changes.
-      - run: npm run test:bundle --workspace @q2q/client-web -- --project chromium
+      # in client-browser.yml and do not block page-only changes.
+      - run: npm run test:bundle --workspace @q2q/client-browser -- --project chromium
         if: matrix.browser == 'chromium'
         env:
           VITE_RESOLVE_FROM: apps/www/package.json
@@ -87,7 +87,7 @@ jobs:
           name: www-browser-reports-${{ matrix.browser }}
           path: |
             .tmp/www-playwright
-            .tmp/client-web-playwright
+            .tmp/client-browser-playwright
           retention-days: 7
 
   # Both browser jobs must succeed before main can deploy. PR jobs receive no credentials.

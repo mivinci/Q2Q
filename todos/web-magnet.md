@@ -2,7 +2,7 @@
 
 状态：**已合并（PR #103，2026-11-15 merge commit `942e3f4`），CI 全绿并已部署 q2q-www**。D1–D4 按推荐项确认：不使用 `tr`、入口改“下载”对话框、分享侧加“复制磁力链”。实现与本地验证细节见文末执行记录。
 依据：[磁力链核心方案](magnet-download.md)（Rust core/CLI 已实现并本地验收）、[协议 4.3 / 5.3](../docs/zh/spec.md)、[Web 客户端方案](web-client.md)。
-当前实况：`apps/www` 只接受 `.q2q` 种子与本机分享，无磁力链入口；`packages/client-web` 与 `q2q-wasm` 均无 magnet API；原生端 `request_info` / `info` 消息、上传端响应与 `Client::resolve_magnet` 已上线（协议面无需改动）。
+当前实况：`apps/www` 只接受 `.q2q` 种子与本机分享，无磁力链入口；`packages/client-browser` 与 `q2q-wasm` 均无 magnet API；原生端 `request_info` / `info` 消息、上传端响应与 `Client::resolve_magnet` 已上线（协议面无需改动）。
 
 ## 目标
 
@@ -46,7 +46,7 @@
 
 `decode_peer_control` / `peer_bitfield` / 控制消息编解码无需改动（`Control` 枚举已含两个新消息）。
 
-## SDK 设计（packages/client-web）
+## SDK 设计（packages/client-browser）
 
 ### 公共 API（client-types.ts / client.ts）
 
@@ -203,7 +203,7 @@ flowchart TD
 
 ## 测试与验收
 
-### SDK（packages/client-web/tests/）
+### SDK（packages/client-browser/tests/）
 
 1. wasm fixtures 对照：畸形链接（非 magnet、缺 xt、btih、非 ASCII hash、冲突 xt、坏 percent、超长）、`tr` 过滤与 `to_magnet` 往返，与 Rust 用例同输入断言。
 2. magnet-cache：命中不触网、损坏/不匹配删除降级、容量淘汰、并发写。
@@ -240,7 +240,7 @@ flowchart TD
 
 - Wasm（`crates/q2q-wasm`）：新增 `parse_magnet`、`magnet_seed`、`seed_info_b64`、`seed_magnet`，错误以稳定机器码抛出；
   Rust 单元测试 3 项、`crates/q2q-wasm/scripts/check-magnet.mjs` 4 组 Node 检查通过；`cargo clippy`（native 与 wasm32 target）与 `fmt` 通过。
-- SDK（`packages/client-web`）：新增 `magnet.ts`（解析、缓存优先、≤2 并发候选、60s 总预算、单连接 10s、Track 索引 3×250ms 重试、
+- SDK（`packages/client-browser`）：新增 `magnet.ts`（解析、缓存优先、≤2 并发候选、60s 总预算、单连接 10s、Track 索引 3×250ms 重试、
   错误归并区分无候选/连接失败/元数据不符）、`magnet-cache.ts`（独立 IndexedDB `q2q-magnet-v1`，按内容哈希存最小种子，256 条上限、
   `writtenAt` 淘汰、读取重验）、`Client.parseMagnet/resolveMagnet/seedMagnet` 与三个错误码；`peer-upload.ts` 首消息状态机接受
   `request_info` → 回 `info`（严格空消息由 Rust 解码保证，重复请求按 bitfield 解码失败结束该连接，元数据-only 关闭视为成功交换）。
@@ -303,5 +303,5 @@ flowchart TD
 ## 合并与上线（2026-11-15）
 
 - PR #103 以 merge commit `942e3f4` 合入 main；合并后 main 的 Rust/WWW/Web SDK/Track/Registry/Platform/Admin/Docs/Seed Processing 九个工作流全部 success，WWW 双浏览器（Chromium/WebKit）检查通过，`Deploy WWW` 成功部署 q2q-www——线上页面已包含磁力链功能。
-- CI 排查过程中修复的问题：原生测试名与 `native_downloads_browser_publication` 共前缀导致被子串过滤误执行（已改名 `native_downloads_web_magnet_link` 并在变量缺失时跳过）；WebKit 拒绝 Chromium 专属 `clipboard-write` 权限名（已按浏览器区分并覆盖手动复制 fallback）；web→web 接收端改用独立浏览器 context。维护者随后补充分层 CI（`client-web.yml`：Chromium 全量本地契约按需触发，WebKit 全量契约每日 UTC 19:00，不阻塞 WWW 部署）并处理了 WebKit 既有间歇用例。
+- CI 排查过程中修复的问题：原生测试名与 `native_downloads_browser_publication` 共前缀导致被子串过滤误执行（已改名 `native_downloads_web_magnet_link` 并在变量缺失时跳过）；WebKit 拒绝 Chromium 专属 `clipboard-write` 权限名（已按浏览器区分并覆盖手动复制 fallback）；web→web 接收端改用独立浏览器 context。维护者随后补充分层 CI（`client-browser.yml`：Chromium 全量本地契约按需触发，WebKit 全量契约每日 UTC 19:00，不阻塞 WWW 部署）并处理了 WebKit 既有间歇用例。
 - 线上边界不变：跨设备/跨 NAT/强制 TURN 与真实移动端仍未验收；磁力链需在线 Peer，CDN-only 内容仍需 `.q2q` 冷启动。

@@ -51,7 +51,7 @@
 - 关闭读取句柄会取消网络任务，但保留已验证块与检查点，重新打开不会重下。
 
 主站页面目前只做整文件下载，没有接入播放器或 Service Worker range 代理；Safari、跨 NAT 与真实码率未验收。
-接口与边界见 [SDK README](https://github.com/mivinci/Q2Q/blob/main/packages/client-web/README.md) 与 [方案](https://github.com/mivinci/Q2Q/blob/main/todos/web-vod-streaming.md)。
+接口与边界见 [SDK README](https://github.com/mivinci/Q2Q/blob/main/packages/client-browser/README.md) 与 [方案](https://github.com/mivinci/Q2Q/blob/main/todos/web-vod-streaming.md)。
 
 ## 配置与运行边界
 

@@ -168,11 +168,11 @@ archive.zip                         ⋯
 
 ## 6. 建议的工程边界
 
-建议正式应用放在 `apps/www`，沿用 SvelteKit、TypeScript 和共享 UI，独立部署到 `q2q.app`。先单独设计 `packages/client-web`（包名 `@q2q/client-web`），主站消费 SDK 的任务契约；详细边界与执行项见 [web-sdk.md](web-sdk.md)。apps/www 已消费 SDK 的真实 HTTP 子集，不额外建立传输内核 crate。
+建议正式应用放在 `apps/www`，沿用 SvelteKit、TypeScript 和共享 UI，独立部署到 `q2q.app`。先单独设计 `packages/client-browser`（包名 `@q2q/client-browser`），主站消费 SDK 的任务契约；详细边界与执行项见 [web-sdk.md](web-sdk.md)。apps/www 已消费 SDK 的真实 HTTP 子集，不额外建立传输内核 crate。
 
 ```mermaid
 flowchart TD
-    UI["apps/www：页面与任务操作"] --> Tasks["packages/client-web：命令、任务句柄、只读快照"]
+    UI["apps/www：页面与任务操作"] --> Tasks["packages/client-browser：命令、任务句柄、只读快照"]
     Tasks --> Worker["Worker：可共享的内容、校验与调度逻辑"]
     Worker --> Wasm["共享 Rust 能力 / q2q-wasm"]
     Tasks --> IO["SDK 内的浏览器宿主适配：文件、Fetch、WSS、WebRTC"]
@@ -187,7 +187,7 @@ flowchart TD
 - 页面只消费任务快照并发出命令，不在 Svelte 组件内维护块调度或 Peer 协议。
 - JS/TS 负责浏览器 API 与 Worker 消息；种子、Merkle、内容身份、签名消息规范和协议编解码优先复用 Rust。不要同时维护一套 JS 与一套 Rust 的内容校验算法。
 - 先审计 `q2q-core` 能抽出的运行时无关逻辑及多态接口，优先复用传输状态、调度和恢复规则。若原生依赖阻挡 Wasm 复用，先记录具体拆分方案和协议一致性用例，不在页面里另写完整 SDK。
-- Web SDK 放在 `packages/client-web`，包名 `@q2q/client-web`；Node 独立包 `@q2q/client-node` 使用 napi-rs 绑定现有 Rust Client，同时服务主站与第三方浏览器接入，不依赖 Svelte 或主站账号体系；先定稿接口、生命周期及适配边界，再实现主站。
+- Web SDK 放在 `packages/client-browser`，包名 `@q2q/client-browser`；Node 独立包 `@q2q/client-node` 使用 napi-rs 绑定现有 Rust Client，同时服务主站与第三方浏览器接入，不依赖 Svelte 或主站账号体系；先定稿接口、生命周期及适配边界，再实现主站。
 - Worker 与主线程按浏览器 API 实际可用范围分工，SDK 封装桥接；不假定 WebRTC、权限弹窗和存储 API 都能在同一种 Worker 中运行。
 - 浏览器直接访问来源与 Peer，默认不把大文件字节代理经过主站 Worker；WebSocket 传递信令，不把它直接当成 P2P 文件通道。
 - 网络连接、worker、文件句柄与流都有明确持有者。取消必须中断请求、停止调度并释放资源；有界缓冲与背压不随文件大小无限增长。
@@ -226,7 +226,7 @@ flowchart TD
 
 ### W1. 独立 Web SDK 设计
 
-- [ ] 完成 [web-sdk.md](web-sdk.md) 的 S1，设计 `packages/client-web` 的公共接口、任务句柄、快照、错误与生命周期。
+- [ ] 完成 [web-sdk.md](web-sdk.md) 的 S1，设计 `packages/client-browser` 的公共接口、任务句柄、快照、错误与生命周期。
 - [ ] 明确 Rust/Wasm、Worker 和浏览器 host 的复用与多态边界，以及文件、存储和网络资源的持有者。
 - [ ] 用独立于 Svelte 的调用示例审查分享、下载、暂停、取消、恢复和关闭流程。
 
@@ -310,7 +310,7 @@ flowchart TD
 
 ### HTTP 页面验收（2026-10-28）
 
-`apps/www` 用真实 @q2q/client-web 句柄和 OPFS/IndexedDB 承接页面，不含账号系统。保留种子原对象（Svelte $state.raw）、用 SvelteMap 跟踪可重试种子；任务历史按任务键单独更新，避免多标签页整个列表互相覆盖。不持久化原始种子、来源授权或私钥。恢复时“上次提交”只是提示，新会话重验后才显示当前校验进度。
+`apps/www` 用真实 @q2q/client-browser 句柄和 OPFS/IndexedDB 承接页面，不含账号系统。保留种子原对象（Svelte $state.raw）、用 SvelteMap 跟踪可重试种子；任务历史按任务键单独更新，避免多标签页整个列表互相覆盖。不持久化原始种子、来源授权或私钥。恢复时“上次提交”只是提示，新会话重验后才显示当前校验进度。
 
 Chromium 148 / Playwright WebKit 26 的 12 项真实页面测试在开发模式与生产预览均通过：约 2 MiB 内容下载并从浏览器下载结果独立 SHA-256 比对、暂停与刷新后重选种子恢复、拒绝错误恢复种子、非法种子/损坏内容/过期授权、取消后停止请求并重试、多标签页记录隔离、缓存删除、主题及 SSR 语言保持。WebKit 使用正常磁盘 profile，不把隐身存储限制误记为 SDK 不支持。原生保存窗口由 SDK C5 验收，本轮页面自动化测试的是有界 Blob/浏览器下载管理器路径，不把它称作系统文件落盘确认。
 

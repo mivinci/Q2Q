@@ -15,7 +15,7 @@
     "#lib/*": "./src/lib/*"
   },
   "dependencies": {
-    "@q2q/client-web": "*",
+    "@q2q/client-browser": "*",
     "@q2q/ui": "*",
     "mode-watcher": "^1.1.0",
     "bits-ui": "^2.19.5"

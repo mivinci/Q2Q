@@ -1,7 +1,7 @@
 # 浏览器 VOD 读取（边播边下）方案
 
 状态：**已实现并通过本地验收（2026-11-21）**。`Client.openStream` 提供 seek 驱动的有界读窗口，决策点按推荐项执行（D1 独立 API、D2 仅支持有 proof 表的内容、D3 仅 OPFS 目标、D4 SDK 只出读取接口、D5 不做窗口内共享、D6 预取 8 / 超时 30s）。未提交、未发布。
-范围：`@q2q/client-browser`（现 `packages/client-web`）提供 seek 驱动的有界读窗口，让应用在下载完成前按位置读取已验证字节。
+范围：`@q2q/client-browser`（`packages/client-browser`）提供 seek 驱动的有界读窗口，让应用在下载完成前按位置读取已验证字节。
 参考实现：[Rust `reader.rs`](../crates/q2q-core/src/reader.rs)、[调度文档](../docs/zh/guide/scheduling.md#vod-的读取窗口)、[客户端 SDK 第四阶段](../todos/client-sdk.md)。
 
 ## 1. 目标与非目标
@@ -170,7 +170,7 @@ SDK 只交付"能按位置读已验证字节"。应用侧两条路径：
 
 ## 8. 实施记录（2026-11-21）
 
-实现：`packages/client-web/src/source.ts`（从 `transfer.ts` 抽出的来源/重试/授权刷新/校验管线，整文件下载与流式读取共用）、`src/stream.ts`（窗口调度 + `StreamReader`）、`Client.openStream` 与 `StreamOptions`/`StreamReader` 类型；`apps/www` 未接入播放器。
+实现：`packages/client-browser/src/source.ts`（从 `transfer.ts` 抽出的来源/重试/授权刷新/校验管线，整文件下载与流式读取共用）、`src/stream.ts`（窗口调度 + `StreamReader`）、`Client.openStream` 与 `StreamOptions`/`StreamReader` 类型；`apps/www` 未接入播放器。
 
 本地验证（Chromium/Edge 148，`test:stream`）：
 

@@ -77,7 +77,7 @@ never returns unverified or sparse regions.
 
 The web app still performs whole-file downloads only: no player or Service Worker range proxy
 is wired in, and Safari, cross-NAT and real bitrate remain unverified. See the
-[SDK README](https://github.com/mivinci/Q2Q/blob/main/packages/client-web/README.md) and the
+[SDK README](https://github.com/mivinci/Q2Q/blob/main/packages/client-browser/README.md) and the
 [design notes](https://github.com/mivinci/Q2Q/blob/main/todos/web-vod-streaming.md).
 
 ## Configuration and limits

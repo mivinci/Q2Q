@@ -27,10 +27,10 @@ const directory = await mkdtemp(join(tmpdir(), 'q2q-storage-bundle-'));
 let context; let server;
 try {
   await mkdir(join(directory, 'node_modules/@q2q'), { recursive: true });
-  await symlink(fileURLToPath(new URL('..', import.meta.url)), join(directory, 'node_modules/@q2q/client-web'), 'junction');
+  await symlink(fileURLToPath(new URL('..', import.meta.url)), join(directory, 'node_modules/@q2q/client-browser'), 'junction');
   await writeFile(join(directory, 'index.html'), '<!doctype html><title>SDK bundle test</title><script type="module" src="/entry.js"></script>');
   await writeFile(join(directory, 'entry.js'), `
-    import {opfsCache,browserState,createBlockVerifier,resumeCheckpoint,fileDestination} from '@q2q/client-web';
+    import {opfsCache,browserState,createBlockVerifier,resumeCheckpoint,fileDestination} from '@q2q/client-browser';
     (async()=>{
       const verifier=await createBlockVerifier({seed:new Uint8Array(${JSON.stringify(seed)}),proof:new Uint8Array(${JSON.stringify(proof)})});
       const cache=await opfsCache(); const entry=await cache.create({name:'bundle.bin',size:3n});
@@ -73,7 +73,7 @@ try {
   const result = await page.evaluate(() => window.bundleResult);
   assert.equal(result.ok, true, JSON.stringify(result));
   const report = { engine, browser: context.browser().version(), vite: viteVersion,
-    packageExport: '@q2q/client-web', workerAndWasmUnderCsp: true, storageAndRecovery: 'passed' };
+    packageExport: '@q2q/client-browser', workerAndWasmUnderCsp: true, storageAndRecovery: 'passed' };
   console.log(JSON.stringify(report));
   return report;
 } finally {

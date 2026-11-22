@@ -1,5 +1,5 @@
 {
-  "name": "@q2q/client-web",
+  "name": "@q2q/client-browser",
   "version": "0.0.0",
   "private": true,
   "type": "module",

@@ -1,10 +1,10 @@
 # JavaScript 客户端 SDK 设计与执行项
 
-状态：2026-10-29，Web 客户端采用 SDK 先行：先明确放在 `packages` 的独立浏览器 SDK，再实现主站。本文包含设计草案、实施进度与验收计划；`packages/client-web` 已建立，File 读取、文件句柄写入、OPFS 缓存及检查点模块已实现并通过本地契约与 Chromium/WebKit 存储测试，HTTP/P2P Client 下载、下载检查点与逐块恢复已实现并完成本地 Chromium ↔ 原生全链路验证；纯 Peer 外置证明及跨刷新恢复已实现；Web 发布、公网路径和 WebKit/native 仍未完成，包尚未发布。主站交互见 [web-client.md](web-client.md)。
+状态：2026-10-29，Web 客户端采用 SDK 先行：先明确放在 `packages` 的独立浏览器 SDK，再实现主站。本文包含设计草案、实施进度与验收计划；`packages/client-browser` 已建立，File 读取、文件句柄写入、OPFS 缓存及检查点模块已实现并通过本地契约与 Chromium/WebKit 存储测试，HTTP/P2P Client 下载、下载检查点与逐块恢复已实现并完成本地 Chromium ↔ 原生全链路验证；纯 Peer 外置证明及跨刷新恢复已实现；Web 发布、公网路径和 WebKit/native 仍未完成，包尚未发布。主站交互见 [web-client.md](web-client.md)。
 
 ## 1. 定位与包边界
 
-采用两个独立 npm 包：`@q2q/client-web` 对应 `packages/client-web`，`@q2q/client-node` 对应 `packages/client-node`。Web 先实现并独立交付，Node 使用 napi-rs 绑定现有 Rust `q2q-core`，不建立空入口或在实现前发布包。两端均不依赖 Svelte、SvelteKit、Q2Q 账号或特定页面结构。
+采用两个独立 npm 包：`@q2q/client-browser` 对应 `packages/client-browser`，`@q2q/client-node` 对应 `packages/client-node`。Web 先实现并独立交付，Node 使用 napi-rs 绑定现有 Rust `q2q-core`，不建立空入口或在实现前发布包。两端均不依赖 Svelte、SvelteKit、Q2Q 账号或特定页面结构。
 
 两包独立构建、分发，通过共同契约和行为测试约束 Client/Transfer/Publication 一致性。Web 不加载 Node 原生依赖，Node 不依赖 DOM；文件选择、权限和恢复能力按环境表达，不强求完全相同。
 
@@ -13,7 +13,7 @@
 ```text
 apps/www                    选择文件、弹窗、列表、文案、主题、平台账号
        ↓ SDK 命令 / 任务句柄 / 只读快照
-packages/client-web     浏览器客户端、任务与资源生命周期、存储/网络适配
+packages/client-browser     浏览器客户端、任务与资源生命周期、存储/网络适配
        ↓ 共享内核与薄绑定
 @q2q/wasm + Rust 共用逻辑    内容身份、种子、Merkle、协议与可复用的传输规则
 ```
@@ -45,7 +45,7 @@ packages/client-web     浏览器客户端、任务与资源生命周期、存�
 | 入口 | 内容 |
 | --- | --- |
 | `@q2q/client`（按需提取） | 运行时中立的公共契约和结构化错误；由环境包重新导出 |
-| `@q2q/client-web` | `createClient` 和 File、文件句柄、浏览器状态存储等适配器 |
+| `@q2q/client-browser` | `createClient` 和 File、文件句柄、浏览器状态存储等适配器 |
 | `@q2q/client-node` | 后续实现的 `createClient` 和文件系统适配；实际可用后才导出 |
 
 ESM 优先。导入模块不启动 Worker、连接网络或读取文件；`createClient()` 才初始化当前宿主的能力。Web 入口在 SSR 中可导入，调用浏览器初始化时若环境不支持，返回结构化错误。
@@ -57,7 +57,7 @@ ESM 优先。导入模块不启动 Worker、连接网络或读取文件；`creat
 #### 本机做种
 
 ```ts
-import { createClient, fileSource } from '@q2q/client-web';
+import { createClient, fileSource } from '@q2q/client-browser';
 
 // 应用先完成文件选择。SDK 不显示文件选择器。
 const client = await createClient({ trackUrl: 'https://track.example.com' });
@@ -83,7 +83,7 @@ await client.close();
 #### 预览种子并下载
 
 ```ts
-import { createClient, fileSource, fileDestination } from '@q2q/client-web';
+import { createClient, fileSource, fileDestination } from '@q2q/client-browser';
 
 const client = await createClient({ trackUrl: 'https://track.example.com' });
 const seed = await client.parseSeed(fileSource(seedFile));
@@ -109,7 +109,7 @@ try {
 #### 暂停、继续与刷新后恢复
 
 ```ts
-import { createClient, browserState, fileDestination } from '@q2q/client-web';
+import { createClient, browserState, fileDestination } from '@q2q/client-browser';
 
 const state = await browserState({ namespace: 'my-app' });
 const client = await createClient({ state });
@@ -379,7 +379,7 @@ ClientLimits 第一版对应原生的真实资源维度：下载 Peer 数、HTTP
 | 任务元数据与恢复索引 | IndexedDB；不默认把大文件字节都塞进 IndexedDB | 版本化本地状态文件及原生检查点；出现实际查询需求后再评估 SQLite |
 | Peer 数据传输 | 浏览器 RTCPeerConnection / RTCDataChannel | 优先复用 q2q-core 现有 webrtc-rs 传输，通过 napi-rs 绑定暴露 SDK |
 | Punch 信令 | 浏览器 WebSocket，经 WSS 与现有认证帧接入 | 复用原生 QUIC/WSS 适配和票据/路由语义 |
-| 调用入口 | `@q2q/client-web` | `@q2q/client-node` |
+| 调用入口 | `@q2q/client-browser` | `@q2q/client-node` |
 
 Node 已确定采用 napi-rs：JavaScript 调用层通过 Node-API 使用现有原生 Rust Client；文件读写、WebRTC 和数据面尽量留在 Rust，只跨边界传命令、元数据与合并进度，避免每个块都在 JS/Rust 间往返。Web 则使用 Rust 共享逻辑的 Wasm 绑定与浏览器 host。多态位于共同的宿主能力/核心逻辑边界，不把一整个 Native Client 假装成一个 JS PeerTransport，也不为了接口一致而重写现有 Node 传输核心。
 
@@ -485,7 +485,7 @@ SDK 必须在没有 `apps/www` 和 Svelte 的最小浏览器页面中跑通，�
 
 ## 8. 执行项
 
-### client-web 当前实施顺序
+### client-browser 当前实施顺序
 
 - [x] C1：建立独立工作区包、类型检查及测试入口；定义读写/提交初始契约，实现 File 范围读取、独立会话、取消与关闭。2026-10-28：类型检查、10 项 Node File/Blob 契约测试通过；不是浏览器写盘验收。
 - [x] C2：实现文件句柄写入适配：乱序写、关闭提交、保留已有内容、取消/提交交错与独占目标。2026-10-28：10 项读取测试及 15 项 Chromium 存储测试通过；以真实 OPFS 文件句柄测试标准文件写入 API、跨句柄/标签页 Web Locks 和重载后的目标标识。系统保存窗口授权的外部文件及完整下载恢复仍留在 C5 验收。
@@ -550,7 +550,7 @@ C4 当时提供的是存储会话 resumeCheckpoint，Client.resumeDownload 后�
 
 Chromium 将测试 origin 配额限制为 8 MiB 后，写入约 4 MiB 即按宿主返回 STORAGE_FULL，条目保持 partial；测试后解除覆盖并清理。没有通过填满真实磁盘验证磁盘耗尽。早先隐身上下文中 1 GiB 曾失败，正常磁盘 profile 则通过；不将本轮结果扩展为隐身模式容量承诺。
 
-Vite 8.3.4 对真实 @q2q/client-web 包导出构建，Chromium/WebKit 均在同源 Worker/脚本及 wasm-unsafe-eval 的 CSP 下完成校验、检查点、写入及导出。报告保存在本地 `.tmp/client-web-playwright/`；测试说明统一在包 README，不再建立平行设计文档。
+Vite 8.3.4 对真实 @q2q/client-browser 包导出构建，Chromium/WebKit 均在同源 Worker/脚本及 wasm-unsafe-eval 的 CSP 下完成校验、检查点、写入及导出。报告保存在本地 `.tmp/client-browser-playwright/`；测试说明统一在包 README，不再建立平行设计文档。
 
 后续扩展验收（不计为已通过）：
 
@@ -568,7 +568,7 @@ Vite 8.3.4 对真实 @q2q/client-web 包导出构建，Chromium/WebKit 均在同
 
 本轮实际验证：HTTP 的 64 项 Playwright 用例全部通过（Chromium 148 / WebKit 26，含两个真实页面刷新恢复用例）；原有存储与 Vite 8.3.4 打包回归 103 项通过、1 项 WebKit CDP 专用用例跳过；10 项 Node File/Blob 测试、TypeScript 检查与 git diff --check 通过。大文件存储测量沿用 C5，本轮未重复，也未据此宣称 HTTP 大文件压测通过。
 
-实际调用、默认预算、错误与取消边界集中在 [包 README](../packages/client-web/README.md#http-下载任务)。测试覆盖本地 Range/CORS 服务、真实 OPFS、外置证明、损坏来源修复、授权刷新、并发预算、超时/重试、暂停/取消、目标隔离和刷新恢复；浏览器版本与未验收边界沿用 C5。
+实际调用、默认预算、错误与取消边界集中在 [包 README](../packages/client-browser/README.md#http-下载任务)。测试覆盖本地 Range/CORS 服务、真实 OPFS、外置证明、损坏来源修复、授权刷新、并发预算、超时/重试、暂停/取消、目标隔离和刷新恢复；浏览器版本与未验收边界沿用 C5。
 
 ### C7 接线顺序与待确认决策
 
@@ -614,7 +614,7 @@ CI 增加控制面测试及 Wasm 对照；依赖门禁跟踪 Wasm 的 Rust 依�
 - Chromium 148 / WebKit 26 浏览器双端认证、双向控制/二进制帧交换、内容/连接/公钥错配、取消和超时测试通过。
 - 背压/取消/关闭与小 maxMessageSize 通过宿主故障注入验证；收件箱溢出使用真实 RTC 消息触发。
 - Chromium ↔ 实际 webrtc-rs（原生 SDK 的 negotiate + PeerIdentity）在两种发起角色下认证并双向回传控制帧与 1024 字节 Piece，通过 u64::MAX 序号和逐字节比较。TCP 桥仅负责本地测试信令，内容走真实 WebRTC；此次未将 Track/Punch 连入同一个下载链路。
-- RTC 共 20 项通过，2 项 WebKit/native 默认跳过：macOS Playwright WebKit 收到原生 host 候选后仍停留 ICE new，没有候选对/数据通道；具体原因未确认。尝试仅 loopback 候选及按 SDP MID 应用候选未解决，不认定为已兼容。`TEST_NATIVE_WEBKIT=1 npm run test:rtc --workspace @q2q/client-web` 可显式重跑两种角色；默认 CI 保留 WebKit 浏览器双端契约与 Chromium 原生互通。
+- RTC 共 20 项通过，2 项 WebKit/native 默认跳过：macOS Playwright WebKit 收到原生 host 候选后仍停留 ICE new，没有候选对/数据通道；具体原因未确认。尝试仅 loopback 候选及按 SDP MID 应用候选未解决，不认定为已兼容。`TEST_NATIVE_WEBKIT=1 npm run test:rtc --workspace @q2q/client-browser` 可显式重跑两种角色；默认 CI 保留 WebKit 浏览器双端契约与 Chromium 原生互通。
 - Wasm 用 Node 独立校验完整身份 transcript 签名，对角色、内容、连接、密钥和指纹变化验证不能重放，并覆盖身份帧乱序、重复字段及线协议长度。
 - 原生 core 153 项通过、4 项 opt-in/基准用例忽略；新桥由 Playwright 显式运行。primitives 113 项通过。Wasm clippy、SDK 类型检查通过。
 
@@ -657,7 +657,7 @@ Client 的显式 trackUrl 现在启用 P2P 下载尝试；省略时仍为 HTTP �
 
 审查同时修复 primitives.merkle.verify_range 的路径覆盖问题：证明节点不能替换当前块或其祖先，越界、重复位置及范围溢出明确拒绝。新增 root-only、覆盖叶/祖先、重复和越界反例，原生与 Wasm 共用修复；未声称已发布给线上客户端。
 
-持久格式与自定义适配契约集中在 [包 README](../packages/client-web/README.md#纯-peer-证明的恢复状态)。浏览器数据库原地升级到版本 2，保留旧检查点记录并增加独立见证表；默认内存实现也支持。目标先提交，见证与位图 CAS 再在同一事务更新。配额失败不会留下仅位图成功的记录。恢复每次仅读取一块的本地见证，用重新提供的种子根重验实际字节，内置存储不在重验时向 Track/Punch/CDN 补取证明；缺失或损坏则撤回相应位与见证，后续重下。
+持久格式与自定义适配契约集中在 [包 README](../packages/client-browser/README.md#纯-peer-证明的恢复状态)。浏览器数据库原地升级到版本 2，保留旧检查点记录并增加独立见证表；默认内存实现也支持。目标先提交，见证与位图 CAS 再在同一事务更新。配额失败不会留下仅位图成功的记录。恢复每次仅读取一块的本地见证，用重新提供的种子根重验实际字节，内置存储不在重验时向 Track/Punch/CDN 补取证明；缺失或损坏则撤回相应位与见证，后续重下。
 
 本轮本地验证：
 
@@ -680,7 +680,7 @@ Client 的显式 trackUrl 现在启用 P2P 下载尝试；省略时仍为 HTTP �
 
 ### S2. 存储实现与能力验证
 
-先建立 `packages/client-web` 的真实存储模块和自动化测试，再用最小浏览器页面验证；不写一套随后丢弃的实验存储。存储测通后再接 HTTP、Punch/WebRTC。结果回填本文件，不另建平行设计稿：
+先建立 `packages/client-browser` 的真实存储模块和自动化测试，再用最小浏览器页面验证；不写一套随后丢弃的实验存储。存储测通后再接 HTTP、Punch/WebRTC。结果回填本文件，不另建平行设计稿：
 
 1. **文件实验**：乱序写入、暂停提交、强制刷新、恢复校验，以及 OPFS 导出失败与重试；确定存储适配和提交语义。
 2. **连接实验**：浏览器经受信任 WSS 入口认证 Punch，完成浏览器与原生的 Peer 身份绑定及小文件双向互通；确定发现契约与信任模型。
@@ -694,7 +694,7 @@ Client 的显式 trackUrl 现在启用 P2P 下载尝试；省略时仍为 HTTP �
 
 ### S3. 共享内核与 HTTP 下载
 
-- [ ] 完善 S2 建立的 `packages/client-web`：明确初始化、Wasm/Worker 资源加载、类型导出与构建产物；SSR 导入不立即访问浏览器全局或启动任务。
+- [ ] 完善 S2 建立的 `packages/client-browser`：明确初始化、Wasm/Worker 资源加载、类型导出与构建产物；SSR 导入不立即访问浏览器全局或启动任务。
 - [ ] 在已测通存储之上接 HTTP Range、真实校验、暂停及恢复，再推进 P2P；不等整个 SDK 完成才测试存储。
 - [ ] 实施已确认的 Rust 共享提取和最小 Wasm 导出，保留原生 SDK 公共行为。
 - [ ] 建立内容、认证及 Peer 协议共用 fixtures；以桩存储、桩网络和可控时钟测试时序及故障。
@@ -765,7 +765,7 @@ Client 的显式 trackUrl 现在启用 P2P 下载尝试；省略时仍为 HTTP �
 | E3 Workers Track | `apps/track/src/http.ts`、`state.ts`、`directory.ts`、`peer-state.ts`、`selection.ts`，discovery/state/selection/benchmark/runtime fixture | 分配按 scheme 交集和对应容量；持久身份账本改初始建表、去 ALTER；会话与候选一致性比较完整规范列表；历史 state/outbox 数据不得混读。 |
 | E4 原生协议与状态 | `crates/q2q-track/src/state.rs`、`wire.rs`、`redis.rs` 及其 contract/selection/redis 测试 | 接新的共享端点类型；更新 Redis 序列化及 Track `v1.json` 相关样例，不给旧单地址 wire 留兼容读取路径。 |
 | E4 原生服务与连接器 | `q2q-track-server/src/main.rs`、`api.rs`、`directory.rs`、`registry.rs` / `registry_tests.rs`；`q2q-punch-server/src/registry.rs`；`q2q-core/src/control.rs`、`punch_transport.rs` 及 query/punch_transport 测试 | 静态配置、Registry 发现/身份、announce 能力、URL 选择全部用列表；删除推导 WSS 地址与 WSS 公钥 pin，保留 QUIC pin；取消、有界回退与认证失败不降级。 |
-| E5 Web / Wasm | `q2q-wasm/src/control.rs`、`scripts/check-control.mjs`；`packages/client-web/src/network.ts`、`peer-dial.ts`，network/p2p/native RTC fixture | 只选 Track 下发且当前 host 可用的 scheme；保留独立 WS 端口/路径测试，候选不按对方绑定传输误过滤；回归完整文件和刷新恢复。 |
+| E5 Web / Wasm | `q2q-wasm/src/control.rs`、`scripts/check-control.mjs`；`packages/client-browser/src/network.ts`、`peer-dial.ts`，network/p2p/native RTC fixture | 只选 Track 下发且当前 host 可用的 scheme；保留独立 WS 端口/路径测试，候选不按对方绑定传输误过滤；回归完整文件和刷新恢复。 |
 | E5 管理与展示 | `packages/punch-management/index.ts`、`apps/admin/src/lib/server/registry-management.ts`、`routes/nodes/[id]/+page.svelte`；`apps/platform/src/lib/server/registry-nodes.ts`、`scripts/check-registry-nodes.mjs` | Admin 列出端点，平台公开节点视图仍脱敏；`apps/www` 只消费 SDK，不直接持有 Punch 地址逻辑。 |
 | E6/E7 配置与文档 | `e2e/check-registry.mjs`、`deploy/track.toml`、原生测试帮助程序、SDK/Registry/管理包 README、中英文 Track/Punch/单节点部署文档 | 修改所有凭据样例及旧地址断言；公开配置不夹带密钥。上线前另列 Registry D1 与所有 Track DO 的精确重置范围，禁止自动删除其他业务资源。 |
 
@@ -1072,7 +1072,7 @@ Clippy、wasm32 Clippy warnings-as-errors、Wasm 实际绑定/独立签名/证�
 
 CI WWW 增加 test:publish，公网 @public 测试仍独立 opt-in；本轮只用临时本地 Track/
 Registry/Punch，无线上操作，未提交/推送/部署，未重复 1 GiB/大规模性能测试。首版接口与
-限制见 client-web README。下一项 C7.6c.2 部分块共享，再推进主站接线；不以完整源发布
+限制见 client-browser README。下一项 C7.6c.2 部分块共享，再推进主站接线；不以完整源发布
 冒充已支持下载边下边传。
 
 
@@ -1082,7 +1082,7 @@ Registry/Punch，无线上操作，未提交/推送/部署，未重复 1 GiB/大
 普通下载默认不共享。首版共享仅绑定活跃存储写入会话，暂停/失败/取消/最终完成前先停止
 上传并撤回再释放或 finish 目标，完成后不隐式后台做种；关闭分享句柄不停止下载。
 恢复新共享句柄必须从原检查点/目标重新验证实际字节，旧共享不会因普通 resume 自动复活。
-这明确区分两个句柄的生命周期，接口和调用例统一在 client-web README。
+这明确区分两个句柄的生命周期，接口和调用例统一在 client-browser README。
 
 可信路径：新增 CheckpointSession.readCommittedBlock 在同一目标 IO 队列中检查当前
 已提交位、读回实际字节与本地见证、重新验根，再返回独立 bytes + 原生 Control::Proof。

@@ -1,7 +1,7 @@
 import {PUBLIC_Q2Q_TRACK_URL} from '$app/env/public';
 import { SvelteMap } from 'svelte/reactivity';
-import { browserState, createClient, fileSource, opfsCache, fileDestination, Q2QError } from '@q2q/client-web';
-import type { Client, Seed, StateStore, OpfsCache, Transfer, DownloadSnapshot, Publication, PublicationSnapshot,ContentSource } from '@q2q/client-web';
+import { browserState, createClient, fileSource, opfsCache, fileDestination, Q2QError } from '@q2q/client-browser';
+import type { Client, Seed, StateStore, OpfsCache, Transfer, DownloadSnapshot, Publication, PublicationSnapshot,ContentSource } from '@q2q/client-browser';
 import type { TextKey } from './messages.js';
 
 export interface ShareRow { sourceCacheId?:string; id:string;name:string;size:string;snapshot:Readonly<PublicationSnapshot>;seed?:Seed;busy?:boolean;error?:TextKey;magnetCopied?:boolean }
