@@ -14,10 +14,11 @@
   import ShieldCheck from '@lucide/svelte/icons/shield-check';
   import Settings from '@lucide/svelte/icons/settings-2';
   import More from '@lucide/svelte/icons/ellipsis';
+  import Play from '@lucide/svelte/icons/play';
   import Check from '@lucide/svelte/icons/check';
   import AppDialog from '#lib/app-dialog.svelte';
   import Info from '@lucide/svelte/icons/info';
-  import { WebSession, filename, type Row, type ShareRow } from '#lib/session.svelte.js';
+  import { WebSession, filename, mediaKind, type Row, type ShareRow } from '#lib/session.svelte.js';
   import { messages, type Locale } from '#lib/messages.js';
   import type { PageProps } from './$types';
   let { data }: PageProps = $props();
@@ -197,7 +198,11 @@
               </div>
               <div class="task-actions">
                 {#if row.saving}<Button variant="outline" size="sm" disabled={row.busy} onclick={() => session.stopSave(row)}>{text.cancelSave}</Button>
-                {:else if row.complete}<Button variant="outline" size="sm" disabled={row.busy || row.unavailable} onclick={() => session.save(row)}>{text.save}</Button>
+                {:else if row.complete}
+                  {#if mediaKind({ name: row.name, mime: row.mime ?? null })}
+                    <Button variant="outline" size="sm" class="gap-1.5" disabled={row.busy || row.unavailable} onclick={() => session.play(row, mediaKind({ name: row.name, mime: row.mime ?? null })!)}><Play class="size-3.5" />{text.play}</Button>
+                  {/if}
+                  <Button variant="outline" size="sm" disabled={row.busy || row.unavailable} onclick={() => session.save(row)}>{text.save}</Button>
                 {:else if row.snapshot?.state === 'paused'}<Button variant="outline" size="sm" disabled={row.busy} onclick={() => session.control(row,'resume')}>{text.resume}</Button>
                 {:else if session.running(row)}<Button variant="outline" size="sm" disabled={row.busy} onclick={() => session.control(row,'pause')}>{text.pause}</Button>
                 {:else if session.hasSeed(row)}<Button variant="outline" size="sm" disabled={row.busy || row.unavailable} onclick={() => session.control(row,'retry')}>{text.retry}</Button>
@@ -225,6 +230,18 @@
   <footer class="site-footer"><span>{text.privacy}</span><a href="https://docs.q2q.app/guide/what-is-q2q" target="_blank" rel="noopener noreferrer">Q2Q <ArrowUpRight /></a></footer>
 </div>
 
+<AppDialog open={!!session.playing} title={session.playing ? filename(session.playing.row.name) : text.play} description={text.playNote} closeLabel={text.dismiss} onOpenChange={(open) => { if (!open) session.closePlayback(); }}>
+  {#if session.playing?.kind === 'video'}
+    <!-- No caption track exists: the cached bytes are an opaque file, so there is
+         no subtitle sidecar to offer. The user's own file keeps whatever it has. -->
+    <!-- svelte-ignore a11y_media_has_caption -->
+    <video class="media-player" controls autoplay playsinline src={session.playing.url} aria-label={filename(session.playing.row.name)} onerror={() => { session.playFailed = true; }}></video>
+  {:else if session.playing}
+    <audio class="media-player" controls autoplay src={session.playing.url} aria-label={filename(session.playing.row.name)} onerror={() => { session.playFailed = true; }}></audio>
+  {/if}
+  {#if session.playFailed}<p class="row-error" role="alert">{text.playUnsupported}</p>{/if}
+  <div class="dialog-actions"><Button variant="outline" onclick={() => session.closePlayback()}>{text.dismiss}</Button></div>
+</AppDialog>
 <AppDialog open={downloadOpen} title={text.downloadTitle} description={text.magnetNote} descriptionId="magnet-note" closeLabel={text.dismiss} onOpenChange={(open) => { if (!open) closeDownload(); }}>
   {#if session.magnetResolving}
     <div class="magnet-pending" aria-busy="true" role="status">

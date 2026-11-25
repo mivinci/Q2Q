@@ -39,12 +39,12 @@ export async function parseSeed(input: Uint8Array | ContentSource, signal: Abort
   if (signal.aborted) throw cancelled();
   try {
     const metadata = JSON.parse(module.decode_seed(bytes)) as {
-      infoHash: string; size: string; blockSize: number; blockCount: string; name: string | null;
+      infoHash: string; size: string; blockSize: number; blockCount: string; name: string | null; mime: string | null;
       inlineProof: boolean; sources: string[]; proofSources: string[]; tracks: string[];
     };
     if (BigInt(metadata.size) > BigInt(Number.MAX_SAFE_INTEGER)) throw new Q2QError('UNSUPPORTED_CAPABILITY');
     if (BigInt(metadata.blockCount) > BigInt(MAX_BLOCKS)) throw new Q2QError('RESOURCE_LIMIT');
-    const info: ContentInfo = Object.freeze({ id: `sha256:${metadata.infoHash}`, name: metadata.name,
+    const info: ContentInfo = Object.freeze({ id: `sha256:${metadata.infoHash}`, name: metadata.name, mime: metadata.mime ?? null,
       size: BigInt(metadata.size), blockSize: metadata.blockSize, blockCount: BigInt(metadata.blockCount) });
     const seed: Seed = Object.freeze({ info,
       hints: Object.freeze({ contentSources: metadata.sources.length, proofSources: metadata.proofSources.length, tracks: metadata.tracks.length }),

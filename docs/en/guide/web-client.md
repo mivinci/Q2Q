@@ -60,7 +60,21 @@ the SDK to reverify the complete cache and publish it. Stop that publication bef
 deleting its cache; files already saved elsewhere are not deleted. Live partial-block
 sharing is available in the SDK but is not enabled by default or exposed in this UI.
 
-## On-demand reads (SDK capability, no player UI yet)
+## Play video and audio (completed content)
+
+Once a download completes, video and audio tasks gain a **Play** button: the page hands the
+local OPFS file to the browser's native player without going back online and without loading
+the whole file into memory. The kind is inferred from the file extension (`.mp4`, `.webm`,
+`.mov`, `.mp3`, `.wav`, …), preferring the protocol's optional `mime` when present — publishers
+do not set `mime` today, so the extension is the practical signal.
+
+- If the browser cannot decode the file (for example a mislabelled extension), the dialog
+  explains it instead of closing silently, and the downloaded data is left untouched.
+- Closing playback keeps the cached data; use **Save file** to keep it permanently.
+- Only completed content is playable. Progressive playback (watching while still downloading)
+  is not wired into the page yet; the SDK capability behind it is described below.
+
+## On-demand reads (SDK capability, no progressive playback in the page yet)
 
 The browser SDK exposes `openStream()`: read verified bytes by position, fetching only the
 cursor block plus a bounded prefetch window, with seek rebuilding that window. It suits

@@ -28,6 +28,9 @@ export interface OpfsEntry {
   status(): Promise<'partial' | 'complete'>;
   /** Streaming copy; it never deletes this cache, even on success. */
   exportTo(destination: ContentDestination, options?: ExportOptions): Promise<OutputReceipt>;
+  /** A revocable blob URL for completed content, for in-page preview/playback.
+   * The URL streams from disk and must be revoked by the caller. */
+  objectUrl(): Promise<{ readonly url: string; revoke(): void }>;
 }
 export interface OpfsCache {
   create(options: { name: string; size: bigint }): Promise<OpfsEntry>;
@@ -147,7 +150,19 @@ export async function opfsCache(options: OpfsCacheOptions = {}): Promise<OpfsCac
         catch (error) { throw cacheFailure(error); }
         finally { await unlock(); }
       },
-      exportTo: (target: ContentDestination, settings: ExportOptions = {}) => exportEntry(source, target, settings)
+      exportTo: (target: ContentDestination, settings: ExportOptions = {}) => exportEntry(source, target, settings),
+      async objectUrl() {
+        const unlock = await leaseFile(targetId);
+        try {
+          if ((await current()).state !== 'complete') throw new StorageError('INVALID_STATE');
+          const file = await handle.getFile();
+          if (BigInt(file.size) !== size) throw new StorageError('CHECKPOINT_MISMATCH');
+          const url = URL.createObjectURL(file);
+          let revoked = false;
+          return Object.freeze({ url, revoke() { if (!revoked) { revoked = true; URL.revokeObjectURL(url); } } });
+        } catch (error) { throw cacheFailure(error); }
+        finally { await unlock(); }
+      }
     });
   }
   return Object.freeze({

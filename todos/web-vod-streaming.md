@@ -202,3 +202,16 @@ SDK 只交付"能按位置读已验证字节"。应用侧两条路径：
 4. **文档**：本文件转正式指南（`docs/zh|en/guide/web-client.md` 增补一节）、SDK README。
 
 不改 Rust、不改协议、不新增依赖。
+
+## 阶段一落地：完成后可播放（2026-11-25）
+
+在 PR #107 分支上新增“已完成内容可在页面播放”，边下边播仍留给阶段二。
+
+实现：
+- `q2q-wasm` 的 `decode_seed` 导出协议里已有的可选 `mime`；SDK `ContentInfo` 增加 `mime: string | null`。发布端目前不写该字段，因此它是提示而非保证。
+- `OpfsEntry.objectUrl()`：为已完成缓存返回可撤销的 blob URL，OPFS 布局仍留在 SDK 内；URL 直接从磁盘流式读取，不整文件进内存。
+- 页面：任务行按扩展名（`.mp4`/`.webm`/`.mov`/`.mp3`/`.wav` 等）或 `mime` 判断类型，`播放` 按钮打开 `<video>`/`<audio>` 对话框；解码失败时对话框内说明原因而不是静默关闭；关闭播放不删除暂存，blob URL 不持久化。
+
+本地验证（Chromium/Edge 148，生产预览）：新增 `playback` 2 项通过——用真实可解码的 8 kHz PCM WAV 断言 `duration > 0.2s` 且 `readyState > 0`（真解码，不只是结构），关闭后缓存仍在且可保存；假 `.mp4` 断言 video 元素与 blob URL、解码失败提示；`.bin` 断言不出现播放按钮。回归：download+magnet 16、ui-matrix 13、SDK storage 59、SDK 单元 13 通过。
+
+未验证：真实视频编解码（测试只有结构断言）、Safari 播放、超大文件起播延迟、边下边播。

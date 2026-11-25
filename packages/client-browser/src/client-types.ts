@@ -2,7 +2,9 @@ import type { ContentDestination, ContentSource, OutputReceipt } from './storage
 import type { ContentIdentity, StateStore } from './checkpoint-types.ts';
 import type { Q2QErrorCode, ConnectionDiagnostic } from './error.ts';
 
-export interface ContentInfo extends ContentIdentity { readonly name: string | null; readonly blockCount: bigint }
+/** `mime` comes from the protocol; publishers do not set it today, so treat it
+ * as an optional hint and never as a guarantee about the bytes. */
+export interface ContentInfo extends ContentIdentity { readonly name: string | null; readonly mime: string | null; readonly blockCount: bigint }
 export interface Seed {
   readonly info: ContentInfo;
   readonly hints: Readonly<{ contentSources: number; proofSources: number; tracks: number }>;
