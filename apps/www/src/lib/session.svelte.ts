@@ -1,13 +1,13 @@
 import {PUBLIC_Q2Q_TRACK_URL} from '$app/env/public';
 import { SvelteMap } from 'svelte/reactivity';
-import { browserState, createClient, fileSource, opfsCache, fileDestination, Q2QError } from '@q2q/client-web';
-import type { Client, Seed, StateStore, OpfsCache, Transfer, DownloadSnapshot, Publication, PublicationSnapshot,ContentSource } from '@q2q/client-web';
+import { browserState, createClient, fileSource, opfsCache, fileDestination, Q2QError } from '@q2q/client-browser';
+import type { Client, Seed, StateStore, OpfsCache, Transfer, DownloadSnapshot, Publication, PublicationSnapshot,ContentSource } from '@q2q/client-browser';
 import type { TextKey } from './messages.js';
 
 export interface ShareRow { sourceCacheId?:string; id:string;name:string;size:string;snapshot:Readonly<PublicationSnapshot>;seed?:Seed;busy?:boolean;error?:TextKey;magnetCopied?:boolean }
 const HISTORY = 'q2q-web-transfer-v1:';
 interface Stored { id: string; cacheId: string; checkpointId: string | null; contentId: string; name: string; size: string; committed: string; complete: boolean; origin?: 'seed' | 'magnet' }
-export interface Row extends Stored { networkState?:'connecting'|'online'|'offline'|'closed'; snapshot?: Readonly<DownloadSnapshot>; saved?: boolean; submitted?: boolean; saving?: boolean; exportBytes?: bigint; busy?: boolean; error?: TextKey; unavailable?: boolean }
+export interface Row extends Stored { networkState?:'connecting'|'online'|'offline'|'closed'; snapshot?: Readonly<DownloadSnapshot>; saved?: boolean; submitted?: boolean; saving?: boolean; exportBytes?: bigint; busy?: boolean; error?: TextKey; unavailable?: boolean; /** Protocol hint, memory only. */ mime?: string | null }
 /** Which re-supply action a restored row offers; the seed path also accepts a
  * matching .q2q file, so magnet rows keep that menu entry too. */
 export function rowOrigin(row: Row): 'seed' | 'magnet' { return row.origin === 'magnet' ? 'magnet' : 'seed'; }
@@ -34,6 +34,19 @@ export function errorMessage(error: unknown): TextKey {
     default: return 'storage';
   }
 }
+const VIDEO_EXT = /\.(mp4|m4v|webm|mov|ogv|mkv)$/i;
+const AUDIO_EXT = /\.(mp3|m4a|aac|wav|ogg|oga|flac|opus)$/i;
+/** The protocol allows an optional `mime`, but publishers do not set it today,
+ * so the file name is the practical hint. Never treat this as validation. */
+export function mediaKind(info: { name: string | null; mime: string | null }): 'video' | 'audio' | null {
+  const mime = info.mime?.toLowerCase() ?? '';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/')) return 'audio';
+  const name = info.name ?? '';
+  if (VIDEO_EXT.test(name)) return 'video';
+  if (AUDIO_EXT.test(name)) return 'audio';
+  return null;
+}
 export function filename(name: string | null) { return (name ?? 'download').split(/[/\\]/).at(-1)!.replace(/[\x00-\x1f<>:"|?*]/g, '_').slice(0, 160) || 'download'; }
 
 /** UI orchestration only: the SDK owns network, integrity and checkpoint state. */
@@ -58,6 +71,10 @@ export class WebSession {
   magnetHash = $state<string | null>(null);
   magnetError = $state<TextKey | null>(null);
   magnetLink = $state<string | null>(null);
+  /** In-page playback of completed content; the URL streams from OPFS. */
+  playing = $state<{ row: Row; kind: 'video' | 'audio'; url: string; revoke(): void } | null>(null);
+  /** Set when the browser cannot decode the file; the dialog stays open to explain. */
+  playFailed = $state(false);
   private client!: Client;
   private cache!: OpfsCache;
   private state!: StateStore;
@@ -223,6 +240,22 @@ export class WebSession {
     const link=document.createElement('a');link.href=url;link.download=`${row.name}.q2q`;document.body.append(link);link.click();link.remove();
     this.urls.set(url,setTimeout(()=>{URL.revokeObjectURL(url);this.urls.delete(url);},60000));
   }
+  /** Playback needs a completed entry; the URL stays valid until closePlayback. */
+  async play(row: Row, kind: 'video' | 'audio') {
+    if (!row.complete || row.busy || this.closed || this.playing) return;
+    row.busy = true;
+    try {
+      const entry = await this.cache.open(row.cacheId);
+      this.playing = { row, kind, ...(await entry.objectUrl()) };
+      this.playFailed = false;
+    } catch (error) { row.error = errorMessage(error); }
+    finally { row.busy = false; }
+  }
+  closePlayback() {
+    this.playing?.revoke();
+    this.playing = null;
+    this.playFailed = false;
+  }
   /** Share-side link generation is offline and pure; copy feedback is transient. */
   async copyMagnet(row:ShareRow){
     const seed=this.shareSeeds.get(row.id);
@@ -254,7 +287,7 @@ export class WebSession {
         const entry = await this.cache.create({ name:filename(seed.info.name), size:seed.info.size });
         if (this.closed) { await this.cache.remove(entry.id); return; }
         row = { id:crypto.randomUUID(), cacheId:entry.id, checkpointId:null, contentId:seed.info.id,
-          name:filename(seed.info.name), size:String(seed.info.size), committed:'0', complete:false,
+          name:filename(seed.info.name), size:String(seed.info.size), committed:'0', complete:false, mime:seed.info.mime,
           ...(origin === 'magnet' ? { origin:'magnet' as const } : {}) };
         this.rows = [row, ...this.rows];
         row = this.rows[0]!; this.persist(row);
@@ -373,6 +406,7 @@ export class WebSession {
     if (this.closePromise) return this.closePromise;
     this.closed = true; this.selecting++;this.sharePreview=null;
     this.magnetAbort?.abort(); this.magnetResolving=false; this.magnetHash=null; this.magnetLink=null;
+    this.closePlayback();
     for (const timer of this.copiedTimers.values()) clearTimeout(timer); this.copiedTimers.clear();
     for (const controller of this.exports.values()) controller.abort();
     this.closePromise = (async () => { try {

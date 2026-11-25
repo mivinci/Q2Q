@@ -18,4 +18,4 @@ deploy/punch-identity/
 
 # Local OS metadata and browser SDK Wrangler cache
 .DS_Store
-packages/client-web/.wrangler/
+packages/client-browser/.wrangler/

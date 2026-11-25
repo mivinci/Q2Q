@@ -3,8 +3,8 @@ import {mkdir,rm,readFile,writeFile,mkdtemp} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {networkFixture} from '../../../packages/client-web/tests/network-fixture.mjs';
-import {p2pFixture} from '../../../packages/client-web/tests/p2p-fixture.mjs';
+import {networkFixture} from '../../../packages/client-browser/tests/network-fixture.mjs';
+import {p2pFixture} from '../../../packages/client-browser/tests/p2p-fixture.mjs';
 const payload=Buffer.alloc(3*262144+17);for(let i=0;i<payload.length;i++)payload[i]=(i*31+Math.floor(i/262144))%251;
 const hash=createHash('sha256').update(payload).digest('hex');
 const test=base.extend({

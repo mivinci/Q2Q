@@ -57,7 +57,7 @@ def npm_closure(ref, app):
             if posixpath.basename(directory) == 'node_modules':
                 directory = posixpath.dirname(directory)
 
-    root = f'packages/{app}' if app == 'client-web' else f'apps/{app}'
+    root = f'packages/{app}' if app == 'client-browser' else f'apps/{app}'
     pending, found = [root], {}
     while pending:
         path = pending.pop()
@@ -92,7 +92,7 @@ def npm_closure(ref, app):
 
 def main():
     app = sys.argv[1]
-    if app not in ('platform', 'seed-processing', 'registry', 'track', 'admin', 'www', 'client-web'):
+    if app not in ('platform', 'seed-processing', 'registry', 'track', 'admin', 'www', 'client-browser'):
         raise ValueError('unknown app')
     reason = 'manual run or missing base: run conservatively'
     run = True
@@ -113,17 +113,17 @@ def main():
                 shared += [f"crates/{package['name']}/**" for package in wasm_packages if 'source' not in package]
                 shared += ['Cargo.toml']
             native_roots = ('q2q-core', 'q2q-track-server', 'q2q-punch-server')
-            if app in ('track', 'www', 'client-web'):
+            if app in ('track', 'www', 'client-browser'):
                 native_packages = json.loads(closure(base, native_roots)) + json.loads(closure('HEAD', native_roots))
                 shared += [f"crates/{package['name']}/**" for package in native_packages if 'source' not in package]
                 shared += ['Cargo.toml', 'tests/fixtures/track/**', '.github/scripts/test-app-impact.py',
                            '.github/scripts/wait-registry.py', '.github/scripts/test-wait-registry.py']
-            if app in ('registry', 'track', 'www', 'client-web'):
+            if app in ('registry', 'track', 'www', 'client-browser'):
                 shared += ['tests/fixtures/punch/**', '.github/scripts/test-app-impact.py']
-            own = [f'packages/{app}/**' if app == 'client-web' else f'apps/{app}/**']
-            if app in ('www', 'client-web'):
+            own = [f'packages/{app}/**' if app == 'client-browser' else f'apps/{app}/**']
+            if app in ('www', 'client-browser'):
                 own += ['.github/scripts/test-app-impact.py']
-            if app == 'client-web':
+            if app == 'client-browser':
                 # The bundle smoke uses WWW's Vite installation.
                 own += ['apps/www/package.json']
             if app in ('platform', 'www'):
@@ -137,13 +137,13 @@ def main():
             reason = 'application/shared source changed' if run else 'no application impact'
             if not run and 'package-lock.json' in paths:
                 run = before_npm != after_npm
-                if app == 'client-web':
+                if app == 'client-browser':
                     run = run or npm_closure(base, 'www')[0] != npm_closure('HEAD', 'www')[0]
                 reason = 'npm dependency closure changed' if run else 'npm dependency closure unchanged'
             if not run and uses_wasm and 'Cargo.lock' in paths:
                 run = closure(base) != closure('HEAD')
                 reason = 'WASM dependency closure changed' if run else 'WASM dependency closure unchanged'
-            if not run and app in ('track', 'www', 'client-web') and 'Cargo.lock' in paths:
+            if not run and app in ('track', 'www', 'client-browser') and 'Cargo.lock' in paths:
                 run = closure(base, native_roots) != closure('HEAD', native_roots)
                 reason = 'native test dependency closure changed' if run else 'native test dependency closure unchanged'
         except (subprocess.CalledProcessError, ValueError, KeyError, TypeError) as error:

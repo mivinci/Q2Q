@@ -3,7 +3,7 @@ import {mkdir,rm} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {readFileSync} from 'node:fs';
 import {initSync,SeedBuilder,seed_with_source} from '../../../crates/q2q-wasm/pkg/q2q_wasm.js';
-import {networkFixture} from '../../../packages/client-web/tests/network-fixture.mjs';
+import {networkFixture} from '../../../packages/client-browser/tests/network-fixture.mjs';
 initSync({module:readFileSync(new URL('../../../crates/q2q-wasm/pkg/q2q_wasm_bg.wasm',import.meta.url))});
 const bytes=Buffer.alloc(3*1024*1024+17,37);
 const test=base.extend({context:async({browserName},use,testInfo)=>{

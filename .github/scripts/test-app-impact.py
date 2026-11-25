@@ -20,11 +20,11 @@ spec.loader.exec_module(impact)
 class ImpactTests(unittest.TestCase):
     def decision(self, app, paths, npm_changed=False, cargo_changed=False):
         def npm(ref, name):
-            workspaces = [f'packages/{name}' if name == 'client-web' else f'apps/{name}']
-            if name == 'client-web':
+            workspaces = [f'packages/{name}' if name == 'client-browser' else f'apps/{name}']
+            if name == 'client-browser':
                 workspaces += ['crates/q2q-wasm', 'apps/track', 'apps/registry', 'packages/punch-discovery']
             if name == 'www':
-                workspaces += ['packages/ui', 'packages/client-web', 'crates/q2q-wasm', 'apps/track', 'apps/registry', 'packages/punch-discovery']
+                workspaces += ['packages/ui', 'packages/client-browser', 'crates/q2q-wasm', 'apps/track', 'apps/registry', 'packages/punch-discovery']
             if name in ('admin', 'platform'):
                 workspaces += ['packages/ui','packages/plans','packages/accounts']
             if name in ('admin','registry','track'):
@@ -103,7 +103,7 @@ class ImpactTests(unittest.TestCase):
 
 
     def test_www_tracks_sdk_ui_wasm_and_integration_services(self):
-        for path in ['apps/www/src/routes/+page.svelte', 'packages/client-web/src/client.ts',
+        for path in ['apps/www/src/routes/+page.svelte', 'packages/client-browser/src/client.ts',
                      'packages/ui/src/theme.css', 'crates/q2q-wasm/src/lib.rs',
                      'crates/q2q-primitives/src/seed.rs', 'crates/q2q-punch/src/message.rs',
                      'crates/q2q-track/src/auth.rs', 'crates/q2q-core/tests/browser_rtc.rs', 'docs/public/favicon.svg']:
@@ -116,20 +116,20 @@ class ImpactTests(unittest.TestCase):
         for path in ['apps/www/src/routes/+page.svelte', 'apps/www/tests/download.spec.mjs',
                      'packages/ui/src/button/button.svelte', 'docs/zh/guide/web-client.md']:
             with self.subTest(path=path):
-                self.assertFalse(self.decision('client-web', [path]))
-        for path in ['packages/client-web/src/client.ts', 'packages/client-web/tests/storage.spec.mjs',
+                self.assertFalse(self.decision('client-browser', [path]))
+        for path in ['packages/client-browser/src/client.ts', 'packages/client-browser/tests/storage.spec.mjs',
                      'crates/q2q-wasm/src/lib.rs', 'crates/q2q-primitives/src/seed.rs',
                      'crates/q2q-core/tests/browser_rtc.rs', 'apps/track/src/directory.ts',
                      'apps/registry/src/nodes.ts', 'packages/punch-discovery/endpoints.ts',
                      'tests/fixtures/track/v1.json', 'tests/fixtures/punch/endpoints.json',
-                     'apps/www/package.json', '.github/workflows/client-web.yml',
+                     'apps/www/package.json', '.github/workflows/client-browser.yml',
                      '.github/scripts/app-impact.py', '.github/scripts/test-app-impact.py']:
             with self.subTest(path=path):
-                self.assertTrue(self.decision('client-web', [path]))
-        self.assertFalse(self.decision('client-web', ['package-lock.json']))
-        self.assertTrue(self.decision('client-web', ['package-lock.json'], npm_changed=True))
-        self.assertFalse(self.decision('client-web', ['Cargo.lock']))
-        self.assertTrue(self.decision('client-web', ['Cargo.lock'], cargo_changed=True))
+                self.assertTrue(self.decision('client-browser', [path]))
+        self.assertFalse(self.decision('client-browser', ['package-lock.json']))
+        self.assertTrue(self.decision('client-browser', ['package-lock.json'], npm_changed=True))
+        self.assertFalse(self.decision('client-browser', ['Cargo.lock']))
+        self.assertTrue(self.decision('client-browser', ['Cargo.lock'], cargo_changed=True))
 
 
 if __name__ == '__main__':

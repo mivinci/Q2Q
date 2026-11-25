@@ -110,3 +110,6 @@ main { width: 100%; max-width: 900px; margin: 0 auto; flex: 1; padding: 0 28px; 
   .close-dialog { width: 44px; height: 44px; top: 6px; right: 6px; }
   .dialog-title { margin-right: 38px; }
 }
+
+.media-player{width:100%;max-height:min(60svh,420px);border-radius:12px;background:#000;outline:1px solid var(--border)}
+audio.media-player{background:transparent;height:54px}

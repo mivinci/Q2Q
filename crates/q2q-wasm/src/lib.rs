@@ -16,6 +16,7 @@ pub fn decode_seed(bytes: &[u8]) -> Result<String, JsError> {
   Ok(
     serde_json::json!({
       "name": seed.info.name,
+      "mime": seed.info.mime,
       "size": seed.info.length.to_string(),
       "blockSize": seed.info.block_size,
       "blockCount": seed.info.leaf_count().to_string(),

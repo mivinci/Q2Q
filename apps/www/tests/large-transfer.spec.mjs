@@ -4,7 +4,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {networkFixture} from '../../../packages/client-web/tests/network-fixture.mjs';
+import {networkFixture} from '../../../packages/client-browser/tests/network-fixture.mjs';
 
 // Explicit opt-in: normal CI does not create multi-GiB profiles or test files.
 for(const mib of [100,1024])test(`large actual-page publication and P2P download ${mib} MiB @large-transfer`,async({},testInfo)=>{
